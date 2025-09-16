@@ -220,3 +220,29 @@ export const updateUserProfile = async (req, res) => {
       .json({ message: 'Erro ao atualizar perfil', error: error.message })
   }
 }
+
+// Controller para pegar informações do usuário logado
+export const getLoggedUser = async (req, res) => {
+  try {
+    // req.user.id vem do middleware de autenticação JWT
+    const user = await User.findById(req.user.id).select(
+      '-password -resetPasswordToken -resetPasswordExpire',
+    )
+
+    if (!user) {
+      return res.status(404).json({ message: 'Usuário não encontrado' })
+    }
+
+    res.json({
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      isAdmin: user.isAdmin,
+      avatar: user.avatar || null, // retorna null se não tiver avatar
+    })
+  } catch (error) {
+    console.error('Erro ao buscar usuário logado:', error)
+    res.status(500).json({ message: 'Erro ao buscar usuário logado', error })
+  }
+}

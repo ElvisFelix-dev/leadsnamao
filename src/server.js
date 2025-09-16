@@ -10,6 +10,8 @@ import { Server } from 'socket.io'
 import userRoutes from './routes/userRoutes.js'
 import propertyRoutes from './routes/propertyRoutes.js'
 import Conversation from './models/Conversation.js'
+import leadRoutes from './routes/leadRoutes.js'
+import dashboardRoutes from './routes/dashboardRoutes.js'
 
 dotenv.config()
 
@@ -30,6 +32,8 @@ app.get('/test-server', (req, res) => {
 // Rotas da aplicação
 app.use('/api/users', userRoutes)
 app.use('/api/properties', propertyRoutes)
+app.use('/api/leads', leadRoutes)
+app.use('/api/dashboard', dashboardRoutes)
 
 const httpServer = createServer(app)
 

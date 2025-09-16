@@ -1,0 +1,38 @@
+import mongoose from 'mongoose'
+
+const leadSchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true }, // Nome do interessado
+    email: { type: String, required: true },
+    phone: { type: String, required: true },
+
+    // Status do lead
+    status: {
+      type: String,
+      enum: ['novo', 'em andamento', 'convertido', 'perdido'],
+      default: 'novo',
+    },
+
+    // Observações do corretor/admin
+    notes: { type: String },
+
+    // Relacionamentos
+    property: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Property',
+      required: false,
+    },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    assignedTo: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+    },
+  },
+  { timestamps: true },
+)
+
+export default mongoose.model('Lead', leadSchema)

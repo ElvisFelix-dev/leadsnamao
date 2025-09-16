@@ -7,6 +7,7 @@ import {
   resetPassword,
   getUsers,
   updateUserProfile,
+  getLoggedUser,
 } from '../controllers/userController.js'
 import { protect, admin } from '../middleware/authMiddleware.js'
 import { upload } from '../utils/upload.js'
@@ -38,5 +39,7 @@ router.put('/reset-password/:token', resetPassword)
 
 // 📌 Somente admin pode ver todos os usuários
 router.get('/user', protect, admin, getUsers)
+
+router.get('/me', protect, getLoggedUser)
 
 export default router

@@ -50,22 +50,26 @@ export const registerUser = async (req, res) => {
 export const loginUser = async (req, res) => {
   try {
     const { email, password } = req.body
-
     const user = await User.findOne({ email })
 
     if (user && (await user.matchPassword(password))) {
+      // 🔥 Atualiza status para ativo
+      user.isActive = true
+      await user.save()
+
       res.json({
         _id: user._id,
         name: user.name,
         email: user.email,
         isAdmin: user.isAdmin,
-        token: generateToken(user._id, user.isAdmin),
+        isActive: user.isActive,
+        token: generateToken(user._id),
       })
     } else {
       res.status(401).json({ message: 'Credenciais inválidas' })
     }
-  } catch (error) {
-    res.status(500).json({ message: 'Erro no login', error })
+  } catch (err) {
+    res.status(500).json({ message: 'Erro no login' })
   }
 }
 
@@ -170,16 +174,36 @@ export const resetPassword = async (req, res) => {
   res.json({ message: 'Senha resetada com sucesso!' })
 }
 
-// 📌 Listar todos os usuários
+// 📌 Listar todos os usuários (sem senha)
 export const getUsers = async (req, res) => {
   try {
-    const users = await User.find().select('-password') // já inclui createdAt por padrão
-    res.json(users)
+    const users = await User.find().select('-password').lean()
+
+    return res.json(users) // 👉 retorna array direto
   } catch (error) {
     console.error('❌ Erro ao listar usuários:', error)
     res
       .status(500)
       .json({ message: 'Erro ao listar usuários', error: error.message })
+  }
+}
+
+// controllers/userController.js
+export const getBrokers = async (req, res) => {
+  try {
+    if (!req.user || !req.user.isAdmin) {
+      return res.status(403).json({ message: 'Acesso negado' })
+    }
+
+    const brokers = await User.find({ isAdmin: false })
+      .select('-password')
+      .lean()
+    return res.json(brokers)
+  } catch (error) {
+    console.error('❌ Erro ao listar corretores:', error)
+    res
+      .status(500)
+      .json({ message: 'Erro ao listar corretores', error: error.message })
   }
 }
 
@@ -244,5 +268,43 @@ export const getLoggedUser = async (req, res) => {
   } catch (error) {
     console.error('Erro ao buscar usuário logado:', error)
     res.status(500).json({ message: 'Erro ao buscar usuário logado', error })
+  }
+}
+
+// Pegar um corretor pelo ID (somente admin pode listar todos, mas aqui é público para hotsite)
+export const getBrokerById = async (req, res) => {
+  try {
+    const { id } = req.params
+    const broker = await User.findOne({ _id: id, isAdmin: false }).select(
+      '-password',
+    )
+
+    if (!broker) {
+      return res.status(404).json({ message: 'Corretor não encontrado' })
+    }
+
+    res.json(broker)
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: 'Erro ao buscar corretor', error: error.message })
+  }
+}
+
+export const getBrokerBySlug = async (req, res) => {
+  try {
+    const { slug } = req.params
+
+    const corretor = await User.findOne({ slug, isBroker: true }).select(
+      '-password',
+    )
+    if (!corretor) {
+      return res.status(404).json({ message: 'Corretor não encontrado' })
+    }
+
+    res.json(corretor)
+  } catch (error) {
+    console.error('Erro ao buscar corretor:', error)
+    res.status(500).json({ message: 'Erro interno do servidor' })
   }
 }

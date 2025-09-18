@@ -6,6 +6,19 @@ const leadSchema = new mongoose.Schema(
     email: { type: String, required: true },
     phone: { type: String, required: true },
 
+    region: {
+      type: String,
+      enum: [
+        'central',
+        'zona oeste',
+        'zona leste',
+        'zona sul',
+        'zona norte',
+        'abc',
+      ],
+      required: true, // pode ser opcional
+    },
+
     // Status do lead
     status: {
       type: String,

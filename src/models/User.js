@@ -1,20 +1,23 @@
 import mongoose from 'mongoose'
 import bcrypt from 'bcryptjs'
+import slugify from 'slugify'
 
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true },
+    slug: { type: String, unique: true }, // ✅ adicionado
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true },
     avatar: { type: String, default: '' }, // 🆕 campo avatar
     isAdmin: { type: Boolean, default: false },
+    isActive: { type: Boolean, default: false }, // 🆕 campo para status online/offline
+    isBroker: { type: Boolean, default: true }, // ✅ marca como corretor
     phone: {
       type: String,
       required: true,
       default: '+55',
       validate: {
         validator: function (v) {
-          // Aceita só +55 (default) OU número completo
           return v === '+55' || /^\+55\d{10,11}$/.test(v)
         },
         message: (props) =>
@@ -26,6 +29,13 @@ const userSchema = new mongoose.Schema(
   },
   { timestamps: true },
 )
+
+userSchema.pre('save', function (next) {
+  if (this.isModified('name')) {
+    this.slug = slugify(this.name, { lower: true, strict: true })
+  }
+  next()
+})
 
 // Antes de salvar → criptografa a senha
 userSchema.pre('save', async function (next) {
@@ -43,10 +53,8 @@ userSchema.methods.matchPassword = async function (enteredPassword) {
 // Middleware para padronizar automaticamente o número
 userSchema.pre('save', function (next) {
   if (this.phone) {
-    // remove tudo que não é número
     let cleanNumber = this.phone.replace(/\D/g, '')
 
-    // se não começar com 55, adiciona
     if (!cleanNumber.startsWith('55')) {
       cleanNumber = `55${cleanNumber}`
     }

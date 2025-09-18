@@ -16,11 +16,11 @@ router.post('/', protect, createLead)
 // Listar leads
 router.get('/', protect, getLeads)
 
-// Atualizar lead
-router.put('/:id', protect, updateLead)
-
 // Repassar leads (apenas admin)
 router.put('/assign', protect, admin, assignLeads)
+
+// Atualizar lead
+router.put('/:id', protect, updateLead)
 
 // Deletar lead
 router.delete('/:id', protect, admin, deleteLead)

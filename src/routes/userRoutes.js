@@ -8,6 +8,9 @@ import {
   getUsers,
   updateUserProfile,
   getLoggedUser,
+  getBrokers,
+  getBrokerById,
+  getBrokerBySlug,
 } from '../controllers/userController.js'
 import { protect, admin } from '../middleware/authMiddleware.js'
 import { upload } from '../utils/upload.js'
@@ -20,6 +23,9 @@ router.post('/register', registerUser)
 // Login
 router.post('/login', loginUser)
 
+// Buscar corretor pelo slug
+router.get('/brokers/name/:slug', getBrokerBySlug)
+
 // Perfil (apenas usuário logado)
 router.get('/profile', protect, getUserProfile)
 
@@ -30,6 +36,11 @@ router.put('/edit-profile', protect, upload.single('avatar'), updateUserProfile)
 router.get('/admin-only', protect, admin, (req, res) => {
   res.json({ message: 'Bem-vindo Admin!' })
 })
+
+// Apenas admin pode acessar
+router.get('/brokers', protect, getBrokers)
+
+router.get('/brokers/:id', getBrokerById)
 
 // Solicitar reset
 router.post('/forgot-password', forgotPassword)

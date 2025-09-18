@@ -214,10 +214,11 @@ export const updateUserProfile = async (req, res) => {
     if (!user)
       return res.status(404).json({ message: 'Usuário não encontrado' })
 
-    const { name, email, password } = req.body
+    const { name, email, phone, password } = req.body
 
     if (name) user.name = name
     if (email) user.email = email
+    if (phone) user.phone = phone
     if (password) user.password = password // hash automático pelo pre-save do model
 
     // Atualiza avatar se enviado
@@ -233,6 +234,7 @@ export const updateUserProfile = async (req, res) => {
         _id: user._id,
         name: user.name,
         email: user.email,
+        phone: user.phone,
         avatar: user.avatar,
         isAdmin: user.isAdmin,
       },

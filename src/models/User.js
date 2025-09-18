@@ -14,8 +14,7 @@ const userSchema = new mongoose.Schema(
     isBroker: { type: Boolean, default: true }, // ✅ marca como corretor
     phone: {
       type: String,
-      required: true,
-      default: '+55',
+      required: false,
       validate: {
         validator: function (v) {
           return v === '+55' || /^\+55\d{10,11}$/.test(v)

@@ -6,12 +6,16 @@ import {
   updateLead,
   assignLeads,
   deleteLead,
+  publicCreateLead,
 } from '../controllers/leadController.js'
 
 const router = express.Router()
 
 // Criar lead
-router.post('/', protect, createLead)
+router.post('/', protect, admin, createLead)
+
+// Criar lead
+router.post('/public', publicCreateLead)
 
 // Listar leads
 router.get('/', protect, getLeads)

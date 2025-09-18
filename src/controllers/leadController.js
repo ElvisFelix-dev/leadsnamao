@@ -24,6 +24,29 @@ export const createLead = async (req, res) => {
   }
 }
 
+export const publicCreateLead = async (req, res) => {
+  try {
+    const { name, email, phone, property, notes, region, assignedTo } = req.body
+
+    const lead = await Lead.create({
+      name,
+      email,
+      phone,
+      property,
+      region,
+      notes,
+      createdBy: null, // null se vier do hotsite
+      assignedTo: assignedTo || null,
+    })
+
+    res.status(201).json(lead)
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: 'Erro ao criar lead', error: error.message })
+  }
+}
+
 // Listar leads (admin vê todos, corretor só vê os dele)
 export const getLeads = async (req, res) => {
   try {

@@ -36,7 +36,7 @@ app.use('/api/leads', leadRoutes)
 app.use('/api/dashboard', dashboardRoutes)
 
 // Rota de validação do Webhook
-app.get('/webhook/:source', (req, res) => {
+app.get('/webhook/', (req, res) => {
   const VERIFY_TOKEN = '16996318063' // mesmo que você colocou no Meta
 
   const mode = req.query['hub.mode']

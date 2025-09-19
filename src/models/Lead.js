@@ -5,6 +5,11 @@ const leadSchema = new mongoose.Schema(
     name: { type: String, required: true }, // Nome do interessado
     email: { type: String, required: true },
     phone: { type: String, required: true },
+    source: {
+      type: String,
+      enum: ['manual', 'public', 'meta', 'olx', 'zap', 'csv'],
+      default: 'manual',
+    },
 
     region: {
       type: String,

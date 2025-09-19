@@ -1,4 +1,8 @@
+import fs from 'fs'
+import csv from 'csv-parser'
+
 import Lead from '../models/Lead.js'
+import { createLeadFromSource } from '../service/leadService.js'
 
 // Criar novo lead
 export const createLead = async (req, res) => {
@@ -185,5 +189,44 @@ export const deleteLead = async (req, res) => {
     res
       .status(500)
       .json({ message: 'Erro ao deletar lead', error: error.message })
+  }
+}
+
+export const publicCreateLeadFromWebhook = async (req, res) => {
+  try {
+    const { source } = req.params
+    const leadData = req.body
+
+    const lead = await createLeadFromSource(leadData, source)
+
+    res.status(201).json(lead)
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: 'Erro ao receber lead externo', error: error.message })
+  }
+}
+
+export const importLeadsFromCSV = async (req, res) => {
+  try {
+    const results = []
+
+    fs.createReadStream(req.file.path)
+      .pipe(csv())
+      .on('data', (row) => results.push(row))
+      .on('end', async () => {
+        const createdLeads = await Promise.all(
+          results.map((lead) => createLeadFromSource(lead, 'csv')),
+        )
+
+        res.json({
+          message: 'Leads importados com sucesso',
+          total: createdLeads.length,
+        })
+      })
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: 'Erro ao importar CSV', error: error.message })
   }
 }

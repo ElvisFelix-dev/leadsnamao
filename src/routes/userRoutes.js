@@ -11,6 +11,7 @@ import {
   getBrokers,
   getBrokerById,
   getBrokerBySlug,
+  getPublicBrokerById,
 } from '../controllers/userController.js'
 import { protect, admin } from '../middleware/authMiddleware.js'
 import { upload } from '../utils/upload.js'
@@ -25,6 +26,9 @@ router.post('/login', loginUser)
 
 // Buscar corretor pelo slug
 router.get('/brokers/name/:slug', getBrokerBySlug)
+
+// Buscar corretor público pelo ID
+router.get('/brokers/public/:id', getPublicBrokerById)
 
 // Perfil (apenas usuário logado)
 router.get('/profile', protect, getUserProfile)

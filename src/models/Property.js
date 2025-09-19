@@ -42,6 +42,11 @@ const propertySchema = new mongoose.Schema(
       lat: { type: Number },
       lng: { type: Number },
     },
+    brokerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User', // ✅ referência ao model User
+      required: true,
+    },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User', // vínculo com usuário que criou

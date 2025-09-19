@@ -310,3 +310,22 @@ export const getBrokerBySlug = async (req, res) => {
     res.status(500).json({ message: 'Erro interno do servidor' })
   }
 }
+
+export const getPublicBrokerById = async (req, res) => {
+  try {
+    const { id } = req.params
+
+    const broker = await User.findById(id).select(
+      'name avatar phone email bio', // Somente campos públicos
+    )
+
+    if (!broker) {
+      return res.status(404).json({ message: 'Corretor não encontrado' })
+    }
+
+    res.json(broker)
+  } catch (error) {
+    console.error(error)
+    res.status(500).json({ message: 'Erro ao buscar corretor' })
+  }
+}

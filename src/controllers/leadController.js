@@ -192,18 +192,77 @@ export const deleteLead = async (req, res) => {
   }
 }
 
+// Receber leads externos (Meta, OLX, Zap)
 export const publicCreateLeadFromWebhook = async (req, res) => {
-  try {
-    const { source } = req.params
-    const leadData = req.body
+  const source = req.params.source // 'meta', 'olx', 'zap', etc.
 
-    const lead = await createLeadFromSource(leadData, source)
+  // === Para Meta: validação do webhook ===
+  if (req.method === 'GET') {
+    const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN
+    const mode = req.query['hub.mode']
+    const token = req.query['hub.verify_token']
+    const challenge = req.query['hub.challenge']
 
-    res.status(201).json(lead)
-  } catch (error) {
-    res
-      .status(500)
-      .json({ message: 'Erro ao receber lead externo', error: error.message })
+    if (mode && token) {
+      if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+        console.log('✅ Webhook do Meta verificado com sucesso!')
+        return res.status(200).send(challenge)
+      } else {
+        console.log('❌ Token de verificação inválido')
+        return res.sendStatus(403)
+      }
+    }
+  }
+
+  // === POST: recebendo leads do Meta ===
+  if (req.method === 'POST') {
+    try {
+      const body = req.body
+
+      // Segurança: garantir que seja do tipo leadgen
+      if (!body.entry) return res.sendStatus(400)
+
+      const leadsToCreate = []
+
+      body.entry.forEach((entry) => {
+        entry.changes.forEach((change) => {
+          if (change.field === 'leadgen') {
+            const value = change.value
+            const fieldData = value.field_data || []
+
+            // Mapeando os campos para o modelo Lead
+            const leadData = {
+              name: fieldData.find((f) => f.name === 'name')?.values?.[0] || '',
+              email:
+                fieldData.find((f) => f.name === 'email')?.values?.[0] || '',
+              phone:
+                fieldData.find((f) => f.name === 'phone_number')?.values?.[0] ||
+                '',
+              createdBy: null, // vem do Facebook, então sem usuário interno
+              assignedTo: null, // opcional, você pode atribuir depois
+              notes: `Lead importado via ${source}`,
+            }
+
+            leadsToCreate.push(leadData)
+          }
+        })
+      })
+
+      // Salva todos os leads
+      const createdLeads = await Promise.all(
+        leadsToCreate.map((lead) => Lead.create(lead)),
+      )
+
+      console.log(`✅ ${createdLeads.length} leads importados via ${source}`)
+      return res
+        .status(200)
+        .json({ message: 'Leads importados', total: createdLeads.length })
+    } catch (err) {
+      console.error('❌ Erro ao receber leads do webhook:', err)
+      return res
+        .status(500)
+        .json({ message: 'Erro ao processar leads', error: err.message })
+    }
   }
 }
 

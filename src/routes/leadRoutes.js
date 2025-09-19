@@ -27,13 +27,7 @@ router.get('/', protect, getLeads)
 // Receber leads externos (Meta, OLX, Zap)
 router.post('/webhook/:source', publicCreateLeadFromWebhook)
 
-router.post(
-  '/import/csv',
-  protect,
-  admin,
-  upload.single('csv'),
-  importLeadsFromCSV,
-)
+router.post('/import/csv', upload.single('csv'), importLeadsFromCSV)
 
 // Repassar leads (apenas admin)
 router.put('/assign', protect, admin, assignLeads)

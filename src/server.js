@@ -35,6 +35,22 @@ app.use('/api/properties', propertyRoutes)
 app.use('/api/leads', leadRoutes)
 app.use('/api/dashboard', dashboardRoutes)
 
+// Rota de validação do Webhook
+app.get('/webhook/:source', (req, res) => {
+  const VERIFY_TOKEN = '16996318063' // mesmo que você colocou no Meta
+
+  const mode = req.query['hub.mode']
+  const token = req.query['hub.verify_token']
+  const challenge = req.query['hub.challenge']
+
+  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+    console.log('Webhook verificado com sucesso!')
+    return res.status(200).send(challenge)
+  } else {
+    return res.sendStatus(403)
+  }
+})
+
 const httpServer = createServer(app)
 
 const io = new Server(httpServer, {

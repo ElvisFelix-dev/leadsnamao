@@ -128,12 +128,12 @@ export const updateLead = async (req, res) => {
   }
 }
 
-/// Repassar leads para corretores (em lote)
+/// Repassar leads para corretores (em lote ou único)
 export const assignLeads = async (req, res) => {
   try {
-    const { leadIds, userId } = req.body
+    let { leadIds, leadId, userId } = req.body
 
-    console.log('📥 Recebido:', { leadIds, userId })
+    console.log('📥 Body recebido:', req.body)
     console.log('👤 Usuário logado:', req.user)
 
     if (!req.user || !req.user.isAdmin) {
@@ -142,16 +142,22 @@ export const assignLeads = async (req, res) => {
         .json({ message: 'Somente admin pode atribuir leads' })
     }
 
+    // Se veio leadId único, transforma em array
+    if (leadId) {
+      leadIds = [leadId]
+    }
+
     if (!Array.isArray(leadIds) || leadIds.length === 0) {
-      return res
-        .status(400)
-        .json({ message: 'leadIds deve ser um array não vazio' })
+      return res.status(400).json({
+        message: 'leadIds deve ser um array não vazio ou leadId fornecido',
+      })
     }
 
     if (!userId) {
       return res.status(400).json({ message: 'userId é obrigatório' })
     }
 
+    // Atualiza os leads
     const result = await Lead.updateMany(
       { _id: { $in: leadIds } },
       { $set: { assignedTo: userId } },
@@ -193,6 +199,7 @@ export const deleteLead = async (req, res) => {
 }
 
 // Receber leads externos (Meta, OLX, Zap)
+// Receber leads externos (Meta, OLX, Zap)
 export const publicCreateLeadFromWebhook = async (req, res) => {
   const source = req.params.source // 'meta', 'olx', 'zap', etc.
 
@@ -214,39 +221,58 @@ export const publicCreateLeadFromWebhook = async (req, res) => {
     }
   }
 
-  // === POST: recebendo leads do Meta ===
+  // === POST: recebendo leads ===
   if (req.method === 'POST') {
     try {
       const body = req.body
-
-      // Segurança: garantir que seja do tipo leadgen
-      if (!body.entry) return res.sendStatus(400)
-
       const leadsToCreate = []
 
-      body.entry.forEach((entry) => {
-        entry.changes.forEach((change) => {
-          if (change.field === 'leadgen') {
-            const value = change.value
-            const fieldData = value.field_data || []
+      // 🔹 Caso 1: Formato oficial do Meta
+      if (body.entry) {
+        body.entry.forEach((entry) => {
+          entry.changes.forEach((change) => {
+            if (change.field === 'leadgen') {
+              const value = change.value
+              const fieldData = value.field_data || []
 
-            // Mapeando os campos para o modelo Lead
-            const leadData = {
-              name: fieldData.find((f) => f.name === 'name')?.values?.[0] || '',
-              email:
-                fieldData.find((f) => f.name === 'email')?.values?.[0] || '',
-              phone:
-                fieldData.find((f) => f.name === 'phone_number')?.values?.[0] ||
-                '',
-              createdBy: null, // vem do Facebook, então sem usuário interno
-              assignedTo: null, // opcional, você pode atribuir depois
-              notes: `Lead importado via ${source}`,
+              const leadData = {
+                name:
+                  fieldData.find((f) => f.name === 'name')?.values?.[0] || '',
+                email:
+                  fieldData.find((f) => f.name === 'email')?.values?.[0] || '',
+                phone:
+                  fieldData.find((f) => f.name === 'phone_number')
+                    ?.values?.[0] || '',
+                region:
+                  fieldData.find((f) => f.name === 'region')?.values?.[0] || '', // ✅ adicionado
+                createdBy: null,
+                assignedTo: null,
+                notes: `Lead importado via ${source}`,
+              }
+
+              leadsToCreate.push(leadData)
             }
-
-            leadsToCreate.push(leadData)
-          }
+          })
         })
-      })
+      }
+
+      // 🔹 Caso 2: Formato simplificado para testes
+      if (body.custom_data) {
+        const { name, email, phone, region } = body.custom_data
+        leadsToCreate.push({
+          name: name || '',
+          email: email || '',
+          phone: phone || '',
+          region: region || '', // ✅ adicionado
+          createdBy: null,
+          assignedTo: null,
+          notes: `Lead importado via ${source} (custom_data)`,
+        })
+      }
+
+      if (leadsToCreate.length === 0) {
+        return res.status(400).json({ message: 'Nenhum lead válido recebido' })
+      }
 
       // Salva todos os leads
       const createdLeads = await Promise.all(
@@ -254,9 +280,11 @@ export const publicCreateLeadFromWebhook = async (req, res) => {
       )
 
       console.log(`✅ ${createdLeads.length} leads importados via ${source}`)
-      return res
-        .status(200)
-        .json({ message: 'Leads importados', total: createdLeads.length })
+      return res.status(200).json({
+        message: 'Leads importados',
+        total: createdLeads.length,
+        leads: createdLeads,
+      })
     } catch (err) {
       console.error('❌ Erro ao receber leads do webhook:', err)
       return res

@@ -18,9 +18,13 @@ const upload = multer({ dest: 'uploads/' })
 // Rotas para leads internos
 router.post('/', protect, admin, createLead) // Criar lead admin
 router.get('/', protect, getLeads) // Listar leads
-router.put('/:id', protect, updateLead) // Atualizar lead
+// Repassar leads (admin)
+router.put('/assign', protect, admin, assignLeads)
+
+// Atualizar lead
+router.put('/:id', protect, updateLead)
+
 router.delete('/:id', protect, admin, deleteLead) // Deletar lead
-router.put('/assign', protect, admin, assignLeads) // Repassar leads
 router.post(
   '/import/csv',
   protect,

@@ -26,16 +26,16 @@ export const createProperty = async (req, res) => {
   }
 }
 
-// Listar todos imóveis
+// Listar todos imóveis com filtros
 export const getProperties = async (req, res) => {
   try {
     const { region, bedrooms, parking } = req.query
 
-    // 🔎 Monta filtro dinâmico
     const filter = {}
+
     if (region) filter.region = region
-    if (bedrooms) filter.bedrooms = bedrooms
-    if (parking) filter.parking = parking
+    if (bedrooms) filter.bedrooms = { $gte: Number(bedrooms) } // >= qtd
+    if (parking) filter.parking = { $gte: Number(parking) } // >= qtd
 
     const properties = await Property.find(filter)
 

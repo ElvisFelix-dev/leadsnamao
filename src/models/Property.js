@@ -5,8 +5,9 @@ import mongoose from 'mongoose'
 const propertySchema = new mongoose.Schema(
   {
     name: { type: String, required: true, unique: true },
-    bedrooms: { type: String, required: true },
-    bathrooms: { type: String, required: true },
+    bedrooms: { type: Number, required: true }, // 🔄 agora Number
+    bathrooms: { type: Number, required: true },
+    parking: { type: Number, required: true }, // 🔄 agora Number
     images: [{ type: String, required: true }],
     category: {
       type: String,
@@ -33,7 +34,6 @@ const propertySchema = new mongoose.Schema(
     description: { type: String, required: true },
     price: { type: Number, required: true },
     countInStock: { type: Number, required: true },
-    parking: { type: String, required: true },
     address: { type: String, required: true, unique: true },
     offer: { type: String },
 

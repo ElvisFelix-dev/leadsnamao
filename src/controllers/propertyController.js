@@ -2,17 +2,21 @@ import Property from '../models/Property.js'
 import { getCoordinatesFromAddress } from '../utils/geocode.js'
 
 // Criar imóvel (apenas admin)
+// Criar imóvel (apenas admin ou corretor)
 export const createProperty = async (req, res) => {
   try {
     const data = { ...req.body }
-    data.createdBy = req.user._id
 
-    // Pegar URLs das imagens enviadas
-    if (req.files) {
+    // 🔑 Vincula ao usuário logado
+    data.createdBy = req.user._id
+    data.brokerId = req.user._id // ← necessário porque o schema exige
+
+    // 📸 Pegar URLs das imagens enviadas
+    if (req.files?.length > 0) {
       data.images = req.files.map((file) => file.path) // Cloudinary retorna a URL em file.path
     }
 
-    // ➕ Buscar coordenadas pelo endereço
+    // 📍 Buscar coordenadas pelo endereço
     const coords = await getCoordinatesFromAddress(data.address)
     if (coords) {
       data.location = coords
@@ -20,9 +24,13 @@ export const createProperty = async (req, res) => {
 
     const property = new Property(data)
     const createdProperty = await property.save()
+
     res.status(201).json(createdProperty)
   } catch (error) {
-    res.status(500).json({ message: 'Erro ao criar imóvel', error })
+    console.error('❌ Erro ao criar imóvel:', error.message) // log mais claro
+    res
+      .status(500)
+      .json({ message: 'Erro ao criar imóvel', error: error.message })
   }
 }
 

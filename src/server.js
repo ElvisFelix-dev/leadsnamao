@@ -5,6 +5,7 @@ import dotenv from 'dotenv'
 import cors from 'cors'
 import { createServer } from 'http'
 import { Server } from 'socket.io'
+import cron from 'node-cron'
 
 // Rotas
 import userRoutes from './routes/userRoutes.js'
@@ -21,8 +22,27 @@ app.use(cors())
 
 mongoose
   .connect(process.env.MONGODB_URI)
-  .then(() => console.log('✅ MongoDB conectado'))
-  .catch((err) => console.error('❌ Erro ao conectar MongoDB:', err))
+  .then(() => {
+    console.log('📊 Connected to MongoDB')
+
+    // ==========================
+    // Ping a cada 6 horas
+    // ==========================
+    cron.schedule('0 */6 * * *', async () => {
+      try {
+        await mongoose.connection.db.admin().ping()
+
+        console.log(
+          `🏓 MongoDB Ping executado em ${new Date().toLocaleString('pt-BR')}`,
+        )
+      } catch (err) {
+        console.error('❌ Erro ao executar MongoDB Ping:', err.message)
+      }
+    })
+
+    console.log('⏰ MongoDB Ping agendado para cada 6 horas.')
+  })
+  .catch((err) => console.error('❌ MongoDB error:', err.message))
 
 // Rotas de teste
 app.get('/test-server', (req, res) => {

@@ -9,7 +9,7 @@ import cron from 'node-cron'
 
 // Rotas
 import userRoutes from './routes/userRoutes.js'
-<<<<<<< HEAD
+
 import brokerRoutes from './routes/brokerRoutes.js'
 import propertyRoutes from './routes/propertyRoutes.js'
 import Conversation from './models/Conversation.js'
@@ -23,12 +23,6 @@ import propertyFavoreriteRoutes from './routes/propertyFavoriteRoutes.js'
 import leadCaptureRoutes from './routes/leadCaptureRoutes.js'
 
 import errorMiddleware from './middleware/errorMiddleware.js'
-=======
-import propertyRoutes from './routes/propertyRoutes.js'
-import Conversation from './models/Conversation.js'
-import leadRoutes from './routes/leadRoutes.js'
-import dashboardRoutes from './routes/dashboardRoutes.js'
->>>>>>> 32e8de98b92a233f54261a3612474c5a61832f64
 
 dotenv.config()
 
@@ -36,11 +30,8 @@ const app = express()
 app.use(express.json())
 app.use(cors())
 
-<<<<<<< HEAD
 app.use(errorMiddleware)
 
-=======
->>>>>>> 32e8de98b92a233f54261a3612474c5a61832f64
 mongoose
   .connect(process.env.MONGODB_URI)
   .then(() => {
@@ -67,12 +58,11 @@ mongoose
 
 // Rotas de teste
 app.get('/test-server', (req, res) => {
-  res.send('🚀 Nova Era server running! ✅')
+  res.send('🚀 Lead na Mão server running! ✅')
 })
 
 // Rotas da aplicação
 app.use('/api/users', userRoutes)
-<<<<<<< HEAD
 app.use('/api/brokers', brokerRoutes)
 app.use('/api/properties', propertyRoutes)
 app.use('/api/leads', leadRoutes)
@@ -83,11 +73,10 @@ app.use('/api/uploads', uploadRoutes)
 app.use('/api/property-views', propertyViewRoutes)
 app.use('/api/property-favorite', propertyFavoreriteRoutes)
 app.use('/api/lead-capture', leadCaptureRoutes)
-=======
+
 app.use('/api/properties', propertyRoutes)
 app.use('/api/leads', leadRoutes)
 app.use('/api/dashboard', dashboardRoutes)
->>>>>>> 32e8de98b92a233f54261a3612474c5a61832f64
 
 // Rota de validação do Webhook
 app.get('/webhook/', (req, res) => {

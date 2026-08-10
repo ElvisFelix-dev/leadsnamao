@@ -1,0 +1,16 @@
+export const PROPERTY_FEATURES = [
+  'Piscina',
+  'Churrasqueira',
+  'Academia',
+  'Playground',
+  'Salão de Festas',
+  'Elevador',
+  'Portaria 24h',
+  'Sacada',
+  'Varanda Gourmet',
+  'Closet',
+  'Suíte',
+  'Ar Condicionado',
+  'Mobiliado',
+  'Aceita Pets',
+]

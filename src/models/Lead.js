@@ -1,6 +1,5 @@
 import mongoose from 'mongoose'
 
-<<<<<<< HEAD
 import { LEAD_STAGE_LIST, LEAD_STAGES } from '../constants/leadStages.js'
 
 import { LEAD_STATUS } from '../constants/leadStatus.js'
@@ -289,21 +288,6 @@ const leadSchema = new mongoose.Schema(
     region: {
       type: String,
 
-=======
-const leadSchema = new mongoose.Schema(
-  {
-    name: { type: String, required: true }, // Nome do interessado
-    email: { type: String, required: true },
-    phone: { type: String, required: true },
-    source: {
-      type: String,
-      enum: ['manual', 'public', 'meta', 'olx', 'zap', 'csv'],
-      default: 'manual',
-    },
-
-    region: {
-      type: String,
->>>>>>> 32e8de98b92a233f54261a3612474c5a61832f64
       enum: [
         'central',
         'zona oeste',
@@ -312,7 +296,6 @@ const leadSchema = new mongoose.Schema(
         'zona norte',
         'abc',
       ],
-<<<<<<< HEAD
 
       required: true,
 
@@ -878,38 +861,4 @@ leadSchema.set('toJSON', {
    EXPORT
 ============================================================ */
 
-=======
-      required: true, // pode ser opcional
-    },
-
-    // Status do lead
-    status: {
-      type: String,
-      enum: ['novo', 'em andamento', 'convertido', 'perdido'],
-      default: 'novo',
-    },
-
-    // Observações do corretor/admin
-    notes: { type: String },
-
-    // Relacionamentos
-    property: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Property',
-      required: false,
-    },
-    createdBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      required: false,
-    },
-    assignedTo: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-    },
-  },
-  { timestamps: true },
-)
-
->>>>>>> 32e8de98b92a233f54261a3612474c5a61832f64
 export default mongoose.model('Lead', leadSchema)

@@ -1,6 +1,5 @@
 import Lead from '../models/Lead.js'
 
-<<<<<<< HEAD
 import { LEAD_STAGES, LEAD_STAGE_LIST } from '../constants/leadStages.js'
 import { LEAD_STATUS } from '../constants/leadStatus.js'
 import { LEAD_PRIORITY } from '../constants/leadPriority.js'
@@ -724,21 +723,4 @@ export const importLeadsFromCSV = async (rows) => {
 
     leads: createdLeads,
   }
-=======
-// Função central para salvar lead normalizado
-export const createLeadFromSource = async (data, source = 'manual') => {
-  const { name, email, phone, property, region, notes, assignedTo } = data
-
-  return await Lead.create({
-    name,
-    email,
-    phone,
-    property: property || null,
-    region: region || 'central',
-    notes: notes || '',
-    createdBy: data.createdBy || null,
-    assignedTo: assignedTo || null,
-    source, // 👈 identifica origem do lead
-  })
->>>>>>> 32e8de98b92a233f54261a3612474c5a61832f64
 }

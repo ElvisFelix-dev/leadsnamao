@@ -1,5 +1,6 @@
 import express from 'express'
 import multer from 'multer'
+<<<<<<< HEAD
 
 import { protect, admin } from '../middleware/authMiddleware.js'
 
@@ -14,11 +15,22 @@ import {
   changeLeadStage,
   getPipeline,
   getPipelineMetrics,
+=======
+import { protect, admin } from '../middleware/authMiddleware.js'
+import {
+  createLead,
+  getLeads,
+  updateLead,
+  assignLeads,
+  deleteLead,
+  publicCreateLead,
+>>>>>>> 32e8de98b92a233f54261a3612474c5a61832f64
   importLeadsFromCSV,
   publicCreateLeadFromWebhook,
 } from '../controllers/leadController.js'
 
 const router = express.Router()
+<<<<<<< HEAD
 
 const upload = multer({
   dest: 'uploads/',
@@ -36,6 +48,20 @@ router.all('/webhook/:source', publicCreateLeadFromWebhook)
 // IMPORTAÇÃO CSV
 // ======================================================
 
+=======
+const upload = multer({ dest: 'uploads/' })
+
+// Rotas para leads internos
+router.post('/', protect, admin, createLead) // Criar lead admin
+router.get('/', protect, getLeads) // Listar leads
+// Repassar leads (admin)
+router.put('/assign', protect, admin, assignLeads)
+
+// Atualizar lead
+router.put('/:id', protect, updateLead)
+
+router.delete('/:id', protect, admin, deleteLead) // Deletar lead
+>>>>>>> 32e8de98b92a233f54261a3612474c5a61832f64
 router.post(
   '/import/csv',
   protect,
@@ -44,6 +70,7 @@ router.post(
   importLeadsFromCSV,
 )
 
+<<<<<<< HEAD
 // ======================================================
 // PIPELINE
 // ======================================================
@@ -89,5 +116,12 @@ router.patch('/:id', protect, updateLead)
 // Excluir lead
 
 router.delete('/:id', protect, admin, deleteLead)
+=======
+// Rotas públicas
+router.post('/public', publicCreateLead) // Criar lead público
+
+// Webhook: GET para validação + POST para receber leads
+router.all('/webhook/:source', publicCreateLeadFromWebhook)
+>>>>>>> 32e8de98b92a233f54261a3612474c5a61832f64
 
 export default router

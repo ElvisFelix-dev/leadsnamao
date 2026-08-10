@@ -44,6 +44,7 @@ export const welcomeTemplate = (userName) => `
 </body>
 </html>
 `
+<<<<<<< HEAD
 
 export const resetPasswordTemplate = (userName, resetUrl) => `
 
@@ -650,3 +651,5 @@ font-size:12px;
 </html>
 `
 }
+=======
+>>>>>>> 32e8de98b92a233f54261a3612474c5a61832f64

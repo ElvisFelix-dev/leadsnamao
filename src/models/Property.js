@@ -1,4 +1,5 @@
 import mongoose from 'mongoose'
+<<<<<<< HEAD
 import slugify from 'slugify'
 
 import { PROPERTY_TYPE_LIST } from '../constants/propertyType.js'
@@ -1012,3 +1013,63 @@ propertySchema.set('toJSON', {
 const Property = mongoose.model('Property', propertySchema)
 
 export default Property
+=======
+
+// Schema de imóvel
+// Schema de imóvel
+const propertySchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true, unique: true },
+    bedrooms: { type: Number, required: true }, // 🔄 agora Number
+    bathrooms: { type: Number, required: true },
+    parking: { type: Number, required: true }, // 🔄 agora Number
+    images: [{ type: String, required: true }],
+    category: {
+      type: String,
+      enum: ['casa', 'apartamento'],
+      required: true,
+    },
+    region: {
+      type: String,
+      enum: [
+        'central',
+        'zona oeste',
+        'zona leste',
+        'zona sul',
+        'zona norte',
+        'abc',
+      ],
+      required: true,
+    },
+    status: {
+      type: String,
+      enum: ['planta', 'construcao', 'pronto'],
+      default: 'planta',
+    },
+    description: { type: String, required: true },
+    price: { type: Number, required: true },
+    countInStock: { type: Number, required: true },
+    address: { type: String, required: true, unique: true },
+    offer: { type: String },
+
+    // ➕ Localização geográfica
+    location: {
+      lat: { type: Number },
+      lng: { type: Number },
+    },
+    brokerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User', // ✅ referência ao model User
+      required: true,
+    },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User', // vínculo com usuário que criou
+      required: true,
+    },
+  },
+  { timestamps: true },
+)
+
+export default mongoose.model('Property', propertySchema)
+>>>>>>> 32e8de98b92a233f54261a3612474c5a61832f64

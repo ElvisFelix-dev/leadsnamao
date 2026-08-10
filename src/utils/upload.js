@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import dotenv from 'dotenv'
 import multer from 'multer'
 
@@ -12,18 +13,39 @@ CLOUDINARY
 ====================================================
 */
 
+=======
+import dotenv from 'dotenv' // garante que .env esteja disponível
+
+import { v2 as cloudinary } from 'cloudinary'
+import { CloudinaryStorage } from 'multer-storage-cloudinary'
+import multer from 'multer'
+dotenv.config()
+
+>>>>>>> 32e8de98b92a233f54261a3612474c5a61832f64
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 })
 
+<<<<<<< HEAD
 /*
 ====================================================
 TESTE DE CONEXÃO
 ====================================================
 */
 
+=======
+const storage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: 'properties', // pasta no Cloudinary
+    allowed_formats: ['jpg', 'png', 'jpeg'],
+  },
+})
+
+// 🔎 Teste de conexão
+>>>>>>> 32e8de98b92a233f54261a3612474c5a61832f64
 cloudinary.api.ping((error, result) => {
   if (error) {
     console.error('❌ Erro ao conectar com Cloudinary:', error)
@@ -32,6 +54,7 @@ cloudinary.api.ping((error, result) => {
   }
 })
 
+<<<<<<< HEAD
 /*
 ====================================================
 HELPER
@@ -174,3 +197,6 @@ EXPORTA CLOUDINARY
 */
 
 export { cloudinary }
+=======
+export const upload = multer({ storage })
+>>>>>>> 32e8de98b92a233f54261a3612474c5a61832f64

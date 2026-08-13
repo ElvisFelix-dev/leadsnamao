@@ -88,15 +88,6 @@ const getPublicBroker = async (id) => {
 
 // ==========================================
 // Buscar corretor público por slug
-//
-// Essa função será muito útil para o hotsite.
-//
-// Exemplo:
-//
-// /corretor/joao-silva
-//
-// slug:
-// joao-silva
 // ==========================================
 
 const getPublicBrokerBySlug = async (slug) => {
@@ -113,6 +104,41 @@ const getPublicBrokerBySlug = async (slug) => {
   }
 
   return broker
+}
+
+// ==========================================
+// Buscar todos os corretores
+// CRM
+// ==========================================
+
+const getBrokers = async () => {
+  const brokers = await User.find({
+    isBroker: true,
+    isActive: true,
+  })
+    .select(
+      `
+      _id
+      name
+      email
+      phone
+      avatar
+      coverImage
+      position
+      company
+      creci
+      creciActive
+      slug
+      isBroker
+      isActive
+    `,
+    )
+    .sort({
+      name: 1,
+    })
+    .lean()
+
+  return brokers
 }
 
 // ==========================================
@@ -201,19 +227,6 @@ const getBrokerHotsite = async (slug) => {
 
   // ------------------------------------------
   // Buscar imóveis públicos
-  //
-  // IMPORTANTE:
-  //
-  // O hotsite mostra o catálogo público
-  // da imobiliária.
-  //
-  // Não filtramos:
-  //
-  // broker
-  // captation.broker
-  //
-  // Dessa forma, qualquer imóvel publicado
-  // pode aparecer no hotsite.
   // ------------------------------------------
 
   const properties = await Property.find({
@@ -263,10 +276,6 @@ const getBrokerHotsite = async (slug) => {
     })
     .lean()
 
-  // ------------------------------------------
-  // Retorno
-  // ------------------------------------------
-
   return {
     broker,
     properties,
@@ -276,18 +285,6 @@ const getBrokerHotsite = async (slug) => {
 
 // ==========================================
 // Buscar corretor responsável pelo lead
-// ==========================================
-//
-// Essa função centraliza a regra de encontrar
-// o corretor que deverá receber um lead.
-//
-// Atualmente aceitamos:
-// - brokerId
-// - brokerSlug
-//
-// Isso deixa o backend preparado para o
-// formulário público do imóvel.
-//
 // ==========================================
 
 const getLeadBroker = async ({ brokerId, brokerSlug }) => {
@@ -318,7 +315,7 @@ const getLeadBroker = async ({ brokerId, brokerSlug }) => {
   }
 
   // ------------------------------------------
-  // Se não encontrou, buscar por slug
+  // Buscar por slug
   // ------------------------------------------
 
   if (!broker && brokerSlug) {
@@ -361,7 +358,16 @@ export default {
   getBrokerBySlug,
   getPublicBroker,
   getPublicBrokerBySlug,
+
+  // CRM
+  getBrokers,
+
+  // Público
   getPublicBrokers,
+
+  // Hotsite
   getBrokerHotsite,
+
+  // Leads
   getLeadBroker,
 }

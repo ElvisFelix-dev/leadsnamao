@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto'
-
 import User from '../../models/User.js'
 import Lead from '../../models/Lead.js'
 import Visit from '../../models/Visit.js'
@@ -335,12 +334,19 @@ LISTAR CORRETORES
 */
 
 export async function getBrokers() {
-  return User.find({
+  const brokers = await User.find({
     role: 'broker',
     isActive: true,
   })
-    .select('-password')
-    .sort({ name: 1 })
+    .select(
+      '_id name email avatar phone position company creci slug isActive role',
+    )
+    .sort({
+      name: 1,
+    })
+    .lean()
+
+  return brokers
 }
 
 /*

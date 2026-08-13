@@ -270,13 +270,6 @@ USUÁRIO LOGADO
 ====================================================
 */
 
-/*
-====================================================
-GET ME
-USUÁRIO LOGADO
-====================================================
-*/
-
 export async function getMe(req, res, next) {
   try {
     const user = await getMeService(req.user._id)
@@ -378,11 +371,14 @@ export async function listBrokers(req, res) {
       data: brokers,
     })
   } catch (error) {
-    console.error('Erro ao buscar corretores:', error)
+    console.error('====================================')
+    console.error('ERRO AO BUSCAR CORRETORES')
+    console.error(error)
+    console.error('====================================')
 
     return res.status(500).json({
       success: false,
-      message: 'Erro ao buscar corretores',
+      message: error.message || 'Erro ao buscar corretores',
     })
   }
 }

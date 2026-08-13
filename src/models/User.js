@@ -273,6 +273,11 @@ const userSchema = new mongoose.Schema(
         type: String,
         default: 'pt-BR',
       },
+
+      showcaseEnabled: {
+        type: Boolean,
+        default: true,
+      },
     },
 
     /*
@@ -407,37 +412,29 @@ GERAR SLUG
 =========================================
 */
 
-userSchema.pre('save', function (next) {
-  if (this.isModified('name')) {
-    this.slug = slugify(this.name, {
-      lower: true,
-      strict: true,
-    })
-  }
-
-  next()
-})
-
 userSchema.pre('save', async function (next) {
-  if (this.isModified('name')) {
-    let slug = slugify(this.name, {
-      lower: true,
-      strict: true,
-    })
-
-    const exists = await mongoose.models.User.findOne({
-      slug,
-      _id: {
-        $ne: this._id,
-      },
-    })
-
-    if (exists) {
-      slug = `${slug}-${Date.now()}`
-    }
-
-    this.slug = slug
+  if (!this.isModified('name') && this.slug) {
+    return next()
   }
+
+  let slug = slugify(this.name, {
+    lower: true,
+    strict: true,
+    locale: 'pt',
+  })
+
+  const exists = await mongoose.models.User.findOne({
+    slug,
+    _id: {
+      $ne: this._id,
+    },
+  })
+
+  if (exists) {
+    slug = `${slug}-${Date.now()}`
+  }
+
+  this.slug = slug
 
   next()
 })

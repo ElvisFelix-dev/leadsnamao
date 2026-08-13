@@ -43,6 +43,19 @@ export const getProperty = asyncHandler(async (req, res) => {
 })
 
 /* ============================================================
+   GET BY ID — CRM
+============================================================ */
+
+export const getPropertyCRM = asyncHandler(async (req, res) => {
+  const property = await propertyService.getPropertyCRMById(req.params.id)
+
+  res.json({
+    success: true,
+    data: property,
+  })
+})
+
+/* ============================================================
    GET BY SLUG
 ============================================================ */
 

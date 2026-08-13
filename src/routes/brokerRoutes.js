@@ -6,11 +6,18 @@ import {
   getBrokerBySlug,
   getPublicBrokerById,
   getPublicBrokers,
+  getBrokerHotsite,
 } from '../controllers/brokerController.js'
 
 import { protect } from '../middleware/authMiddleware.js'
 
 const router = express.Router()
+
+// ==========================================
+// HOTSITE DO CORRETOR
+// ==========================================
+
+router.get('/hotsite/:slug', getBrokerHotsite)
 
 // ======================================
 // ADMIN

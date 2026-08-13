@@ -22,6 +22,35 @@ export const PROPERTY_POPULATE = [
   },
 ]
 
+/*
+============================================================
+POPULATE CRM
+============================================================
+*/
+
+export const PROPERTY_CRM_POPULATE = [
+  {
+    path: 'broker',
+    select: 'name email avatar phone position slug',
+  },
+  {
+    path: 'createdBy',
+    select: 'name email avatar position',
+  },
+  {
+    path: 'updatedBy',
+    select: 'name email avatar position',
+  },
+  {
+    path: 'assignedTo',
+    select: 'name email avatar phone position slug',
+  },
+  {
+    path: 'captation.broker',
+    select: 'name email avatar phone position slug',
+  },
+]
+
 /* ============================================================
    HELPERS
 ============================================================ */
@@ -691,4 +720,23 @@ export async function getDashboardData() {
     latestProperties,
     featuredProperties,
   }
+}
+
+/*
+============================================================
+GET BY ID — CRM
+============================================================
+*/
+
+export async function getPropertyCRMById(id) {
+  const property = await Property.findOne({
+    _id: id,
+    isDeleted: false,
+  }).populate(PROPERTY_CRM_POPULATE)
+
+  if (!property) {
+    throw new AppError('Imóvel não encontrado.', 404)
+  }
+
+  return property
 }

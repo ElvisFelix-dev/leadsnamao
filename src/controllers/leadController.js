@@ -3,11 +3,40 @@ import csv from 'csv-parser'
 import Lead from '../models/Lead.js'
 
 import * as leadService from '../service/leadService.js'
+
+import { createBrokerHotsiteLead } from '../service/leadService.js'
+
 import { getUserById } from '../service/users/userService.js'
 
 import { sendEmail } from '../service/email/sendEmails.js'
 
 import { leadAssignedTemplate } from '../utils/emailTemplates.js'
+
+// ======================================================
+// CREATE BROKER HOTSITE LEAD
+// ======================================================
+
+export const createBrokerHotsiteLeadController = async (req, res) => {
+  try {
+    const lead = await createBrokerHotsiteLead(req.body)
+
+    return res.status(201).json({
+      success: true,
+
+      message: 'Seu interesse foi enviado com sucesso.',
+
+      data: lead,
+    })
+  } catch (error) {
+    console.error('Erro ao criar lead do hotsite:', error)
+
+    return res.status(400).json({
+      success: false,
+
+      message: error?.message || 'Não foi possível enviar seu interesse.',
+    })
+  }
+}
 
 // ======================================================
 // CREATE

@@ -4,6 +4,7 @@ import {
   createProperty,
   getProperties,
   getProperty,
+  getPropertyCRM,
   getPropertyBySlug,
   getPropertyByCode,
   updateProperty,
@@ -58,11 +59,15 @@ const router = express.Router()
 
 /*
 ============================================================
- PÚBLICO
+PÚBLICO
 ============================================================
 */
 
-// Lista imóveis
+/*
+------------------------------------------------------------
+LISTA DE IMÓVEIS
+------------------------------------------------------------
+*/
 
 router.get(
   '/',
@@ -71,15 +76,27 @@ router.get(
   getProperties,
 )
 
-// Imóveis em destaque
+/*
+------------------------------------------------------------
+IMÓVEIS EM DESTAQUE
+------------------------------------------------------------
+*/
 
 router.get('/featured', getFeaturedProperties)
 
-// Últimos imóveis cadastrados
+/*
+------------------------------------------------------------
+ÚLTIMOS IMÓVEIS
+------------------------------------------------------------
+*/
 
 router.get('/latest', getLatestProperties)
 
-// Busca
+/*
+------------------------------------------------------------
+BUSCA
+------------------------------------------------------------
+*/
 
 router.get(
   '/search',
@@ -88,7 +105,11 @@ router.get(
   searchProperties,
 )
 
-// Filtros
+/*
+------------------------------------------------------------
+FILTROS
+------------------------------------------------------------
+*/
 
 router.get(
   '/filter',
@@ -97,7 +118,11 @@ router.get(
   filterProperties,
 )
 
-// Busca por slug
+/*
+------------------------------------------------------------
+BUSCA POR SLUG
+------------------------------------------------------------
+*/
 
 router.get(
   '/slug/:slug',
@@ -106,7 +131,11 @@ router.get(
   getPropertyBySlug,
 )
 
-// Busca por código
+/*
+------------------------------------------------------------
+BUSCA POR CÓDIGO
+------------------------------------------------------------
+*/
 
 router.get(
   '/code/:code',
@@ -115,43 +144,118 @@ router.get(
   getPropertyByCode,
 )
 
-// Busca por região
+/*
+------------------------------------------------------------
+BUSCA POR REGIÃO
+------------------------------------------------------------
+*/
 
 router.get('/region/:region', getPropertiesByRegion)
 
-// Busca por finalidade
+/*
+------------------------------------------------------------
+BUSCA POR FINALIDADE
+------------------------------------------------------------
+*/
 
 router.get('/purpose/:purpose', getPropertiesByPurpose)
 
-// Busca por tipo
+/*
+------------------------------------------------------------
+BUSCA POR TIPO
+------------------------------------------------------------
+*/
 
 router.get('/type/:type', getPropertiesByType)
 
-// Busca por corretor
+/*
+------------------------------------------------------------
+BUSCA POR CORRETOR
+------------------------------------------------------------
+*/
 
 router.get('/broker/:brokerId', getBrokerProperties)
 
-// Detalhes do imóvel
+/*
+============================================================
+ADMIN / CRM
+============================================================
+*/
+
+/*
+------------------------------------------------------------
+DASHBOARD
+------------------------------------------------------------
+*/
+
+router.get('/dashboard', protect, admin, getDashboardData)
+
+/*
+------------------------------------------------------------
+ESTATÍSTICAS
+------------------------------------------------------------
+*/
+
+router.get('/statistics', protect, admin, getPropertyStatistics)
+
+/*
+------------------------------------------------------------
+DETALHES COMPLETOS — CRM
+------------------------------------------------------------
+
+  Essa rota é protegida porque pode retornar informações
+  internas do imóvel, como:
+
+  - proprietário
+  - telefone do proprietário
+  - e-mail do proprietário
+  - corretor de captação
+  - percentual de captação
+  - informações administrativas
+
+  Não usar no site público ou hotsite.
+------------------------------------------------------------
+*/
+
+router.get(
+  '/:id/crm',
+  protect,
+  propertyIdValidator,
+  validateRequest,
+  getPropertyCRM,
+)
+
+/*
+============================================================
+DETALHE PÚBLICO
+============================================================
+*/
+
+/*
+------------------------------------------------------------
+DETALHES DO IMÓVEL
+------------------------------------------------------------
+
+  IMPORTANTE:
+  Essa rota precisa ficar depois de todas as rotas
+  específicas acima para que /dashboard, /statistics,
+  /:id/crm etc. não sejam interpretadas como um ID.
+------------------------------------------------------------
+*/
 
 router.get('/:id', propertyIdValidator, validateRequest, getProperty)
 
 /*
 ============================================================
- ADMIN DASHBOARD
+CRUD ADMIN
 ============================================================
 */
-
-router.get('/dashboard', protect, admin, getDashboardData)
-
-router.get('/statistics', protect, admin, getPropertyStatistics)
 
 /*
-============================================================
- CRUD ADMIN
-============================================================
+------------------------------------------------------------
+CRIAR IMÓVEL
+------------------------------------------------------------
 */
-
-// Criar imóvel
 
 router.post(
   '/',
@@ -169,7 +273,11 @@ router.post(
   createProperty,
 )
 
-// Atualizar imóvel
+/*
+------------------------------------------------------------
+ATUALIZAR IMÓVEL
+------------------------------------------------------------
+*/
 
 router.put(
   '/:id',
@@ -187,7 +295,11 @@ router.put(
   updateProperty,
 )
 
-// Excluir imóvel
+/*
+------------------------------------------------------------
+EXCLUIR IMÓVEL — SOFT DELETE
+------------------------------------------------------------
+*/
 
 router.delete(
   '/:id',
@@ -200,11 +312,15 @@ router.delete(
 
 /*
 ============================================================
- AÇÕES ADMINISTRATIVAS
+AÇÕES ADMINISTRATIVAS
 ============================================================
 */
 
-// Restaurar
+/*
+------------------------------------------------------------
+RESTAURAR
+------------------------------------------------------------
+*/
 
 router.patch(
   '/:id/restore',
@@ -215,7 +331,11 @@ router.patch(
   restoreProperty,
 )
 
-// Publicar
+/*
+------------------------------------------------------------
+PUBLICAR
+------------------------------------------------------------
+*/
 
 router.patch(
   '/:id/publish',
@@ -226,7 +346,11 @@ router.patch(
   publishProperty,
 )
 
-// Remover publicação
+/*
+------------------------------------------------------------
+REMOVER PUBLICAÇÃO
+------------------------------------------------------------
+*/
 
 router.patch(
   '/:id/unpublish',
@@ -237,7 +361,11 @@ router.patch(
   unpublishProperty,
 )
 
-// Arquivar
+/*
+------------------------------------------------------------
+ARQUIVAR
+------------------------------------------------------------
+*/
 
 router.patch(
   '/:id/archive',
@@ -248,7 +376,11 @@ router.patch(
   archiveProperty,
 )
 
-// Ativar
+/*
+------------------------------------------------------------
+REATIVAR
+------------------------------------------------------------
+*/
 
 router.patch(
   '/:id/activate',
@@ -259,7 +391,11 @@ router.patch(
   activateProperty,
 )
 
-// Destacar imóvel
+/*
+------------------------------------------------------------
+DESTACAR / REMOVER DESTAQUE
+------------------------------------------------------------
+*/
 
 router.patch(
   '/:id/featured',
@@ -270,7 +406,11 @@ router.patch(
   toggleFeatured,
 )
 
-// Alterar corretor responsável
+/*
+------------------------------------------------------------
+ALTERAR CORRETOR RESPONSÁVEL
+------------------------------------------------------------
+*/
 
 router.patch(
   '/:id/broker',
@@ -281,7 +421,11 @@ router.patch(
   assignBroker,
 )
 
-// Duplicar imóvel
+/*
+------------------------------------------------------------
+DUPLICAR IMÓVEL
+------------------------------------------------------------
+*/
 
 router.post(
   '/:id/duplicate',
@@ -294,11 +438,23 @@ router.post(
 
 /*
 ============================================================
- MÉTRICAS
+MÉTRICAS
 ============================================================
 */
 
+/*
+------------------------------------------------------------
+VISUALIZAÇÕES
+------------------------------------------------------------
+*/
+
 router.post('/:id/view', propertyIdValidator, validateRequest, incrementViews)
+
+/*
+------------------------------------------------------------
+FAVORITOS
+------------------------------------------------------------
+*/
 
 router.post(
   '/:id/favorite',
@@ -306,6 +462,12 @@ router.post(
   validateRequest,
   incrementFavorites,
 )
+
+/*
+------------------------------------------------------------
+CONTATOS
+------------------------------------------------------------
+*/
 
 router.post(
   '/:id/contact',

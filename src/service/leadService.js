@@ -1,4 +1,6 @@
 import Lead from '../models/Lead.js'
+import Property from '../models/Property.js'
+import User from '../models/User.js'
 
 import { LEAD_STAGES, LEAD_STAGE_LIST } from '../constants/leadStages.js'
 import { LEAD_STATUS } from '../constants/leadStatus.js'
@@ -723,4 +725,194 @@ export const importLeadsFromCSV = async (rows) => {
 
     leads: createdLeads,
   }
+}
+// ======================================================
+// CREATE BROKER HOTSITE LEAD
+// ======================================================
+
+export const createBrokerHotsiteLead = async (data) => {
+  const {
+    name,
+    email,
+    phone,
+    message,
+
+    property: propertyId,
+
+    broker: brokerId,
+
+    sourceSite = '',
+    sourceUrl = '',
+    landingPage = '',
+    referrer = '',
+
+    campaign = {},
+
+    sessionId = '',
+    visitorId = '',
+  } = data
+
+  // ====================================================
+  // VALIDATE REQUIRED DATA
+  // ====================================================
+
+  if (!name?.trim()) {
+    throw new Error('Nome é obrigatório.')
+  }
+
+  if (!email?.trim()) {
+    throw new Error('E-mail é obrigatório.')
+  }
+
+  if (!phone?.trim()) {
+    throw new Error('Telefone é obrigatório.')
+  }
+
+  if (!propertyId) {
+    throw new Error('Imóvel é obrigatório.')
+  }
+
+  if (!brokerId) {
+    throw new Error('Corretor do hotsite é obrigatório.')
+  }
+
+  // ====================================================
+  // FIND PROPERTY
+  // ====================================================
+
+  const property = await Property.findById(propertyId)
+
+  if (!property) {
+    throw new Error('Imóvel não encontrado.')
+  }
+
+  // ====================================================
+  // FIND BROKER
+  // ====================================================
+
+  const broker = await User.findOne({
+    _id: brokerId,
+    isBroker: true,
+  })
+
+  if (!broker) {
+    throw new Error('Corretor do hotsite não encontrado.')
+  }
+
+  // ====================================================
+  // REGION
+  // ====================================================
+
+  const region = property.region || property.location?.region
+
+  if (!region) {
+    throw new Error('Não foi possível identificar a região do imóvel.')
+  }
+
+  // ====================================================
+  // CREATE LEAD
+  // ====================================================
+
+  const lead = new Lead({
+    name: name.trim(),
+
+    email: email.trim().toLowerCase(),
+
+    phone: phone.trim(),
+
+    property: property._id,
+
+    region,
+
+    // --------------------------------------------------
+    // ORIGIN
+    // --------------------------------------------------
+
+    source: 'hotsite',
+
+    sourceType: 'broker_hotsite',
+
+    sourceBroker: broker._id,
+
+    sourceSite: sourceSite?.trim() || '',
+
+    sourceUrl: sourceUrl?.trim() || '',
+
+    landingPage: landingPage?.trim() || '',
+
+    referrer: referrer?.trim() || '',
+
+    campaign: {
+      utmSource: campaign?.utmSource || '',
+      utmMedium: campaign?.utmMedium || '',
+      utmCampaign: campaign?.utmCampaign || '',
+      utmTerm: campaign?.utmTerm || '',
+      utmContent: campaign?.utmContent || '',
+    },
+
+    // --------------------------------------------------
+    // ASSIGNMENT
+    // --------------------------------------------------
+
+    assignedTo: broker._id,
+
+    assignmentType: 'broker',
+
+    awaitingAssignment: false,
+
+    assignedAt: new Date(),
+
+    assignedBy: null,
+
+    // --------------------------------------------------
+    // CREATION
+    // --------------------------------------------------
+
+    createdBy: null,
+
+    // --------------------------------------------------
+    // PIPELINE
+    // --------------------------------------------------
+
+    stage: LEAD_STAGES.NEW,
+
+    status: LEAD_STATUS.NEW,
+
+    priority: LEAD_PRIORITY.MEDIUM,
+
+    // --------------------------------------------------
+    // NOTES
+    // --------------------------------------------------
+
+    notes: message?.trim() || '',
+
+    // --------------------------------------------------
+    // VISITOR
+    // --------------------------------------------------
+
+    sessionId: sessionId?.trim() || '',
+
+    visitorId: visitorId?.trim() || '',
+
+    // --------------------------------------------------
+    // STAGE HISTORY
+    // --------------------------------------------------
+
+    /*
+     * Não adicionamos stageHistory aqui porque
+     * changedBy é obrigatório no seu schema e
+     * o visitante não é um usuário autenticado.
+     */
+    stageHistory: [],
+  })
+
+  await lead.save()
+
+  // ====================================================
+  // POPULATE
+  // ====================================================
+
+  await populateLead(lead)
+
+  return normalizeLead(lead)
 }

@@ -10,6 +10,20 @@ import { PROPERTY_CONDITION_LIST } from '../constants/propertyCondition.js'
 import { PROPERTY_FEATURES } from '../constants/propertyFeatures.js'
 
 /* ============================================================
+   HELPERS
+============================================================ */
+
+/**
+ * Aceita:
+ * - número
+ * - string numérica
+ * - string vazia
+ * - null / undefined
+ *
+ * String vazia é considerada campo não preenchido.
+ */
+
+/* ============================================================
    CREATE PROPERTY
 ============================================================ */
 
@@ -30,6 +44,12 @@ export const createPropertyValidator = [
     .trim()
     .isLength({ max: 5000 })
     .withMessage('A descrição deve possuir no máximo 5000 caracteres.'),
+
+  body('shortDescription')
+    .optional()
+    .trim()
+    .isLength({ max: 500 })
+    .withMessage('A descrição curta deve possuir no máximo 500 caracteres.'),
 
   body('code')
     .optional()
@@ -62,17 +82,17 @@ export const createPropertyValidator = [
     .withMessage('Finalidade inválida.'),
 
   body('status')
-    .optional()
+    .optional({ checkFalsy: true })
     .isIn(PROPERTY_STATUS_LIST)
     .withMessage('Status inválido.'),
 
   body('constructionStatus')
-    .optional()
+    .optional({ checkFalsy: true })
     .isIn(PROPERTY_CONSTRUCTION_STATUS_LIST)
     .withMessage('Status da construção inválido.'),
 
   body('condition')
-    .optional()
+    .optional({ checkFalsy: true })
     .isIn(PROPERTY_CONDITION_LIST)
     .withMessage('Condição do imóvel inválida.'),
 
@@ -91,29 +111,64 @@ export const createPropertyValidator = [
     .isBoolean()
     .withMessage('Active deve ser verdadeiro ou falso.'),
 
+  body('exclusive')
+    .optional()
+    .isBoolean()
+    .withMessage('Exclusive deve ser verdadeiro ou falso.'),
+
+  body('furnished')
+    .optional()
+    .isBoolean()
+    .withMessage('Furnished deve ser verdadeiro ou falso.'),
+
+  body('acceptsPets')
+    .optional()
+    .isBoolean()
+    .withMessage('AcceptsPets deve ser verdadeiro ou falso.'),
+
+  body('acceptsFinancing')
+    .optional()
+    .isBoolean()
+    .withMessage('AcceptsFinancing deve ser verdadeiro ou falso.'),
+
+  body('acceptsFGTS')
+    .optional()
+    .isBoolean()
+    .withMessage('AcceptsFGTS deve ser verdadeiro ou falso.'),
+
   /* ============================================================
      PREÇOS
   ============================================================ */
 
   body('prices.salePrice')
-    .optional()
+    .optional({ checkFalsy: true })
     .isFloat({ min: 0 })
     .withMessage('Preço de venda inválido.'),
 
   body('prices.rentPrice')
-    .optional()
+    .optional({ checkFalsy: true })
     .isFloat({ min: 0 })
     .withMessage('Preço de aluguel inválido.'),
 
   body('prices.condominium')
-    .optional()
+    .optional({ checkFalsy: true })
+    .isFloat({ min: 0 })
+    .withMessage('Valor do condomínio inválido.'),
+
+  body('prices.condominiumFee')
+    .optional({ checkFalsy: true })
     .isFloat({ min: 0 })
     .withMessage('Valor do condomínio inválido.'),
 
   body('prices.iptu')
-    .optional()
+    .optional({ checkFalsy: true })
     .isFloat({ min: 0 })
     .withMessage('Valor do IPTU inválido.'),
+
+  body('prices.otherFees')
+    .optional({ checkFalsy: true })
+    .isFloat({ min: 0 })
+    .withMessage('Outras taxas inválidas.'),
 
   body('prices.salePrice').custom((value, { req }) => {
     if (req.body.purpose === 'venda' && (!value || Number(value) <= 0)) {
@@ -149,63 +204,76 @@ export const createPropertyValidator = [
   ============================================================ */
 
   body('area.total')
-    .optional()
+    .optional({ checkFalsy: true })
     .isFloat({ min: 0 })
     .withMessage('Área total inválida.'),
 
   body('area.built')
-    .optional()
+    .optional({ checkFalsy: true })
     .isFloat({ min: 0 })
     .withMessage('Área construída inválida.'),
 
   body('area.private')
-    .optional()
+    .optional({ checkFalsy: true })
     .isFloat({ min: 0 })
     .withMessage('Área privativa inválida.'),
 
   body('area.land')
-    .optional()
+    .optional({ checkFalsy: true })
     .isFloat({ min: 0 })
     .withMessage('Área do terreno inválida.'),
+
+  body('area.frontage')
+    .optional({ checkFalsy: true })
+    .isFloat({ min: 0 })
+    .withMessage('Frente do terreno inválida.'),
+
+  body('area.background')
+    .optional({ checkFalsy: true })
+    .isFloat({ min: 0 })
+    .withMessage('Fundo do terreno inválido.'),
 
   /* ============================================================
      CÔMODOS
   ============================================================ */
 
   body('bedrooms')
-    .optional()
+    .optional({ checkFalsy: true })
     .isInt({ min: 0 })
     .withMessage('Quantidade de quartos inválida.'),
 
   body('suites')
-    .optional()
+    .optional({ checkFalsy: true })
     .isInt({ min: 0 })
     .withMessage('Quantidade de suítes inválida.'),
 
   body('bathrooms')
-    .optional()
+    .optional({ checkFalsy: true })
     .isInt({ min: 0 })
     .withMessage('Quantidade de banheiros inválida.'),
 
   body('parkingSpaces')
-    .optional()
+    .optional({ checkFalsy: true })
     .isInt({ min: 0 })
     .withMessage('Quantidade de vagas inválida.'),
 
   body('floors')
-    .optional()
+    .optional({ checkFalsy: true })
     .isInt({ min: 0 })
     .withMessage('Quantidade de andares inválida.'),
 
-  body('floor').optional().isInt({ min: 0 }).withMessage('Andar inválido.'),
+  body('floor')
+    .optional({ checkFalsy: true })
+    .isInt({ min: 0 })
+    .withMessage('Andar inválido.'),
 
   body('elevators')
-    .optional()
+    .optional({ checkFalsy: true })
     .isInt({ min: 0 })
     .withMessage('Quantidade de elevadores inválida.'),
 
   body('age')
-    .optional()
+    .optional({ checkFalsy: true })
     .isInt({ min: 0 })
     .withMessage('Idade do imóvel inválida.'),
 ]
@@ -258,12 +326,12 @@ export const locationValidator = [
     .withMessage('Estado deve utilizar a sigla com 2 caracteres.'),
 
   body('location.region')
-    .optional()
+    .optional({ checkFalsy: true })
     .isIn(PROPERTY_REGION_LIST)
     .withMessage('Região inválida.'),
 
   body('location.latitude')
-    .optional()
+    .optional({ checkFalsy: true })
     .isFloat({
       min: -90,
       max: 90,
@@ -271,7 +339,7 @@ export const locationValidator = [
     .withMessage('Latitude inválida.'),
 
   body('location.longitude')
-    .optional()
+    .optional({ checkFalsy: true })
     .isFloat({
       min: -180,
       max: 180,
@@ -285,7 +353,7 @@ export const locationValidator = [
 
 export const geoLocationValidator = [
   body('location.coordinates.type')
-    .optional()
+    .optional({ checkFalsy: true })
     .equals('Point')
     .withMessage('Tipo de coordenada deve ser Point.'),
 
@@ -298,7 +366,7 @@ export const geoLocationValidator = [
     .withMessage('Coordenadas devem possuir longitude e latitude.'),
 
   body('location.coordinates.coordinates.*')
-    .optional()
+    .optional({ checkFalsy: true })
     .isFloat()
     .withMessage('Coordenada deve ser numérica.'),
 
@@ -364,7 +432,7 @@ export const imagesValidator = [
     .withMessage('isCover deve ser verdadeiro ou falso.'),
 
   body('images.*.order')
-    .optional()
+    .optional({ checkFalsy: true })
     .isInt({ min: 0 })
     .withMessage('Order deve ser um número válido.'),
 
@@ -381,17 +449,17 @@ export const imagesValidator = [
     .withMessage('Texto alternativo inválido.'),
 
   body('images.*.width')
-    .optional()
+    .optional({ checkFalsy: true })
     .isInt({ min: 1 })
     .withMessage('Largura inválida.'),
 
   body('images.*.height')
-    .optional()
+    .optional({ checkFalsy: true })
     .isInt({ min: 1 })
     .withMessage('Altura inválida.'),
 
   body('images.*.size')
-    .optional()
+    .optional({ checkFalsy: true })
     .isInt({ min: 0 })
     .withMessage('Tamanho da imagem inválido.'),
 
@@ -401,13 +469,89 @@ export const imagesValidator = [
 ]
 
 /* ============================================================
-   BROKER / OWNER
+   BROKER / OWNER / CAPTATION
 ============================================================ */
 
 export const peopleValidator = [
-  body('broker').optional().isMongoId().withMessage('Broker inválido.'),
+  /* ============================================================
+     CORRETOR RESPONSÁVEL
+  ============================================================ */
 
-  body('owner').optional().isMongoId().withMessage('Proprietário inválido.'),
+  body('broker')
+    .optional({ nullable: true })
+    .isMongoId()
+    .withMessage('Broker inválido.'),
+
+  /* ============================================================
+     PROPRIETÁRIO
+
+     Estrutura do model:
+
+     owner: {
+       name,
+       phone,
+       email,
+       document
+     }
+  ============================================================ */
+
+  body('owner')
+    .optional()
+    .isObject()
+    .withMessage('Dados do proprietário inválidos.'),
+
+  body('owner.name')
+    .optional()
+    .trim()
+    .isLength({ max: 150 })
+    .withMessage('Nome do proprietário inválido.'),
+
+  body('owner.phone')
+    .optional()
+    .trim()
+    .isLength({ max: 30 })
+    .withMessage('Telefone do proprietário inválido.'),
+
+  body('owner.email')
+    .optional()
+    .trim()
+    .isEmail()
+    .withMessage('E-mail do proprietário inválido.'),
+
+  body('owner.document')
+    .optional()
+    .trim()
+    .isLength({ max: 30 })
+    .withMessage('Documento do proprietário inválido.'),
+
+  /* ============================================================
+     CAPTAÇÃO
+
+     Estrutura do model:
+
+     captation: {
+       broker: ObjectId,
+       percentage: Number
+     }
+  ============================================================ */
+
+  body('captation')
+    .optional()
+    .isObject()
+    .withMessage('Dados de captação inválidos.'),
+
+  body('captation.broker')
+    .optional({ nullable: true })
+    .isMongoId()
+    .withMessage('Corretor de captação inválido.'),
+
+  body('captation.percentage')
+    .optional({ checkFalsy: true })
+    .isFloat({
+      min: 0,
+      max: 100,
+    })
+    .withMessage('Percentual de captação inválido.'),
 ]
 
 /* ============================================================
@@ -504,37 +648,37 @@ export const filterPropertyValidator = [
   query('broker').optional().isMongoId().withMessage('Broker inválido.'),
 
   query('minPrice')
-    .optional()
+    .optional({ checkFalsy: true })
     .isFloat({ min: 0 })
     .withMessage('Preço mínimo inválido.'),
 
   query('maxPrice')
-    .optional()
+    .optional({ checkFalsy: true })
     .isFloat({ min: 0 })
     .withMessage('Preço máximo inválido.'),
 
   query('minArea')
-    .optional()
+    .optional({ checkFalsy: true })
     .isFloat({ min: 0 })
     .withMessage('Área mínima inválida.'),
 
   query('maxArea')
-    .optional()
+    .optional({ checkFalsy: true })
     .isFloat({ min: 0 })
     .withMessage('Área máxima inválida.'),
 
   query('bedrooms')
-    .optional()
+    .optional({ checkFalsy: true })
     .isInt({ min: 0 })
     .withMessage('Quantidade de quartos inválida.'),
 
   query('bathrooms')
-    .optional()
+    .optional({ checkFalsy: true })
     .isInt({ min: 0 })
     .withMessage('Quantidade de banheiros inválida.'),
 
   query('parkingSpaces')
-    .optional()
+    .optional({ checkFalsy: true })
     .isInt({ min: 0 })
     .withMessage('Quantidade de vagas inválida.'),
 ]
@@ -847,11 +991,11 @@ export const updateStatusValidator = [
 export const updatePriceValidator = [
   param('id').isMongoId(),
 
-  body('prices.salePrice').optional().isFloat({
+  body('prices.salePrice').optional({ checkFalsy: true }).isFloat({
     min: 0,
   }),
 
-  body('prices.rentPrice').optional().isFloat({
+  body('prices.rentPrice').optional({ checkFalsy: true }).isFloat({
     min: 0,
   }),
 ]

@@ -16,6 +16,7 @@ import {
   getPipelineMetrics,
   importLeadsFromCSV,
   publicCreateLeadFromWebhook,
+  createBrokerHotsiteLeadController,
 } from '../controllers/leadController.js'
 
 const router = express.Router()
@@ -23,6 +24,8 @@ const router = express.Router()
 const upload = multer({
   dest: 'uploads/',
 })
+
+router.post('/hotsite', createBrokerHotsiteLeadController)
 
 // ======================================================
 // PUBLIC

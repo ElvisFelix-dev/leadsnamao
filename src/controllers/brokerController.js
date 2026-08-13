@@ -4,6 +4,20 @@ import brokerService from '../service/users/brokerService.js'
 
 import ApiResponse from '../utils/ApiResponse.js'
 
+// ==========================================
+// Hotsite do corretor
+// ==========================================
+export const getBrokerHotsite = asyncHandler(async (req, res) => {
+  const { slug } = req.params
+
+  const hotsite = await brokerService.getBrokerHotsite(slug)
+
+  res.json({
+    success: true,
+    data: hotsite,
+  })
+})
+
 /*
 ======================================
     Buscar corretor por ID
@@ -23,6 +37,9 @@ export const getBrokerById = asyncHandler(async (req, res) => {
 */
 
 export const getBrokerBySlug = asyncHandler(async (req, res) => {
+  console.log('🔥 GET BROKER BY SLUG')
+  console.log('SLUG:', req.params.slug)
+
   const broker = await brokerService.getBrokerBySlug(req.params.slug)
 
   return ApiResponse.success(res, broker, 'Corretor encontrado com sucesso.')

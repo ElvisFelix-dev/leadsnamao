@@ -198,13 +198,30 @@ const seoSchema = new mongoose.Schema(
 
 const ownerSchema = new mongoose.Schema(
   {
-    name: String,
+    name: {
+      type: String,
+      trim: true,
+      default: '',
+    },
 
-    phone: String,
+    phone: {
+      type: String,
+      trim: true,
+      default: '',
+    },
 
-    email: String,
+    email: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      default: '',
+    },
 
-    document: String,
+    document: {
+      type: String,
+      trim: true,
+      default: '',
+    },
   },
   {
     _id: false,
@@ -580,6 +597,21 @@ const propertySchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       index: true,
+    },
+
+    captation: {
+      broker: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null,
+      },
+
+      percentage: {
+        type: Number,
+        default: 0,
+        min: 0,
+        max: 100,
+      },
     },
 
     createdBy: {

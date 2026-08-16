@@ -8,12 +8,89 @@ import { LEAD_PRIORITY, LEAD_PRIORITY_LIST } from '../constants/leadPriority.js'
 
 import { LEAD_SOURCE_TYPE_LIST } from '../constants/leadSourceType.js'
 
-/* ============================================================
-   STAGE HISTORY
-============================================================ */
+/*
+|--------------------------------------------------------------------------
+| STAGE HISTORY
+|--------------------------------------------------------------------------
+|
+| Histórico das movimentações do Pipeline.
+|
+| Mantemos:
+|
+| from
+| to
+| stage
+| changedBy
+| reason
+| changedAt
+|
+| Também mantemos timeline para eventos relacionados
+| àquela etapa.
+|
+*/
+
+const stageTimelineSchema = new mongoose.Schema(
+  {
+    action: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+
+    description: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+
+    createdAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  {
+    _id: false,
+  },
+)
 
 const stageHistorySchema = new mongoose.Schema(
   {
+    /*
+     * Etapa anterior.
+     *
+     * Mantemos nullable porque a primeira
+     * movimentação pode não possuir etapa anterior.
+     */
+
+    from: {
+      type: String,
+      enum: LEAD_STAGE_LIST,
+      default: null,
+    },
+
+    /*
+     * Nova etapa.
+     */
+
+    to: {
+      type: String,
+      enum: LEAD_STAGE_LIST,
+      default: null,
+    },
+
+    /*
+     * Etapa atual registrada no histórico.
+     *
+     * Mantida para compatibilidade com
+     * históricos antigos e componentes existentes.
+     */
+
     stage: {
       type: String,
       enum: LEAD_STAGE_LIST,
@@ -21,38 +98,34 @@ const stageHistorySchema = new mongoose.Schema(
       required: true,
     },
 
+    /*
+     * Usuário responsável pela alteração.
+     */
+
     changedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: true,
     },
 
-    timeline: [
-      {
-        action: {
-          type: String,
-          default: '',
-          trim: true,
-        },
+    /*
+     * Motivo da alteração.
+     */
 
-        description: {
-          type: String,
-          default: '',
-          trim: true,
-        },
+    reason: {
+      type: String,
+      default: '',
+      trim: true,
+    },
 
-        createdBy: {
-          type: mongoose.Schema.Types.ObjectId,
-          ref: 'User',
-          default: null,
-        },
+    /*
+     * Eventos ocorridos dentro da etapa.
+     */
 
-        createdAt: {
-          type: Date,
-          default: Date.now,
-        },
-      },
-    ],
+    timeline: {
+      type: [stageTimelineSchema],
+      default: [],
+    },
 
     changedAt: {
       type: Date,
@@ -64,15 +137,19 @@ const stageHistorySchema = new mongoose.Schema(
   },
 )
 
-/* ============================================================
-   LEAD SCHEMA
-============================================================ */
+/*
+|--------------------------------------------------------------------------
+| LEAD SCHEMA
+|--------------------------------------------------------------------------
+*/
 
 const leadSchema = new mongoose.Schema(
   {
-    /* ==========================================================
-       DADOS DO LEAD
-    ========================================================== */
+    /*
+    |--------------------------------------------------------------------------
+    | DADOS DO LEAD
+    |--------------------------------------------------------------------------
+    */
 
     name: {
       type: String,
@@ -93,21 +170,11 @@ const leadSchema = new mongoose.Schema(
       trim: true,
     },
 
-    /* ==========================================================
-       ORIGEM DO LEAD
-    ========================================================== */
-
-    /**
-     * Canal tradicional da origem.
-     *
-     * Ex:
-     * manual
-     * public
-     * meta
-     * olx
-     * zap
-     * csv
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | ORIGEM
+    |--------------------------------------------------------------------------
+    */
 
     source: {
       type: String,
@@ -130,20 +197,11 @@ const leadSchema = new mongoose.Schema(
       index: true,
     },
 
-    /**
-     * Tipo específico da origem.
-     *
-     * Exemplos:
-     *
-     * site
-     * broker_hotsite
-     * property_page
-     * portal
-     * meta
-     * manual
-     * import
-     * referral
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | TIPO DA ORIGEM
+    |--------------------------------------------------------------------------
+    */
 
     sourceType: {
       type: String,
@@ -157,24 +215,19 @@ const leadSchema = new mongoose.Schema(
       index: true,
     },
 
-    /**
-     * Corretor responsável pela origem do lead.
-     *
-     * IMPORTANTE:
-     *
-     * Não representa necessariamente o corretor
-     * atualmente responsável pelo lead.
-     *
-     * Exemplo:
-     *
-     * sourceBroker = Joe
-     * assignedTo   = Maria
-     *
-     * Significa:
-     *
-     * "O lead veio do hotsite do Joe,
-     * mas atualmente está sendo atendido pela Maria."
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | CORRETOR DA ORIGEM
+    |--------------------------------------------------------------------------
+    |
+    | Não necessariamente é o corretor responsável atual.
+    |
+    | Ex:
+    |
+    | sourceBroker = Joe
+    | assignedTo   = Maria
+    |
+    */
 
     sourceBroker: {
       type: mongoose.Schema.Types.ObjectId,
@@ -186,14 +239,11 @@ const leadSchema = new mongoose.Schema(
       index: true,
     },
 
-    /**
-     * Identificador do hotsite que originou o lead.
-     *
-     * Normalmente será o ID do corretor.
-     *
-     * Mantemos separado de sourceBroker porque
-     * futuramente podemos ter outros tipos de landing page.
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | SITE DE ORIGEM
+    |--------------------------------------------------------------------------
+    */
 
     sourceSite: {
       type: String,
@@ -203,9 +253,11 @@ const leadSchema = new mongoose.Schema(
       trim: true,
     },
 
-    /**
-     * URL/página onde o lead iniciou o contato.
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | URL DE ORIGEM
+    |--------------------------------------------------------------------------
+    */
 
     sourceUrl: {
       type: String,
@@ -215,9 +267,11 @@ const leadSchema = new mongoose.Schema(
       trim: true,
     },
 
-    /**
-     * Página específica do imóvel onde o contato aconteceu.
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | LANDING PAGE
+    |--------------------------------------------------------------------------
+    */
 
     landingPage: {
       type: String,
@@ -227,15 +281,11 @@ const leadSchema = new mongoose.Schema(
       trim: true,
     },
 
-    /**
-     * URL de referência.
-     *
-     * Ex:
-     * Google
-     * Facebook
-     * Instagram
-     * outro site
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | REFERRER
+    |--------------------------------------------------------------------------
+    */
 
     referrer: {
       type: String,
@@ -245,9 +295,11 @@ const leadSchema = new mongoose.Schema(
       trim: true,
     },
 
-    /* ==========================================================
-       CAMPANHA / UTM
-    ========================================================== */
+    /*
+    |--------------------------------------------------------------------------
+    | CAMPANHA / UTM
+    |--------------------------------------------------------------------------
+    */
 
     campaign: {
       utmSource: {
@@ -281,9 +333,11 @@ const leadSchema = new mongoose.Schema(
       },
     },
 
-    /* ==========================================================
-       REGIÃO
-    ========================================================== */
+    /*
+    |--------------------------------------------------------------------------
+    | REGIÃO
+    |--------------------------------------------------------------------------
+    */
 
     region: {
       type: String,
@@ -302,9 +356,11 @@ const leadSchema = new mongoose.Schema(
       index: true,
     },
 
-    /* ==========================================================
-       STATUS GERAL
-    ========================================================== */
+    /*
+    |--------------------------------------------------------------------------
+    | STATUS GERAL
+    |--------------------------------------------------------------------------
+    */
 
     status: {
       type: String,
@@ -321,9 +377,11 @@ const leadSchema = new mongoose.Schema(
       index: true,
     },
 
-    /* ==========================================================
-       PIPELINE COMERCIAL
-    ========================================================== */
+    /*
+    |--------------------------------------------------------------------------
+    | PIPELINE
+    |--------------------------------------------------------------------------
+    */
 
     stage: {
       type: String,
@@ -341,9 +399,11 @@ const leadSchema = new mongoose.Schema(
       default: [],
     },
 
-    /* ==========================================================
-       PRIORIDADE
-    ========================================================== */
+    /*
+    |--------------------------------------------------------------------------
+    | PRIORIDADE
+    |--------------------------------------------------------------------------
+    */
 
     priority: {
       type: String,
@@ -355,9 +415,11 @@ const leadSchema = new mongoose.Schema(
       index: true,
     },
 
-    /* ==========================================================
-       SCORE
-    ========================================================== */
+    /*
+    |--------------------------------------------------------------------------
+    | SCORE
+    |--------------------------------------------------------------------------
+    */
 
     score: {
       type: Number,
@@ -367,9 +429,11 @@ const leadSchema = new mongoose.Schema(
       min: 0,
     },
 
-    /* ==========================================================
-       ÚLTIMO CONTATO
-    ========================================================== */
+    /*
+    |--------------------------------------------------------------------------
+    | ÚLTIMO CONTATO
+    |--------------------------------------------------------------------------
+    */
 
     lastContactAt: {
       type: Date,
@@ -377,9 +441,11 @@ const leadSchema = new mongoose.Schema(
       default: null,
     },
 
-    /* ==========================================================
-       OBSERVAÇÕES
-    ========================================================== */
+    /*
+    |--------------------------------------------------------------------------
+    | OBSERVAÇÕES
+    |--------------------------------------------------------------------------
+    */
 
     notes: {
       type: String,
@@ -389,17 +455,60 @@ const leadSchema = new mongoose.Schema(
       trim: true,
     },
 
-    /* ==========================================================
-       HISTÓRICO DE CONTATOS
-    ========================================================== */
+    /*
+    |--------------------------------------------------------------------------
+    | HISTÓRICO DE CONTATOS / ATIVIDADES
+    |--------------------------------------------------------------------------
+    |
+    | Incluímos "proposal".
+    |
+    | Isso é importante porque o proposalService
+    | registra as propostas dentro do histórico do Lead.
+    |
+    */
 
     contactHistory: [
       {
         type: {
           type: String,
 
-          enum: ['call', 'whatsapp', 'email', 'meeting', 'visit', 'note'],
+          enum: [
+            'call',
+            'whatsapp',
+            'email',
+            'meeting',
+            'visit',
+            'note',
+            'proposal',
+          ],
+
+          required: true,
         },
+
+        /*
+         * Ação específica.
+         *
+         * Exemplos:
+         *
+         * created
+         * submitted
+         * approved
+         * rejected
+         * cancelled
+         * updated
+         */
+
+        action: {
+          type: String,
+
+          default: '',
+
+          trim: true,
+        },
+
+        /*
+         * Descrição exibida na timeline.
+         */
 
         description: {
           type: String,
@@ -408,6 +517,44 @@ const leadSchema = new mongoose.Schema(
 
           trim: true,
         },
+
+        /*
+         * Referência da proposta.
+         */
+
+        proposal: {
+          type: mongoose.Schema.Types.ObjectId,
+
+          ref: 'Proposal',
+
+          default: null,
+        },
+
+        /*
+         * Referência opcional ao imóvel.
+         */
+
+        property: {
+          type: mongoose.Schema.Types.ObjectId,
+
+          ref: 'Property',
+
+          default: null,
+        },
+
+        /*
+         * Dados adicionais do evento.
+         */
+
+        metadata: {
+          type: mongoose.Schema.Types.Mixed,
+
+          default: {},
+        },
+
+        /*
+         * Usuário que criou o evento.
+         */
 
         createdBy: {
           type: mongoose.Schema.Types.ObjectId,
@@ -425,9 +572,11 @@ const leadSchema = new mongoose.Schema(
       },
     ],
 
-    /* ==========================================================
-       RELACIONAMENTO COM IMÓVEL
-    ========================================================== */
+    /*
+    |--------------------------------------------------------------------------
+    | IMÓVEL PRINCIPAL DO LEAD
+    |--------------------------------------------------------------------------
+    */
 
     property: {
       type: mongoose.Schema.Types.ObjectId,
@@ -439,9 +588,11 @@ const leadSchema = new mongoose.Schema(
       index: true,
     },
 
-    /* ==========================================================
-       CRIADO POR
-    ========================================================== */
+    /*
+    |--------------------------------------------------------------------------
+    | CRIADO POR
+    |--------------------------------------------------------------------------
+    */
 
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -453,19 +604,11 @@ const leadSchema = new mongoose.Schema(
       index: true,
     },
 
-    /* ==========================================================
-       CORRETOR RESPONSÁVEL
-    ========================================================== */
-
-    /**
-     * Corretor que atualmente possui o lead.
-     *
-     * Pode ser:
-     *
-     * - automaticamente definido
-     * - definido pelo admin
-     * - alterado posteriormente
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | CORRETOR RESPONSÁVEL
+    |--------------------------------------------------------------------------
+    */
 
     assignedTo: {
       type: mongoose.Schema.Types.ObjectId,
@@ -477,14 +620,11 @@ const leadSchema = new mongoose.Schema(
       index: true,
     },
 
-    /* ==========================================================
-       DISTRIBUIÇÃO
-    ========================================================== */
-
-    /**
-     * Indica se o lead está aguardando
-     * distribuição pelo administrador.
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | DISTRIBUIÇÃO
+    |--------------------------------------------------------------------------
+    */
 
     awaitingAssignment: {
       type: Boolean,
@@ -494,23 +634,6 @@ const leadSchema = new mongoose.Schema(
       index: true,
     },
 
-    /**
-     * Indica como o lead foi distribuído.
-     *
-     * admin:
-     * Admin escolheu manualmente.
-     *
-     * automatic:
-     * Sistema distribuiu automaticamente.
-     *
-     * broker:
-     * Já nasceu atribuído ao corretor,
-     * normalmente através do hotsite.
-     *
-     * manual:
-     * Cadastro manual.
-     */
-
     assignmentType: {
       type: String,
 
@@ -519,19 +642,11 @@ const leadSchema = new mongoose.Schema(
       default: 'manual',
     },
 
-    /**
-     * Data da atribuição atual.
-     */
-
     assignedAt: {
       type: Date,
 
       default: null,
     },
-
-    /**
-     * Usuário/admin que realizou a distribuição.
-     */
 
     assignedBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -541,9 +656,11 @@ const leadSchema = new mongoose.Schema(
       default: null,
     },
 
-    /* ==========================================================
-       HISTÓRICO DE DISTRIBUIÇÃO
-    ========================================================== */
+    /*
+    |--------------------------------------------------------------------------
+    | HISTÓRICO DE DISTRIBUIÇÃO
+    |--------------------------------------------------------------------------
+    */
 
     assignmentHistory: [
       {
@@ -595,19 +712,11 @@ const leadSchema = new mongoose.Schema(
       },
     ],
 
-    /* ==========================================================
-       DADOS DA CAPTAÇÃO
-    ========================================================== */
-
-    /**
-     * Identificador da sessão do visitante.
-     *
-     * Útil para relacionar:
-     *
-     * PropertyView
-     * Favorite
-     * Lead
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | DADOS DE CAPTAÇÃO
+    |--------------------------------------------------------------------------
+    */
 
     sessionId: {
       type: String,
@@ -619,10 +728,6 @@ const leadSchema = new mongoose.Schema(
       index: true,
     },
 
-    /**
-     * Identificador anônimo do visitante.
-     */
-
     visitorId: {
       type: String,
 
@@ -633,9 +738,11 @@ const leadSchema = new mongoose.Schema(
       index: true,
     },
 
-    /* ==========================================================
-       DATAS COMERCIAIS
-    ========================================================== */
+    /*
+    |--------------------------------------------------------------------------
+    | DATAS COMERCIAIS
+    |--------------------------------------------------------------------------
+    */
 
     visitDate: {
       type: Date,
@@ -655,9 +762,14 @@ const leadSchema = new mongoose.Schema(
       default: null,
     },
 
-    /* ==========================================================
-       PROPOSTA
-    ========================================================== */
+    /*
+    |--------------------------------------------------------------------------
+    | PROPOSTA
+    |--------------------------------------------------------------------------
+    |
+    | Mantemos esses campos no Lead como resumo da negociação.
+    |
+    */
 
     proposalValue: {
       type: Number,
@@ -667,9 +779,11 @@ const leadSchema = new mongoose.Schema(
       min: 0,
     },
 
-    /* ==========================================================
-       PERDA
-    ========================================================== */
+    /*
+    |--------------------------------------------------------------------------
+    | PERDA
+    |--------------------------------------------------------------------------
+    */
 
     lostReason: {
       type: String,
@@ -694,9 +808,11 @@ const leadSchema = new mongoose.Schema(
       trim: true,
     },
 
-    /* ==========================================================
-       PRÓXIMA AÇÃO
-    ========================================================== */
+    /*
+    |--------------------------------------------------------------------------
+    | PRÓXIMA AÇÃO
+    |--------------------------------------------------------------------------
+    */
 
     nextAction: {
       type: String,
@@ -718,9 +834,11 @@ const leadSchema = new mongoose.Schema(
   },
 )
 
-/* ============================================================
-   ÍNDICES
-============================================================ */
+/*
+|--------------------------------------------------------------------------
+| ÍNDICES
+|--------------------------------------------------------------------------
+*/
 
 leadSchema.index({
   assignedTo: 1,
@@ -803,35 +921,55 @@ leadSchema.index({
   visitorId: 1,
 })
 
-/* ============================================================
-   VIRTUALS
-============================================================ */
+/*
+|--------------------------------------------------------------------------
+| ÍNDICES ÚTEIS PARA O HISTÓRICO
+|--------------------------------------------------------------------------
+*/
 
-/**
- * Lead já possui corretor responsável?
+leadSchema.index({
+  'contactHistory.proposal': 1,
+})
+
+leadSchema.index({
+  'contactHistory.createdAt': -1,
+})
+
+leadSchema.index({
+  'stageHistory.changedAt': -1,
+})
+
+/*
+|--------------------------------------------------------------------------
+| VIRTUALS
+|--------------------------------------------------------------------------
+*/
+
+/*
+ * Lead possui corretor responsável?
  */
 
 leadSchema.virtual('isAssigned').get(function () {
   return !!this.assignedTo
 })
 
-/**
- * Lead está aguardando distribuição?
+/*
+ * Lead aguarda distribuição?
  */
 
 leadSchema.virtual('isAwaitingAssignment').get(function () {
   return this.awaitingAssignment === true
 })
 
-/**
- * Lead veio de hotsite de corretor?
+/*
+ * Lead veio do hotsite de corretor?
  */
 
 leadSchema.virtual('isBrokerLead').get(function () {
   return this.sourceType === 'broker_hotsite'
 })
 
-/**
+/*
  * Lead veio do site da imobiliária?
  */
 
@@ -839,17 +977,19 @@ leadSchema.virtual('isCompanyLead').get(function () {
   return this.sourceType === 'site'
 })
 
-/**
- * Lead veio diretamente de uma página de imóvel?
+/*
+ * Lead veio de página de imóvel?
  */
 
 leadSchema.virtual('isPropertyLead').get(function () {
   return this.sourceType === 'property_page'
 })
 
-/* ============================================================
-   JSON
-============================================================ */
+/*
+|--------------------------------------------------------------------------
+| JSON
+|--------------------------------------------------------------------------
+*/
 
 leadSchema.set('toJSON', {
   virtuals: true,
@@ -857,8 +997,10 @@ leadSchema.set('toJSON', {
   versionKey: false,
 })
 
-/* ============================================================
-   EXPORT
-============================================================ */
+/*
+|--------------------------------------------------------------------------
+| EXPORT
+|--------------------------------------------------------------------------
+*/
 
 export default mongoose.model('Lead', leadSchema)

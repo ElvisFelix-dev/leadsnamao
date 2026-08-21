@@ -23,6 +23,7 @@ import propertyFavoreriteRoutes from './routes/propertyFavoriteRoutes.js'
 import leadCaptureRoutes from './routes/leadCaptureRoutes.js'
 import opportunityRoutes from './routes/opportunityRoutes.js'
 import proposalRoutes from './routes/proposalRoutes.js'
+import calendarRoutes from './routes/calendarRoutes.js'
 
 import errorMiddleware from './middleware/errorMiddleware.js'
 
@@ -77,6 +78,7 @@ app.use('/api/property-favorite', propertyFavoreriteRoutes)
 app.use('/api/lead-capture', leadCaptureRoutes)
 app.use('/api/opportunities', opportunityRoutes)
 app.use('/api/proposals', proposalRoutes)
+app.use('/api/calendar', calendarRoutes)
 
 // Rota de validação do Webhook
 app.get('/webhook/', (req, res) => {

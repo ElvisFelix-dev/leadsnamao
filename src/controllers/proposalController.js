@@ -29,7 +29,6 @@ const sendError = (res, error) => {
   return res.status(statusCode).json({
     success: false,
     message: error?.message || 'Erro interno do servidor.',
-
     ...(process.env.NODE_ENV !== 'production' && error?.stack
       ? {
           stack: error.stack,
@@ -40,9 +39,32 @@ const sendError = (res, error) => {
 
 /*
 |--------------------------------------------------------------------------
-| CREATE
+| CREATE PROPOSAL
 |--------------------------------------------------------------------------
 | POST /api/proposals
+|
+| Cria uma nova proposta em DRAFT.
+|
+| Body esperado:
+|
+| {
+|   opportunity: "...",
+|   lead: "...",
+|   property: "...",
+|   broker: "...",
+|   values: {
+|     propertyPrice: 500000,
+|     proposalPrice: 480000,
+|     downPayment: 50000,
+|     financing: 400000,
+|     fgts: 30000
+|   },
+|   paymentMethod: "financing",
+|   installments: 360,
+|   installmentValue: 2500,
+|   validityDays: 7,
+|   clientMessage: "..."
+| }
 |--------------------------------------------------------------------------
 */
 
@@ -66,13 +88,12 @@ export const createProposal = async (req, res) => {
 
 /*
 |--------------------------------------------------------------------------
-| UPDATE
+| UPDATE PROPOSAL
 |--------------------------------------------------------------------------
 | PATCH /api/proposals/:proposalId
+|
+| Somente propostas DRAFT podem ser alteradas.
 |--------------------------------------------------------------------------
-|
-| Somente propostas em DRAFT podem ser alteradas.
-|
 */
 
 export const updateProposal = async (req, res) => {
@@ -96,13 +117,12 @@ export const updateProposal = async (req, res) => {
 
 /*
 |--------------------------------------------------------------------------
-| SUBMIT
+| SUBMIT PROPOSAL
 |--------------------------------------------------------------------------
 | PATCH /api/proposals/:proposalId/submit
-|--------------------------------------------------------------------------
 |
 | DRAFT → PENDING
-|
+|--------------------------------------------------------------------------
 */
 
 export const submitProposal = async (req, res) => {
@@ -125,15 +145,14 @@ export const submitProposal = async (req, res) => {
 
 /*
 |--------------------------------------------------------------------------
-| APPROVE
+| APPROVE PROPOSAL
 |--------------------------------------------------------------------------
 | PATCH /api/proposals/:proposalId/approve
-|--------------------------------------------------------------------------
 |
 | PENDING → ACCEPTED
 |
 | Somente ADMIN.
-|
+|--------------------------------------------------------------------------
 */
 
 export const approveProposal = async (req, res) => {
@@ -157,13 +176,14 @@ export const approveProposal = async (req, res) => {
 
 /*
 |--------------------------------------------------------------------------
-| REJECT
+| REJECT PROPOSAL
 |--------------------------------------------------------------------------
 | PATCH /api/proposals/:proposalId/reject
-|--------------------------------------------------------------------------
 |
 | PENDING → REJECTED
 |
+| Somente ADMIN.
+|--------------------------------------------------------------------------
 */
 
 export const rejectProposal = async (req, res) => {
@@ -187,11 +207,10 @@ export const rejectProposal = async (req, res) => {
 
 /*
 |--------------------------------------------------------------------------
-| CANCEL
+| CANCEL PROPOSAL
 |--------------------------------------------------------------------------
 | PATCH /api/proposals/:proposalId/cancel
 |--------------------------------------------------------------------------
-|
 */
 
 export const cancelProposal = async (req, res) => {
@@ -215,7 +234,7 @@ export const cancelProposal = async (req, res) => {
 
 /*
 |--------------------------------------------------------------------------
-| GET BY ID
+| GET PROPOSAL BY ID
 |--------------------------------------------------------------------------
 | GET /api/proposals/:proposalId
 |--------------------------------------------------------------------------
@@ -241,10 +260,9 @@ export const getProposalById = async (req, res) => {
 
 /*
 |--------------------------------------------------------------------------
-| GET ALL
+| GET PROPOSALS
 |--------------------------------------------------------------------------
 | GET /api/proposals
-|--------------------------------------------------------------------------
 |
 | Query params:
 |
@@ -258,7 +276,7 @@ export const getProposalById = async (req, res) => {
 | startDate
 | endDate
 | sort
-|
+|--------------------------------------------------------------------------
 */
 
 export const getProposals = async (req, res) => {
@@ -277,15 +295,15 @@ export const getProposals = async (req, res) => {
     } = req.query
 
     /*
-     * Status pode chegar como:
+     * ---------------------------------------------------------------
+     * NORMALIZAÇÃO DOS STATUS
+     * ---------------------------------------------------------------
+     *
+     * Aceita:
      *
      * ?status=pending
      *
-     * ou:
-     *
      * ?status=pending,accepted
-     *
-     * Também aceitamos:
      *
      * ?status=pending&status=accepted
      */
@@ -306,6 +324,12 @@ export const getProposals = async (req, res) => {
         .map((item) => item.trim())
         .filter(Boolean)
     }
+
+    /*
+     * ---------------------------------------------------------------
+     * SERVICE
+     * ---------------------------------------------------------------
+     */
 
     const result = await proposalService.getProposals({
       user: getUser(req),
@@ -344,7 +368,7 @@ export const getProposals = async (req, res) => {
 
 /*
 |--------------------------------------------------------------------------
-| HISTORY
+| GET PROPOSAL HISTORY
 |--------------------------------------------------------------------------
 | GET /api/proposals/:proposalId/history
 |--------------------------------------------------------------------------
@@ -370,7 +394,7 @@ export const getProposalHistory = async (req, res) => {
 
 /*
 |--------------------------------------------------------------------------
-| GET BY LEAD
+| GET PROPOSALS BY LEAD
 |--------------------------------------------------------------------------
 | GET /api/proposals/lead/:leadId
 |--------------------------------------------------------------------------
@@ -396,7 +420,7 @@ export const getProposalsByLead = async (req, res) => {
 
 /*
 |--------------------------------------------------------------------------
-| GET BY PROPERTY
+| GET PROPOSALS BY PROPERTY
 |--------------------------------------------------------------------------
 | GET /api/proposals/property/:propertyId
 |--------------------------------------------------------------------------
@@ -422,17 +446,16 @@ export const getProposalsByProperty = async (req, res) => {
 
 /*
 |--------------------------------------------------------------------------
-| METRICS
+| GET PROPOSAL METRICS
 |--------------------------------------------------------------------------
 | GET /api/proposals/metrics
-|--------------------------------------------------------------------------
 |
 | Query params:
 |
 | startDate
 | endDate
 | broker
-|
+|--------------------------------------------------------------------------
 */
 
 export const getProposalMetrics = async (req, res) => {
@@ -441,11 +464,8 @@ export const getProposalMetrics = async (req, res) => {
 
     const metrics = await proposalService.getProposalMetrics({
       user: getUser(req),
-
       startDate,
-
       endDate,
-
       broker,
     })
 
@@ -468,26 +488,15 @@ export const getProposalMetrics = async (req, res) => {
 
 export default {
   createProposal,
-
   updateProposal,
-
   submitProposal,
-
   approveProposal,
-
   rejectProposal,
-
   cancelProposal,
-
   getProposalById,
-
   getProposals,
-
   getProposalHistory,
-
   getProposalsByLead,
-
   getProposalsByProperty,
-
   getProposalMetrics,
 }

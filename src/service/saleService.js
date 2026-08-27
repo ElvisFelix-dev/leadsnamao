@@ -1,1356 +1,2427 @@
-// services/saleService.js
-
 import mongoose from 'mongoose'
-import Sale from '../models/Sale.js'
+
+import Sale, {
+  SALE_STATUS,
+  SALE_PAYMENT_STATUS,
+  SALE_POPULATE,
+} from '../models/Sale.js'
+
+import { LEAD_STAGES } from '../constants/leadStages.js'
+import { PROPERTY_STATUS } from '../constants/propertyStatus.js'
+
+import Proposal, { PROPOSAL_STATUS } from '../models/Proposal.js'
 import Lead from '../models/Lead.js'
-import User from '../models/User.js'
 import Property from '../models/Property.js'
-import Proposal from '../models/Proposal.js'
+import User from '../models/User.js'
 
-// ============================================================
-// CONSTANTS
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| CONSTANTES
+|--------------------------------------------------------------------------
+*/
 
-export const SALE_STATUS = {
-  NEGOCIACAO: 'negociacao',
-  APROVADA: 'aprovada',
-  CONTRATO_ASSINADO: 'contrato_assinado',
-  PAGAMENTO_PENDENTE: 'pagamento_pendente',
-  CONCLUIDA: 'concluida',
-  CANCELADA: 'cancelada',
+const ADMIN_ROLE = 'admin'
+const BROKER_ROLE = 'broker'
+
+const SALE_COUNTER_KEY = 'sale_number'
+
+/*
+|--------------------------------------------------------------------------
+| PIPELINE
+|--------------------------------------------------------------------------
+*/
+
+const PIPELINE_STAGES = {
+  NEGOTIATION: LEAD_STAGES.NEGOTIATION,
+  WON: LEAD_STAGES.WON,
 }
 
-export const SALE_STATUS_LIST = Object.values(SALE_STATUS)
+/*
+|--------------------------------------------------------------------------
+| HELPERS
+|--------------------------------------------------------------------------
+*/
 
-export const SALE_PAYMENT_STATUS = {
-  PENDENTE: 'pendente',
-  PARCIAL: 'parcial',
-  PAGO: 'pago',
-  CANCELADO: 'cancelado',
+/**
+ * Verifica se é administrador.
+ */
+const isAdmin = (user) => {
+  return user?.role === ADMIN_ROLE
 }
 
-export const SALE_PAYMENT_STATUS_LIST = Object.values(SALE_PAYMENT_STATUS)
-
-export const SALE_TYPES = {
-  VENDA: 'venda',
-  LOCACAO: 'locacao',
-  INVESTIMENTO: 'investimento',
+/**
+ * Verifica se é corretor.
+ */
+const isBroker = (user) => {
+  return user?.role === BROKER_ROLE
 }
 
-export const SALE_TYPES_LIST = Object.values(SALE_TYPES)
+/**
+ * Cria erro padronizado.
+ */
+const createError = (message, statusCode = 400) => {
+  const error = new Error(message)
 
-// ============================================================
-// POPULATE
-// ============================================================
+  error.statusCode = statusCode
 
-const SALE_POPULATE = [
-  {
-    path: 'lead',
-    select: 'name email phone source status priority',
-  },
-  {
-    path: 'property',
-    select:
-      'name code slug type category purpose price location images mainImage coverImage',
-  },
-  {
-    path: 'broker',
-    select: 'name email phone avatar position role',
-  },
-  {
-    path: 'createdBy',
-    select: 'name email role',
-  },
-  {
-    path: 'proposal',
-    select: 'title code status value paymentMethod createdAt updatedAt',
-  },
-]
-
-// ============================================================
-// HELPERS
-// ============================================================
-
-const isValidObjectId = (id) => {
-  return mongoose.Types.ObjectId.isValid(id)
+  return error
 }
 
-const normalizeId = (value) => {
-  if (!value) return null
+/**
+ * Obtém ID do usuário de forma segura.
+ */
+const getUserId = (user) => {
+  return user?._id || user?.id || user
+}
 
-  if (typeof value === 'object' && value._id) {
-    return value._id
+/**
+ * Valida ObjectId.
+ */
+const getObjectId = (id, fieldName = 'ID') => {
+  if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+    throw createError(`${fieldName} inválido.`, 400)
   }
 
-  return value
+  return new mongoose.Types.ObjectId(id)
 }
 
-const parseNumber = (value, defaultValue = 0) => {
-  if (value === null || value === undefined || value === '') {
-    return defaultValue
+/**
+ * Normaliza número.
+ */
+const normalizeNumber = (value) => {
+  if (value === undefined || value === null || value === '') {
+    return 0
   }
 
   const number = Number(value)
 
-  return Number.isFinite(number) ? number : defaultValue
+  return Number.isFinite(number) ? number : 0
 }
 
-const calculateCommission = ({
-  saleValue,
-  commissionPercentage,
-  commissionValue,
+/**
+ * Arredondamento monetário.
+ */
+const roundMoney = (value) => {
+  return Math.round((Number(value) + Number.EPSILON) * 100) / 100
+}
+
+/**
+ * Formata moeda para histórico.
+ */
+const formatCurrency = (value) => {
+  return Number(value || 0).toLocaleString('pt-BR', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}
+
+/**
+ * Verifica se um status de venda existe.
+ */
+const isValidSaleStatus = (status) => {
+  return Object.values(SALE_STATUS).includes(status)
+}
+
+/**
+ * Verifica se um status financeiro existe.
+ */
+const isValidPaymentStatus = (status) => {
+  return Object.values(SALE_PAYMENT_STATUS).includes(status)
+}
+
+/**
+ * Cria uma sessão opcionalmente.
+ */
+const applySession = (query, session) => {
+  if (session) {
+    query.session(session)
+  }
+
+  return query
+}
+
+/*
+|--------------------------------------------------------------------------
+| PERMISSÕES
+|--------------------------------------------------------------------------
+*/
+
+/**
+ * Verifica acesso à venda.
+ *
+ * Admin:
+ *   qualquer venda.
+ *
+ * Broker:
+ *   somente vendas onde é vendedor.
+ */
+const validateSaleAccess = ({ sale, user }) => {
+  if (!sale) {
+    throw createError('Venda não encontrada.', 404)
+  }
+
+  if (isAdmin(user)) {
+    return true
+  }
+
+  if (!isBroker(user)) {
+    throw createError('Usuário sem permissão para trabalhar com vendas.', 403)
+  }
+
+  const sellerBrokerId = sale.sellerBroker?._id || sale.sellerBroker
+
+  if (!sellerBrokerId || String(sellerBrokerId) !== String(getUserId(user))) {
+    throw createError('Você não é o corretor responsável por esta venda.', 403)
+  }
+
+  return true
+}
+
+/**
+ * Apenas administrador.
+ */
+const validateAdmin = (user, message) => {
+  if (!isAdmin(user)) {
+    throw createError(
+      message || 'Somente administradores podem realizar esta ação.',
+      403,
+    )
+  }
+}
+
+/*
+|--------------------------------------------------------------------------
+| STATUS
+|--------------------------------------------------------------------------
+*/
+
+/**
+ * Máquina de estados da venda.
+ *
+ * Fluxo:
+ *
+ * PENDING
+ *    ↓
+ * CONTRACT
+ *    ↓
+ * COMPLETED
+ *
+ * Cancelamento:
+ *
+ * PENDING   → CANCELLED
+ * CONTRACT  → CANCELLED
+ *
+ * Estados finais:
+ *
+ * COMPLETED
+ * CANCELLED
+ */
+const validateSaleStatusTransition = ({ previousStatus, nextStatus }) => {
+  if (previousStatus === nextStatus) {
+    return true
+  }
+
+  if (previousStatus === SALE_STATUS.COMPLETED) {
+    throw createError('Uma venda concluída não pode ter o status alterado.')
+  }
+
+  if (previousStatus === SALE_STATUS.CANCELLED) {
+    throw createError('Uma venda cancelada não pode ter o status alterado.')
+  }
+
+  if (previousStatus === SALE_STATUS.PENDING) {
+    const allowed = [
+      SALE_STATUS.CONTRACT,
+      SALE_STATUS.COMPLETED,
+      SALE_STATUS.CANCELLED,
+    ]
+
+    if (!allowed.includes(nextStatus)) {
+      throw createError(
+        `Não é permitido alterar uma venda "${previousStatus}" para "${nextStatus}".`,
+      )
+    }
+
+    return true
+  }
+
+  if (previousStatus === SALE_STATUS.CONTRACT) {
+    const allowed = [SALE_STATUS.COMPLETED, SALE_STATUS.CANCELLED]
+
+    if (!allowed.includes(nextStatus)) {
+      throw createError(
+        `Não é permitido alterar uma venda "${previousStatus}" para "${nextStatus}".`,
+      )
+    }
+
+    return true
+  }
+
+  throw createError(
+    `Transição de status inválida: "${previousStatus}" → "${nextStatus}".`,
+  )
+}
+
+/*
+|--------------------------------------------------------------------------
+| BUSCAS
+|--------------------------------------------------------------------------
+*/
+
+/**
+ * Busca proposta dentro da sessão.
+ */
+const getProposal = async ({ proposalId, session = null }) => {
+  const id = getObjectId(proposalId, 'Proposta')
+
+  const query = Proposal.findById(id)
+
+  applySession(query, session)
+
+  return query
+}
+
+/**
+ * Busca Lead dentro da sessão.
+ */
+const getLead = async ({ leadId, session = null }) => {
+  const id = getObjectId(leadId, 'Lead')
+
+  const query = Lead.findById(id)
+
+  applySession(query, session)
+
+  return query
+}
+
+/**
+ * Busca imóvel dentro da sessão.
+ */
+const getProperty = async ({ propertyId, session = null }) => {
+  const id = getObjectId(propertyId, 'Imóvel')
+
+  const query = Property.findById(id)
+
+  applySession(query, session)
+
+  return query
+}
+
+/**
+ * Busca usuário dentro da sessão.
+ */
+const getUser = async ({ userId, session = null }) => {
+  const id = getObjectId(userId, 'Usuário')
+
+  const query = User.findById(id)
+
+  applySession(query, session)
+
+  return query
+}
+
+/*
+|--------------------------------------------------------------------------
+| VALIDAÇÕES
+|--------------------------------------------------------------------------
+*/
+
+/**
+ * Valida corretor vendedor.
+ *
+ * Proposal.broker
+ */
+const validateSellerBroker = async ({ brokerId, session = null }) => {
+  if (!brokerId) {
+    throw createError('A proposta não possui um corretor vendedor.')
+  }
+
+  const broker = await getUser({
+    userId: brokerId,
+    session,
+  })
+
+  if (!broker) {
+    throw createError('Corretor vendedor não encontrado.', 404)
+  }
+
+  if (broker.role !== BROKER_ROLE) {
+    throw createError('O usuário responsável pela proposta não é um corretor.')
+  }
+
+  return broker
+}
+
+/**
+ * Valida corretor captador.
+ *
+ * Property.captation.broker
+ */
+const validateAcquisitionBroker = async ({ property, session = null }) => {
+  const brokerId = property?.captation?.broker
+
+  if (!brokerId) {
+    return null
+  }
+
+  const broker = await getUser({
+    userId: brokerId,
+    session,
+  })
+
+  if (!broker) {
+    throw createError(
+      'O corretor captador informado no imóvel não foi encontrado.',
+      404,
+    )
+  }
+
+  if (broker.role !== BROKER_ROLE) {
+    throw createError('O usuário responsável pela captação não é um corretor.')
+  }
+
+  return broker
+}
+
+/*
+|--------------------------------------------------------------------------
+| VALORES DA PROPOSTA
+|--------------------------------------------------------------------------
+*/
+
+/**
+ * Valida e normaliza os valores financeiros.
+ */
+const validateProposalValues = (proposal) => {
+  const values = proposal.values || {}
+
+  const saleAmount = normalizeNumber(values.proposalPrice)
+
+  const proposalAmount = normalizeNumber(values.proposalPrice)
+
+  const downPayment = normalizeNumber(values.downPayment)
+
+  const financing = normalizeNumber(values.financing)
+
+  const fgts = normalizeNumber(values.fgts)
+
+  if (saleAmount <= 0) {
+    throw createError('O valor da proposta deve ser maior que zero.')
+  }
+
+  if (downPayment < 0) {
+    throw createError('O valor da entrada não pode ser negativo.')
+  }
+
+  if (financing < 0) {
+    throw createError('O valor do financiamento não pode ser negativo.')
+  }
+
+  if (fgts < 0) {
+    throw createError('O valor do FGTS não pode ser negativo.')
+  }
+
+  const totalAllocated = roundMoney(downPayment + financing + fgts)
+
+  if (totalAllocated > saleAmount) {
+    throw createError(
+      'A soma da entrada, financiamento e FGTS não pode ser maior que o valor da venda.',
+    )
+  }
+
+  const balance = roundMoney(
+    Math.max(saleAmount - downPayment - financing - fgts, 0),
+  )
+
+  return {
+    saleAmount: roundMoney(saleAmount),
+    proposalAmount: roundMoney(proposalAmount),
+    downPayment: roundMoney(downPayment),
+    financing: roundMoney(financing),
+    fgts: roundMoney(fgts),
+    balance,
+  }
+}
+
+/*
+|--------------------------------------------------------------------------
+| COMISSÕES
+|--------------------------------------------------------------------------
+*/
+
+/**
+ * Normaliza configuração da comissão.
+ *
+ * totalPercentage:
+ *   percentual total da venda destinado à comissão.
+ *
+ * sellerPercentage:
+ *   percentual da comissão destinado ao vendedor.
+ *
+ * acquisitionPercentage:
+ *   percentual da comissão destinado ao captador.
+ *
+ * companyPercentage:
+ *   percentual da comissão destinado à imobiliária.
+ */
+const normalizeCommissionInput = ({
+  property,
+  saleAmount,
+  commission = {},
 }) => {
-  const value = parseNumber(saleValue)
+  const totalPercentage = normalizeNumber(commission.totalPercentage)
 
-  if (commissionValue !== undefined && commissionValue !== null) {
-    return parseNumber(commissionValue)
+  const sellerPercentage = normalizeNumber(commission.sellerPercentage)
+
+  /*
+   * O percentual do captador vem do imóvel.
+   */
+  const acquisitionPercentage = property?.captation?.broker
+    ? normalizeNumber(property?.captation?.percentage)
+    : 0
+
+  const companyPercentage = normalizeNumber(commission.companyPercentage)
+
+  if (totalPercentage < 0) {
+    throw createError('O percentual total da comissão não pode ser negativo.')
   }
 
-  const percentage = parseNumber(commissionPercentage)
-
-  if (!value || !percentage) {
-    return 0
+  if (sellerPercentage < 0) {
+    throw createError('O percentual do vendedor não pode ser negativo.')
   }
 
-  return Number(((value * percentage) / 100).toFixed(2))
-}
-
-const ensureObjectId = (value, fieldName) => {
-  const id = normalizeId(value)
-
-  if (!id) {
-    throw new Error(`${fieldName} é obrigatório.`)
+  if (acquisitionPercentage < 0) {
+    throw createError('O percentual do captador não pode ser negativo.')
   }
 
-  if (!isValidObjectId(id)) {
-    throw new Error(`${fieldName} inválido.`)
+  if (companyPercentage < 0) {
+    throw createError('O percentual da imobiliária não pode ser negativo.')
   }
 
-  return id
-}
-
-// ============================================================
-// VALIDATION
-// ============================================================
-
-const validateSaleReferences = async ({ lead, property, broker, proposal }) => {
-  const leadId = normalizeId(lead)
-  const propertyId = normalizeId(property)
-  const brokerId = normalizeId(broker)
-  const proposalId = normalizeId(proposal)
-
-  if (leadId) {
-    if (!isValidObjectId(leadId)) {
-      throw new Error('Lead inválido.')
-    }
-
-    const leadExists = await Lead.exists({
-      _id: leadId,
-    })
-
-    if (!leadExists) {
-      throw new Error('Lead não encontrado.')
-    }
+  if (totalPercentage <= 0) {
+    throw createError('O percentual total da comissão deve ser maior que zero.')
   }
 
-  if (propertyId) {
-    if (!isValidObjectId(propertyId)) {
-      throw new Error('Imóvel inválido.')
-    }
+  const distributedShare = roundMoney(
+    sellerPercentage + acquisitionPercentage + companyPercentage,
+  )
 
-    const propertyExists = await Property.exists({
-      _id: propertyId,
-    })
-
-    if (!propertyExists) {
-      throw new Error('Imóvel não encontrado.')
-    }
+  if (Math.abs(distributedShare - 100) > 0.0001) {
+    throw createError(
+      `A distribuição da comissão deve totalizar 100%. Atualmente está em ${distributedShare}%.`,
+    )
   }
 
-  if (brokerId) {
-    if (!isValidObjectId(brokerId)) {
-      throw new Error('Corretor inválido.')
-    }
+  const totalAmount = roundMoney(saleAmount * (totalPercentage / 100))
 
-    const brokerExists = await User.exists({
-      _id: brokerId,
-      isBroker: true,
-    })
+  const sellerAmount = roundMoney(totalAmount * (sellerPercentage / 100))
 
-    if (!brokerExists) {
-      throw new Error('Corretor não encontrado.')
-    }
+  const acquisitionAmount = roundMoney(
+    totalAmount * (acquisitionPercentage / 100),
+  )
+
+  const companyAmount = roundMoney(totalAmount * (companyPercentage / 100))
+
+  const distributedAmount = roundMoney(
+    sellerAmount + acquisitionAmount + companyAmount,
+  )
+
+  if (Math.abs(distributedAmount - totalAmount) > 0.02) {
+    throw createError(
+      'Os valores distribuídos da comissão não correspondem à comissão total.',
+    )
   }
 
-  if (proposalId) {
-    if (!isValidObjectId(proposalId)) {
-      throw new Error('Proposta inválida.')
-    }
+  return {
+    totalPercentage: roundMoney(totalPercentage),
 
-    const proposalExists = await Proposal.exists({
-      _id: proposalId,
-    })
+    totalAmount,
 
-    if (!proposalExists) {
-      throw new Error('Proposta não encontrada.')
-    }
+    seller: {
+      broker: null,
+      percentage: roundMoney(sellerPercentage),
+      amount: sellerAmount,
+    },
+
+    acquisition: {
+      broker: property?.captation?.broker || null,
+      percentage: roundMoney(acquisitionPercentage),
+      amount: acquisitionAmount,
+    },
+
+    company: {
+      percentage: roundMoney(companyPercentage),
+      amount: companyAmount,
+    },
   }
 }
 
-// ============================================================
-// CREATE SALE
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| HISTÓRICO DO LEAD
+|--------------------------------------------------------------------------
+*/
 
-export const createSale = async (data, userId) => {
-  if (!data) {
-    throw new Error('Dados da venda são obrigatórios.')
+/**
+ * Adiciona uma entrada no contactHistory.
+ */
+const addLeadContactHistory = ({ lead, description, performedBy }) => {
+  if (!Array.isArray(lead.contactHistory)) {
+    lead.contactHistory = []
   }
 
-  const {
+  lead.contactHistory.push({
+    type: 'note',
+    description,
+    createdBy: performedBy,
+    createdAt: new Date(),
+  })
+}
+
+/**
+ * Adiciona evento à timeline.
+ */
+const addLeadTimeline = ({ lead, action, performedBy, description }) => {
+  const now = new Date()
+
+  if (!Array.isArray(lead.stageHistory)) {
+    lead.stageHistory = []
+  }
+
+  let currentHistory = lead.stageHistory[lead.stageHistory.length - 1]
+
+  /*
+   * Cria histórico inicial.
+   */
+  if (!currentHistory) {
+    lead.stageHistory.push({
+      stage: lead.stage,
+      changedBy: performedBy,
+      changedAt: now,
+      timeline: [],
+    })
+
+    currentHistory = lead.stageHistory[lead.stageHistory.length - 1]
+  }
+
+  if (!Array.isArray(currentHistory.timeline)) {
+    currentHistory.timeline = []
+  }
+
+  currentHistory.timeline.push({
+    action,
+    description,
+    createdBy: performedBy,
+    createdAt: now,
+  })
+}
+
+/**
+ * Registra evento completo relacionado à venda.
+ */
+const addLeadSaleHistory = async ({
+  lead,
+  sale,
+  action,
+  performedBy,
+  description,
+  session = null,
+}) => {
+  const saleReference = sale?.saleNumber || sale?._id
+
+  const finalDescription = `${description} Venda: ${saleReference}.`
+
+  addLeadContactHistory({
     lead,
-    property,
-    broker,
-    proposal,
+    description: finalDescription,
+    performedBy,
+  })
 
-    type = SALE_TYPES.VENDA,
-
-    saleValue,
-    commissionPercentage,
-    commissionValue,
-
-    paymentMethod,
-    paymentStatus = SALE_PAYMENT_STATUS.PENDENTE,
-
-    status = SALE_STATUS.NEGOCIACAO,
-
-    saleDate,
-    contractDate,
-    notes,
-
-    ...rest
-  } = data
-
-  if (!userId) {
-    throw new Error('Usuário responsável pela criação da venda não informado.')
-  }
-
-  if (!isValidObjectId(userId)) {
-    throw new Error('Usuário responsável inválido.')
-  }
-
-  if (!SALE_TYPES_LIST.includes(type)) {
-    throw new Error('Tipo de venda inválido.')
-  }
-
-  if (!SALE_STATUS_LIST.includes(status)) {
-    throw new Error('Status da venda inválido.')
-  }
-
-  if (!SALE_PAYMENT_STATUS_LIST.includes(paymentStatus)) {
-    throw new Error('Status de pagamento inválido.')
-  }
-
-  await validateSaleReferences({
+  addLeadTimeline({
     lead,
-    property,
-    broker,
-    proposal,
+    action,
+    performedBy,
+    description: finalDescription,
   })
 
-  const normalizedSaleValue = parseNumber(saleValue)
-
-  if (normalizedSaleValue <= 0) {
-    throw new Error('O valor da venda deve ser maior que zero.')
-  }
-
-  const normalizedCommissionPercentage =
-    commissionPercentage !== undefined ? parseNumber(commissionPercentage) : 0
-
-  const normalizedCommissionValue = calculateCommission({
-    saleValue: normalizedSaleValue,
-    commissionPercentage: normalizedCommissionPercentage,
-    commissionValue,
+  await lead.save({
+    session,
   })
-
-  const sale = await Sale.create({
-    ...rest,
-
-    lead: lead ? normalizeId(lead) : undefined,
-
-    property: property ? normalizeId(property) : undefined,
-
-    broker: broker ? normalizeId(broker) : undefined,
-
-    proposal: proposal ? normalizeId(proposal) : undefined,
-
-    type,
-
-    saleValue: normalizedSaleValue,
-
-    commissionPercentage: normalizedCommissionPercentage,
-
-    commissionValue: normalizedCommissionValue,
-
-    paymentMethod,
-
-    paymentStatus,
-
-    status,
-
-    saleDate: saleDate || undefined,
-
-    contractDate: contractDate || undefined,
-
-    notes,
-
-    createdBy: userId,
-  })
-
-  return getSaleById(sale._id)
 }
 
-// ============================================================
-// GET SALE BY ID
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| PIPELINE
+|--------------------------------------------------------------------------
+*/
 
-export const getSaleById = async (saleId) => {
-  if (!isValidObjectId(saleId)) {
-    throw new Error('Venda inválida.')
+/**
+ * Atualiza estágio do Lead.
+ */
+const updateLeadStage = async ({
+  lead,
+  newStage,
+  performedBy,
+  reason,
+  session = null,
+}) => {
+  const previousStage = lead.stage
+  const now = new Date()
+
+  /*
+   * Se já estiver no estágio,
+   * registra somente atividade.
+   */
+  if (previousStage === newStage) {
+    addLeadTimeline({
+      lead,
+      action: 'pipeline_updated',
+      performedBy,
+      description: reason,
+    })
+
+    await lead.save({
+      session,
+    })
+
+    return lead
   }
 
-  const sale = await Sale.findById(saleId).populate(SALE_POPULATE)
+  lead.stage = newStage
+
+  if (!Array.isArray(lead.stageHistory)) {
+    lead.stageHistory = []
+  }
+
+  lead.stageHistory.push({
+    stage: newStage,
+    changedBy: performedBy,
+    changedAt: now,
+    timeline: [
+      {
+        action: 'stage_changed',
+        description: reason,
+        createdBy: performedBy,
+        createdAt: now,
+      },
+    ],
+  })
+
+  await lead.save({
+    session,
+  })
+
+  return lead
+}
+
+/*
+|--------------------------------------------------------------------------
+| VENDA - NUMERAÇÃO
+|--------------------------------------------------------------------------
+*/
+
+/**
+ * Gera número sequencial de venda.
+ *
+ * Utiliza documento atômico na coleção
+ * "counters" para evitar colisões.
+ */
+const generateSaleNumber = async ({ session = null }) => {
+  const countersCollection = mongoose.connection.db.collection('counters')
+
+  const options = {
+    upsert: true,
+    returnDocument: 'after',
+  }
+
+  if (session) {
+    options.session = session
+  }
+
+  const result = await countersCollection.findOneAndUpdate(
+    {
+      _id: SALE_COUNTER_KEY,
+    },
+    {
+      $inc: {
+        sequence: 1,
+      },
+    },
+    options,
+  )
+
+  const sequence = result?.value?.sequence ?? result?.sequence
+
+  if (!sequence) {
+    throw createError('Não foi possível gerar o número da venda.', 500)
+  }
+
+  return `VEN-${String(sequence).padStart(6, '0')}`
+}
+
+/**
+ * Procura venda criada a partir de determinada proposta.
+ */
+const findSaleByProposal = async ({ proposalId, session = null }) => {
+  const query = Sale.findOne({
+    proposal: proposalId,
+  })
+
+  applySession(query, session)
+
+  return query
+}
+
+/*
+|--------------------------------------------------------------------------
+| IMÓVEL
+|--------------------------------------------------------------------------
+*/
+
+/**
+ * Marca imóvel como reservado.
+ */
+export const markPropertyAsReserved = async ({ property, session = null }) => {
+  if (!property?._id) {
+    throw createError('Imóvel inválido para atualização.')
+  }
+
+  /*
+   * Não permitimos reservar imóvel vendido.
+   */
+  if (property.status === PROPERTY_STATUS.SOLD) {
+    throw createError('Um imóvel vendido não pode ser reservado.', 409)
+  }
+
+  const update = {
+    $set: {
+      status: PROPERTY_STATUS.RESERVED,
+      active: false,
+      published: false,
+    },
+  }
+
+  const query = Property.updateOne(
+    {
+      _id: property._id,
+    },
+    update,
+  )
+
+  applySession(query, session)
+
+  const result = await query
+
+  if (!result.matchedCount) {
+    throw createError('Imóvel não encontrado para atualização.', 404)
+  }
+
+  property.status = PROPERTY_STATUS.RESERVED
+
+  property.active = false
+  property.published = false
+
+  return property
+}
+
+/**
+ * Marca imóvel como vendido.
+ */
+const markPropertyAsSold = async ({ property, sale, session = null }) => {
+  if (!property) {
+    throw createError('Imóvel não encontrado.', 404)
+  }
+
+  const completedAt = sale.completedAt || new Date()
+
+  const update = {
+    $set: {
+      status: PROPERTY_STATUS.SOLD,
+      soldAt: completedAt,
+      active: false,
+      published: false,
+    },
+  }
+
+  if (sale.updatedBy) {
+    update.$set.updatedBy = sale.updatedBy
+  }
+
+  const query = Property.updateOne(
+    {
+      _id: property._id,
+    },
+    update,
+  )
+
+  applySession(query, session)
+
+  const result = await query
+
+  if (!result.matchedCount) {
+    throw createError('Imóvel não encontrado para atualização.', 404)
+  }
+
+  property.status = PROPERTY_STATUS.SOLD
+
+  property.soldAt = completedAt
+  property.active = false
+  property.published = false
+
+  return property
+}
+
+/**
+ * Libera imóvel.
+ */
+export const releaseProperty = async ({ property, session = null }) => {
+  if (!property?._id) {
+    throw createError('Imóvel inválido para atualização.')
+  }
+
+  const update = {
+    $set: {
+      status: PROPERTY_STATUS.AVAILABLE,
+      active: true,
+      published: true,
+    },
+  }
+
+  const query = Property.updateOne(
+    {
+      _id: property._id,
+    },
+    update,
+  )
+
+  applySession(query, session)
+
+  const result = await query
+
+  if (!result.matchedCount) {
+    throw createError('Imóvel não encontrado para atualização.', 404)
+  }
+
+  property.status = PROPERTY_STATUS.AVAILABLE
+
+  property.active = true
+  property.published = true
+
+  return property
+}
+
+/*
+|--------------------------------------------------------------------------
+| HELPERS DE FLUXO DA VENDA
+|--------------------------------------------------------------------------
+*/
+
+/**
+ * Finaliza venda dentro de uma transaction.
+ *
+ * Responsabilidades:
+ *
+ * Sale → COMPLETED
+ * Property → SOLD
+ * Lead → WON
+ * Lead History
+ */
+const finalizeSale = async ({ sale, user, lead, property, session }) => {
+  const performedBy = getUserId(user)
+
+  /*
+   * Garante completedAt.
+   */
+  if (!sale.completedAt) {
+    sale.completedAt = new Date()
+  }
+
+  /*
+   * Imóvel → vendido.
+   */
+  await markPropertyAsSold({
+    property,
+    sale,
+    session,
+  })
+
+  /*
+   * Lead → ganho.
+   */
+  await updateLeadStage({
+    lead,
+    newStage: PIPELINE_STAGES.WON,
+    performedBy,
+    reason: `Venda ${sale.saleNumber} concluída no valor de R$ ${formatCurrency(
+      sale.saleAmount,
+    )}.`,
+    session,
+  })
+
+  /*
+   * Histórico.
+   */
+  await addLeadSaleHistory({
+    lead,
+    sale,
+    action: 'sale_completed',
+    performedBy,
+    description: `Venda concluída no valor de R$ ${formatCurrency(
+      sale.saleAmount,
+    )}.`,
+    session,
+  })
+}
+
+/**
+ * Processa venda em contrato.
+ */
+const processContractSale = async ({ sale, user, session }) => {
+  const performedBy = getUserId(user)
+
+  const lead = await Lead.findById(sale.lead).session(session)
+
+  if (lead) {
+    await addLeadSaleHistory({
+      lead,
+      sale,
+      action: 'sale_contract_started',
+      performedBy,
+      description: 'Venda avançou para contrato.',
+      session,
+    })
+  }
+
+  const property = await Property.findById(sale.property).session(session)
+
+  if (property && property.status !== PROPERTY_STATUS.SOLD) {
+    await markPropertyAsReserved({
+      property,
+      session,
+    })
+  }
+}
+
+/**
+ * Processa venda cancelada.
+ */
+const processCancelledSale = async ({
+  sale,
+  user,
+  previousStatus,
+  reason,
+  session,
+}) => {
+  const performedBy = getUserId(user)
+
+  /*
+   * Imóvel.
+   */
+  const property = await Property.findById(sale.property).session(session)
+
+  if (property) {
+    /*
+     * Procuramos outra venda ativa.
+     */
+    const activeSale = await Sale.findOne({
+      property: sale.property,
+      _id: {
+        $ne: sale._id,
+      },
+      status: {
+        $in: [SALE_STATUS.PENDING, SALE_STATUS.CONTRACT, SALE_STATUS.COMPLETED],
+      },
+    }).session(session)
+
+    /*
+     * Só libera se não existir
+     * outra venda ativa.
+     */
+    if (!activeSale) {
+      await releaseProperty({
+        property,
+        session,
+      })
+    }
+  }
+
+  /*
+   * Lead.
+   */
+  const lead = await Lead.findById(sale.lead).session(session)
+
+  if (lead) {
+    await addLeadSaleHistory({
+      lead,
+      sale,
+      action: 'sale_cancelled',
+      performedBy,
+      description: `Venda cancelada. Status anterior: "${previousStatus}". Motivo: ${reason}`,
+      session,
+    })
+  }
+}
+
+/*
+|--------------------------------------------------------------------------
+| CREATE SALE FROM PROPOSAL
+|--------------------------------------------------------------------------
+*/
+
+/**
+ * Converte uma proposta aprovada em venda.
+ */
+export const createSaleFromProposal = async ({
+  proposalId,
+  user,
+  data = {},
+}) => {
+  const session = await mongoose.startSession()
+
+  try {
+    let createdSaleId = null
+
+    await session.withTransaction(async () => {
+      /*
+       * Proposta.
+       */
+      const proposal = await getProposal({
+        proposalId,
+        session,
+      })
+
+      if (!proposal) {
+        throw createError('Proposta não encontrada.', 404)
+      }
+
+      if (proposal.isDeleted) {
+        throw createError('Esta proposta foi removida.')
+      }
+
+      if (proposal.status !== PROPOSAL_STATUS.ACCEPTED) {
+        throw createError(
+          'Somente propostas aprovadas podem ser convertidas em venda.',
+        )
+      }
+
+      /*
+       * Permissão.
+       */
+      if (!isAdmin(user)) {
+        if (!isBroker(user)) {
+          throw createError(
+            'Usuário sem permissão para converter propostas em vendas.',
+            403,
+          )
+        }
+
+        if (String(proposal.broker) !== String(getUserId(user))) {
+          throw createError(
+            'Você não é o corretor responsável por esta proposta.',
+            403,
+          )
+        }
+      }
+
+      /*
+       * Uma proposta só pode gerar uma venda.
+       */
+      const existingSale = await findSaleByProposal({
+        proposalId: proposal._id,
+        session,
+      })
+
+      if (existingSale) {
+        throw createError(
+          `Esta proposta já foi convertida na venda ${
+            existingSale.saleNumber || existingSale._id
+          }.`,
+          409,
+        )
+      }
+
+      /*
+       * Lead.
+       */
+      const lead = await getLead({
+        leadId: proposal.lead,
+        session,
+      })
+
+      if (!lead) {
+        throw createError('Lead não encontrado.', 404)
+      }
+
+      /*
+       * Imóvel.
+       */
+      const property = await getProperty({
+        propertyId: proposal.property,
+        session,
+      })
+
+      if (!property) {
+        throw createError('Imóvel não encontrado.', 404)
+      }
+
+      if (property.isDeleted) {
+        throw createError('Este imóvel foi removido.')
+      }
+
+      if (property.status === PROPERTY_STATUS.SOLD) {
+        throw createError('Este imóvel já foi vendido.', 409)
+      }
+
+      /*
+       * Imóvel reservado.
+       */
+      if (property.status === PROPERTY_STATUS.RESERVED) {
+        const activeSale = await Sale.findOne({
+          property: property._id,
+          status: {
+            $in: [SALE_STATUS.PENDING, SALE_STATUS.CONTRACT],
+          },
+        }).session(session)
+
+        if (activeSale) {
+          throw createError(
+            'Este imóvel já possui uma venda em andamento.',
+            409,
+          )
+        }
+      }
+
+      /*
+       * Vendedor.
+       */
+      const sellerBroker = await validateSellerBroker({
+        brokerId: proposal.broker,
+        session,
+      })
+
+      /*
+       * Captador.
+       */
+      const acquisitionBroker = await validateAcquisitionBroker({
+        property,
+        session,
+      })
+
+      /*
+       * Valores.
+       */
+      const values = validateProposalValues(proposal)
+
+      /*
+       * Comissão.
+       */
+      const commission = normalizeCommissionInput({
+        property,
+        saleAmount: values.saleAmount,
+        commission: data.commission || {},
+      })
+
+      /*
+       * Snapshot do vendedor.
+       */
+      commission.seller.broker = sellerBroker._id
+
+      /*
+       * Número.
+       */
+      const saleNumber =
+        data.saleNumber ||
+        (await generateSaleNumber({
+          session,
+        }))
+
+      /*
+       * Duplicidade.
+       */
+      const saleNumberExists = await Sale.findOne({
+        saleNumber,
+      }).session(session)
+
+      if (saleNumberExists) {
+        throw createError('O número da venda já está sendo utilizado.', 409)
+      }
+
+      /*
+       * Status inicial.
+       *
+       * Mantemos a possibilidade de
+       * criar diretamente como COMPLETED,
+       * pois isso já fazia parte do fluxo.
+       */
+      const initialStatus = data.status || SALE_STATUS.PENDING
+
+      if (!isValidSaleStatus(initialStatus)) {
+        throw createError('Status inicial da venda inválido.')
+      }
+
+      if (initialStatus === SALE_STATUS.CANCELLED) {
+        throw createError(
+          'Uma venda não pode ser criada diretamente como cancelada.',
+        )
+      }
+
+      /*
+       * Status financeiro.
+       */
+      const initialPaymentStatus =
+        data.paymentStatus || SALE_PAYMENT_STATUS.PENDING
+
+      if (!isValidPaymentStatus(initialPaymentStatus)) {
+        throw createError('Status financeiro inicial inválido.')
+      }
+
+      /*
+       * Data.
+       */
+      const saleDate = data.saleDate ? new Date(data.saleDate) : new Date()
+
+      if (Number.isNaN(saleDate.getTime())) {
+        throw createError('Data da venda inválida.')
+      }
+
+      /*
+       * Venda.
+       */
+      const sale = new Sale({
+        saleNumber,
+
+        proposal: proposal._id,
+
+        lead: lead._id,
+
+        property: property._id,
+
+        sellerBroker: sellerBroker._id,
+
+        acquisitionBroker: acquisitionBroker?._id || null,
+
+        saleAmount: values.saleAmount,
+
+        proposalAmount: values.proposalAmount,
+
+        downPayment: values.downPayment,
+
+        financing: values.financing,
+
+        fgts: values.fgts,
+
+        balance: values.balance,
+
+        commission,
+
+        status: initialStatus,
+
+        paymentStatus: initialPaymentStatus,
+
+        saleDate,
+
+        notes: data.notes || '',
+
+        createdBy: getUserId(user),
+
+        updatedBy: getUserId(user),
+      })
+
+      await sale.save({
+        session,
+      })
+
+      /*
+       * Lead → negociação.
+       */
+      await updateLeadStage({
+        lead,
+        newStage: PIPELINE_STAGES.NEGOTIATION,
+        performedBy: getUserId(user),
+        reason: `Venda ${sale.saleNumber} criada a partir da proposta aprovada.`,
+        session,
+      })
+
+      /*
+       * Histórico.
+       */
+      await addLeadSaleHistory({
+        lead,
+        sale,
+        action: 'sale_created',
+        performedBy: getUserId(user),
+        description: `Venda criada a partir da proposta aprovada no valor de R$ ${formatCurrency(
+          values.saleAmount,
+        )}.`,
+        session,
+      })
+
+      /*
+       * Venda não concluída:
+       * reserva imóvel.
+       */
+      if (sale.status !== SALE_STATUS.COMPLETED) {
+        await markPropertyAsReserved({
+          property,
+          session,
+        })
+      }
+
+      /*
+       * Venda já concluída.
+       */
+      if (sale.status === SALE_STATUS.COMPLETED) {
+        await finalizeSale({
+          sale,
+          user,
+          lead,
+          property,
+          session,
+        })
+      }
+
+      createdSaleId = sale._id
+    })
+
+    return Sale.findById(createdSaleId).populate(SALE_POPULATE)
+  } finally {
+    await session.endSession()
+  }
+}
+
+/*
+|--------------------------------------------------------------------------
+| GET SALE BY ID
+|--------------------------------------------------------------------------
+*/
+
+export const getSaleById = async ({ saleId, user }) => {
+  const id = getObjectId(saleId, 'Venda')
+
+  const sale = await Sale.findById(id).populate(SALE_POPULATE)
 
   if (!sale) {
-    throw new Error('Venda não encontrada.')
+    throw createError('Venda não encontrada.', 404)
   }
+
+  validateSaleAccess({
+    sale,
+    user,
+  })
 
   return sale
 }
 
-// ============================================================
-// GET SALES
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| GET SALES
+|--------------------------------------------------------------------------
+*/
 
 export const getSales = async ({
+  user,
   page = 1,
   limit = 20,
   search = '',
   status,
   paymentStatus,
-  type,
-  broker,
+  sellerBroker,
+  acquisitionBroker,
   lead,
   property,
-  proposal,
   startDate,
   endDate,
   sort = '-createdAt',
 } = {}) => {
-  const currentPage = Math.max(parseInt(page, 10) || 1, 1)
+  const currentPage = Math.max(Number(page) || 1, 1)
 
-  const currentLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100)
+  const currentLimit = Math.min(Math.max(Number(limit) || 20, 1), 100)
 
   const skip = (currentPage - 1) * currentLimit
 
   const filter = {}
 
-  // ----------------------------------------------------------
-  // STATUS
-  // ----------------------------------------------------------
-
-  if (status) {
-    if (Array.isArray(status)) {
-      filter.status = {
-        $in: status,
-      }
-    } else {
-      filter.status = status
-    }
+  /*
+   * Broker:
+   * somente suas vendas.
+   */
+  if (isBroker(user)) {
+    filter.sellerBroker = getUserId(user)
   }
 
-  // ----------------------------------------------------------
-  // PAYMENT STATUS
-  // ----------------------------------------------------------
-
-  if (paymentStatus) {
-    if (Array.isArray(paymentStatus)) {
-      filter.paymentStatus = {
-        $in: paymentStatus,
-      }
-    } else {
-      filter.paymentStatus = paymentStatus
-    }
+  /*
+   * Admin:
+   * filtro vendedor.
+   */
+  if (sellerBroker && isAdmin(user)) {
+    filter.sellerBroker = getObjectId(sellerBroker, 'Corretor vendedor')
   }
 
-  // ----------------------------------------------------------
-  // TYPE
-  // ----------------------------------------------------------
-
-  if (type) {
-    filter.type = type
+  /*
+   * Captador.
+   */
+  if (acquisitionBroker) {
+    filter.acquisitionBroker = getObjectId(
+      acquisitionBroker,
+      'Corretor captador',
+    )
   }
 
-  // ----------------------------------------------------------
-  // REFERENCES
-  // ----------------------------------------------------------
-
-  if (broker) {
-    filter.broker = ensureObjectId(broker, 'Corretor')
-  }
-
+  /*
+   * Lead.
+   */
   if (lead) {
-    filter.lead = ensureObjectId(lead, 'Lead')
+    filter.lead = getObjectId(lead, 'Lead')
   }
 
+  /*
+   * Imóvel.
+   */
   if (property) {
-    filter.property = ensureObjectId(property, 'Imóvel')
+    filter.property = getObjectId(property, 'Imóvel')
   }
 
-  if (proposal) {
-    filter.proposal = ensureObjectId(proposal, 'Proposta')
+  /*
+   * Status.
+   */
+  if (status) {
+    if (!isValidSaleStatus(status)) {
+      throw createError('Status da venda inválido.')
+    }
+
+    filter.status = status
   }
 
-  // ----------------------------------------------------------
-  // DATE RANGE
-  // ----------------------------------------------------------
+  /*
+   * Status financeiro.
+   */
+  if (paymentStatus) {
+    if (!isValidPaymentStatus(paymentStatus)) {
+      throw createError('Status financeiro inválido.')
+    }
 
+    filter.paymentStatus = paymentStatus
+  }
+
+  /*
+   * Datas.
+   */
   if (startDate || endDate) {
     filter.saleDate = {}
 
     if (startDate) {
-      filter.saleDate.$gte = new Date(startDate)
+      const start = new Date(startDate)
+
+      if (Number.isNaN(start.getTime())) {
+        throw createError('Data inicial inválida.')
+      }
+
+      start.setHours(0, 0, 0, 0)
+
+      filter.saleDate.$gte = start
     }
 
     if (endDate) {
-      const finalDate = new Date(endDate)
+      const end = new Date(endDate)
 
-      finalDate.setHours(23, 59, 59, 999)
+      if (Number.isNaN(end.getTime())) {
+        throw createError('Data final inválida.')
+      }
 
-      filter.saleDate.$lte = finalDate
+      end.setHours(23, 59, 59, 999)
+
+      filter.saleDate.$lte = end
     }
   }
 
-  // ----------------------------------------------------------
-  // SEARCH
-  // ----------------------------------------------------------
-
+  /*
+   * Busca por número.
+   */
   if (search?.trim()) {
-    const searchRegex = new RegExp(search.trim(), 'i')
-
-    const [matchingLeads, matchingProperties, matchingBrokers] =
-      await Promise.all([
-        Lead.find({
-          $or: [
-            { name: searchRegex },
-            { email: searchRegex },
-            { phone: searchRegex },
-          ],
-        }).select('_id'),
-
-        Property.find({
-          $or: [{ name: searchRegex }, { code: searchRegex }],
-        }).select('_id'),
-
-        User.find({
-          $or: [{ name: searchRegex }, { email: searchRegex }],
-          isBroker: true,
-        }).select('_id'),
-      ])
-
-    filter.$or = [
-      {
-        lead: {
-          $in: matchingLeads.map((item) => item._id),
-        },
-      },
-      {
-        property: {
-          $in: matchingProperties.map((item) => item._id),
-        },
-      },
-      {
-        broker: {
-          $in: matchingBrokers.map((item) => item._id),
-        },
-      },
-      {
-        code: searchRegex,
-      },
-    ]
+    filter.saleNumber = {
+      $regex: search.trim(),
+      $options: 'i',
+    }
   }
 
-  // ----------------------------------------------------------
-  // QUERY
-  // ----------------------------------------------------------
+  /*
+   * Ordenações permitidas.
+   */
+  const allowedSorts = new Set([
+    'createdAt',
+    '-createdAt',
+    'saleDate',
+    '-saleDate',
+    'saleAmount',
+    '-saleAmount',
+    'status',
+    '-status',
+  ])
+
+  const normalizedSort = allowedSorts.has(sort) ? sort : '-createdAt'
 
   const [sales, total] = await Promise.all([
     Sale.find(filter)
       .populate(SALE_POPULATE)
-      .sort(sort)
+      .sort(normalizedSort)
       .skip(skip)
-      .limit(currentLimit)
-      .lean(),
+      .limit(currentLimit),
 
     Sale.countDocuments(filter),
   ])
 
+  const pages = Math.ceil(total / currentLimit)
+
   return {
-    sales,
+    data: sales,
 
     pagination: {
       page: currentPage,
       limit: currentLimit,
       total,
-      pages: Math.ceil(total / currentLimit),
-      hasNextPage: currentPage * currentLimit < total,
+      pages,
+
+      hasNextPage: currentPage < pages,
+
       hasPreviousPage: currentPage > 1,
     },
   }
 }
 
-// ============================================================
-// UPDATE SALE
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| UPDATE SALE STATUS
+|--------------------------------------------------------------------------
+*/
 
-export const updateSale = async (saleId, data) => {
-  if (!isValidObjectId(saleId)) {
-    throw new Error('Venda inválida.')
+export const updateSaleStatus = async ({ saleId, status, user, notes }) => {
+  validateAdmin(
+    user,
+    'Somente administradores podem alterar o status da venda.',
+  )
+
+  if (!isValidSaleStatus(status)) {
+    throw createError('Status da venda inválido.')
   }
 
-  const sale = await Sale.findById(saleId)
+  const session = await mongoose.startSession()
 
-  if (!sale) {
-    throw new Error('Venda não encontrada.')
-  }
+  try {
+    let updatedSaleId = null
 
-  if (
-    sale.status === SALE_STATUS.CANCELADA &&
-    data.status !== SALE_STATUS.CANCELADA
-  ) {
-    throw new Error('Uma venda cancelada não pode ser reaberta diretamente.')
-  }
+    await session.withTransaction(async () => {
+      const id = getObjectId(saleId, 'Venda')
 
-  const {
-    lead,
-    property,
-    broker,
-    proposal,
+      const sale = await Sale.findById(id).session(session)
 
-    saleValue,
-    commissionPercentage,
-    commissionValue,
+      if (!sale) {
+        throw createError('Venda não encontrada.', 404)
+      }
 
-    type,
-    status,
-    paymentStatus,
+      const previousStatus = sale.status
 
-    ...rest
-  } = data
+      validateSaleStatusTransition({
+        previousStatus,
+        nextStatus: status,
+      })
 
-  // ----------------------------------------------------------
-  // REFERENCES
-  // ----------------------------------------------------------
+      /*
+       * Nenhuma alteração.
+       */
+      if (previousStatus === status) {
+        if (notes !== undefined) {
+          sale.notes = notes
+        }
 
-  await validateSaleReferences({
-    lead,
-    property,
-    broker,
-    proposal,
-  })
+        sale.updatedBy = getUserId(user)
 
-  if (lead !== undefined) {
-    sale.lead = normalizeId(lead)
-  }
+        await sale.save({
+          session,
+        })
 
-  if (property !== undefined) {
-    sale.property = normalizeId(property)
-  }
+        updatedSaleId = sale._id
 
-  if (broker !== undefined) {
-    sale.broker = normalizeId(broker)
-  }
+        return
+      }
 
-  if (proposal !== undefined) {
-    sale.proposal = normalizeId(proposal)
-  }
+      /*
+       * Atualiza status.
+       */
+      sale.status = status
 
-  // ----------------------------------------------------------
-  // TYPE
-  // ----------------------------------------------------------
+      if (notes !== undefined) {
+        sale.notes = notes
+      }
 
-  if (type !== undefined) {
-    if (!SALE_TYPES_LIST.includes(type)) {
-      throw new Error('Tipo de venda inválido.')
-    }
+      sale.updatedBy = getUserId(user)
 
-    sale.type = type
-  }
+      /*
+       * Sale.js pode preencher
+       * completedAt automaticamente.
+       */
+      await sale.save({
+        session,
+      })
 
-  // ----------------------------------------------------------
-  // STATUS
-  // ----------------------------------------------------------
+      /*
+       * COMPLETED
+       */
+      if (status === SALE_STATUS.COMPLETED) {
+        const lead = await Lead.findById(sale.lead).session(session)
 
-  if (status !== undefined) {
-    if (!SALE_STATUS_LIST.includes(status)) {
-      throw new Error('Status da venda inválido.')
-    }
+        if (!lead) {
+          throw createError('Lead da venda não encontrado.', 404)
+        }
 
-    sale.status = status
-  }
+        const property = await Property.findById(sale.property).session(session)
 
-  // ----------------------------------------------------------
-  // PAYMENT STATUS
-  // ----------------------------------------------------------
+        if (!property) {
+          throw createError('Imóvel da venda não encontrado.', 404)
+        }
 
-  if (paymentStatus !== undefined) {
-    if (!SALE_PAYMENT_STATUS_LIST.includes(paymentStatus)) {
-      throw new Error('Status de pagamento inválido.')
-    }
+        await finalizeSale({
+          sale,
+          user,
+          lead,
+          property,
+          session,
+        })
 
-    sale.paymentStatus = paymentStatus
-  }
+        /*
+         * Salvamos novamente caso
+         * completedAt tenha sido
+         * alterado pelo finalizeSale.
+         */
+        await sale.save({
+          session,
+        })
+      } else if (status === SALE_STATUS.CONTRACT) {
+        /*
+         * CONTRACT
+         */
+        await processContractSale({
+          sale,
+          user,
+          session,
+        })
+      } else if (status === SALE_STATUS.CANCELLED) {
+        /*
+         * CANCELLED
+         */
+        /*
+         * Este fluxo existe para
+         * manter compatibilidade
+         * com updateSaleStatus.
+         *
+         * A API cancelSale continua
+         * sendo o fluxo recomendado
+         * quando houver motivo.
+         */
+        const lead = await Lead.findById(sale.lead).session(session)
 
-  // ----------------------------------------------------------
-  // VALUES
-  // ----------------------------------------------------------
+        if (lead) {
+          await addLeadSaleHistory({
+            lead,
+            sale,
+            action: 'sale_cancelled',
+            performedBy: getUserId(user),
+            description: `Venda cancelada. Status anterior: "${previousStatus}".`,
+            session,
+          })
+        }
 
-  if (saleValue !== undefined) {
-    const normalizedValue = parseNumber(saleValue)
+        const property = await Property.findById(sale.property).session(session)
 
-    if (normalizedValue <= 0) {
-      throw new Error('O valor da venda deve ser maior que zero.')
-    }
+        if (property) {
+          const activeSale = await Sale.findOne({
+            property: sale.property,
 
-    sale.saleValue = normalizedValue
-  }
+            _id: {
+              $ne: sale._id,
+            },
 
-  if (commissionPercentage !== undefined) {
-    sale.commissionPercentage = parseNumber(commissionPercentage)
-  }
+            status: {
+              $in: [
+                SALE_STATUS.PENDING,
+                SALE_STATUS.CONTRACT,
+                SALE_STATUS.COMPLETED,
+              ],
+            },
+          }).session(session)
 
-  if (
-    saleValue !== undefined ||
-    commissionPercentage !== undefined ||
-    commissionValue !== undefined
-  ) {
-    sale.commissionValue = calculateCommission({
-      saleValue: sale.saleValue,
-      commissionPercentage:
-        commissionPercentage !== undefined
-          ? commissionPercentage
-          : sale.commissionPercentage,
-      commissionValue,
+          if (!activeSale) {
+            await releaseProperty({
+              property,
+              session,
+            })
+          }
+        }
+      } else {
+        /*
+         * Outros status.
+         */
+        const lead = await Lead.findById(sale.lead).session(session)
+
+        if (lead) {
+          await addLeadSaleHistory({
+            lead,
+            sale,
+            action: 'sale_status_updated',
+            performedBy: getUserId(user),
+            description: `Status da venda alterado de "${previousStatus}" para "${status}".`,
+            session,
+          })
+        }
+      }
+
+      updatedSaleId = sale._id
     })
-  }
 
-  // ----------------------------------------------------------
-  // OTHER FIELDS
-  // ----------------------------------------------------------
-
-  Object.assign(sale, rest)
-
-  await sale.save()
-
-  return getSaleById(sale._id)
-}
-
-// ============================================================
-// DELETE SALE
-// ============================================================
-
-export const deleteSale = async (saleId) => {
-  if (!isValidObjectId(saleId)) {
-    throw new Error('Venda inválida.')
-  }
-
-  const sale = await Sale.findById(saleId)
-
-  if (!sale) {
-    throw new Error('Venda não encontrada.')
-  }
-
-  if (sale.status === SALE_STATUS.CONCLUIDA) {
-    throw new Error(
-      'Uma venda concluída não pode ser excluída. Cancele ou estorne a venda conforme a regra do negócio.',
-    )
-  }
-
-  await Sale.findByIdAndDelete(saleId)
-
-  return {
-    success: true,
-    message: 'Venda excluída com sucesso.',
+    return Sale.findById(updatedSaleId).populate(SALE_POPULATE)
+  } finally {
+    await session.endSession()
   }
 }
 
-// ============================================================
-// CHANGE STATUS
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| COMPLETE SALE
+|--------------------------------------------------------------------------
+*/
 
-export const changeSaleStatus = async (saleId, status) => {
-  if (!isValidObjectId(saleId)) {
-    throw new Error('Venda inválida.')
+/**
+ * Conclui venda.
+ *
+ * Mantemos esta função separada porque
+ * ela já existe no seu backend.
+ *
+ * Diferentemente de updateSaleStatus,
+ * não restringimos automaticamente a Admin,
+ * preservando o comportamento atual.
+ */
+export const completeSale = async ({ saleId, user, notes }) => {
+  const session = await mongoose.startSession()
+
+  try {
+    let completedSaleId = null
+
+    await session.withTransaction(async () => {
+      const id = getObjectId(saleId, 'Venda')
+
+      const sale = await Sale.findById(id).session(session)
+
+      if (!sale) {
+        throw createError('Venda não encontrada.', 404)
+      }
+
+      /*
+       * Proteção contra duplicidade.
+       */
+      if (sale.status === SALE_STATUS.COMPLETED) {
+        throw createError('Esta venda já está concluída.', 409)
+      }
+
+      /*
+       * Venda cancelada não pode
+       * ser concluída.
+       */
+      if (sale.status === SALE_STATUS.CANCELLED) {
+        throw createError('Uma venda cancelada não pode ser concluída.', 409)
+      }
+
+      /*
+       * Validação da máquina de estados.
+       */
+      validateSaleStatusTransition({
+        previousStatus: sale.status,
+        nextStatus: SALE_STATUS.COMPLETED,
+      })
+
+      /*
+       * Atualiza Sale.
+       */
+      sale.status = SALE_STATUS.COMPLETED
+
+      sale.completedAt = new Date()
+
+      sale.updatedBy = getUserId(user)
+
+      if (notes !== undefined) {
+        sale.notes = notes
+      }
+
+      await sale.save({
+        session,
+      })
+
+      /*
+       * Lead.
+       */
+      const lead = await Lead.findById(sale.lead).session(session)
+
+      if (!lead) {
+        throw createError('Lead da venda não encontrado.', 404)
+      }
+
+      /*
+       * Property.
+       */
+      const property = await Property.findById(sale.property).session(session)
+
+      if (!property) {
+        throw createError('Imóvel da venda não encontrado.', 404)
+      }
+
+      /*
+       * Finaliza tudo.
+       */
+      await finalizeSale({
+        sale,
+        user,
+        lead,
+        property,
+        session,
+      })
+
+      completedSaleId = sale._id
+    })
+
+    return Sale.findById(completedSaleId).populate(SALE_POPULATE)
+  } finally {
+    await session.endSession()
   }
-
-  if (!SALE_STATUS_LIST.includes(status)) {
-    throw new Error('Status da venda inválido.')
-  }
-
-  const sale = await Sale.findById(saleId)
-
-  if (!sale) {
-    throw new Error('Venda não encontrada.')
-  }
-
-  if (
-    sale.status === SALE_STATUS.CANCELADA &&
-    status !== SALE_STATUS.CANCELADA
-  ) {
-    throw new Error('Uma venda cancelada não pode ser reaberta diretamente.')
-  }
-
-  sale.status = status
-
-  // ----------------------------------------------------------
-  // AUTOMATIC DATES
-  // ----------------------------------------------------------
-
-  if (status === SALE_STATUS.CONTRATO_ASSINADO) {
-    if (!sale.contractDate) {
-      sale.contractDate = new Date()
-    }
-  }
-
-  if (status === SALE_STATUS.CONCLUIDA) {
-    if (!sale.saleDate) {
-      sale.saleDate = new Date()
-    }
-  }
-
-  if (status === SALE_STATUS.CANCELADA) {
-    sale.cancelledAt = new Date()
-  }
-
-  await sale.save()
-
-  return getSaleById(sale._id)
 }
 
-// ============================================================
-// APPROVE SALE
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| CANCEL SALE
+|--------------------------------------------------------------------------
+*/
 
-export const approveSale = async (saleId) => {
-  return changeSaleStatus(saleId, SALE_STATUS.APROVADA)
+export const cancelSale = async ({ saleId, user, reason }) => {
+  validateAdmin(user, 'Somente administradores podem cancelar vendas.')
+
+  if (!reason || !reason.trim()) {
+    throw createError('Informe o motivo do cancelamento.')
+  }
+
+  const session = await mongoose.startSession()
+
+  try {
+    let cancelledSaleId = null
+
+    await session.withTransaction(async () => {
+      const id = getObjectId(saleId, 'Venda')
+
+      const sale = await Sale.findById(id).session(session)
+
+      if (!sale) {
+        throw createError('Venda não encontrada.', 404)
+      }
+
+      if (sale.status === SALE_STATUS.CANCELLED) {
+        throw createError('Esta venda já está cancelada.', 409)
+      }
+
+      if (sale.status === SALE_STATUS.COMPLETED) {
+        throw createError(
+          'Uma venda concluída não pode ser cancelada por este fluxo.',
+          409,
+        )
+      }
+
+      const previousStatus = sale.status
+
+      /*
+       * Validação.
+       */
+      validateSaleStatusTransition({
+        previousStatus,
+        nextStatus: SALE_STATUS.CANCELLED,
+      })
+
+      /*
+       * Atualiza.
+       */
+      sale.status = SALE_STATUS.CANCELLED
+
+      sale.cancelledAt = new Date()
+
+      sale.cancellationReason = reason.trim()
+
+      sale.updatedBy = getUserId(user)
+
+      await sale.save({
+        session,
+      })
+
+      /*
+       * Processa imóvel + Lead.
+       */
+      await processCancelledSale({
+        sale,
+        user,
+        previousStatus,
+        reason: reason.trim(),
+        session,
+      })
+
+      cancelledSaleId = sale._id
+    })
+
+    return Sale.findById(cancelledSaleId).populate(SALE_POPULATE)
+  } finally {
+    await session.endSession()
+  }
 }
 
-// ============================================================
-// SIGN CONTRACT
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| UPDATE PAYMENT STATUS
+|--------------------------------------------------------------------------
+*/
 
-export const signSaleContract = async (saleId) => {
-  if (!isValidObjectId(saleId)) {
-    throw new Error('Venda inválida.')
+export const updateSalePaymentStatus = async ({
+  saleId,
+  paymentStatus,
+  user,
+}) => {
+  validateAdmin(
+    user,
+    'Somente administradores podem alterar o status financeiro da venda.',
+  )
+
+  if (!isValidPaymentStatus(paymentStatus)) {
+    throw createError('Status financeiro inválido.')
   }
 
-  const sale = await Sale.findById(saleId)
+  const session = await mongoose.startSession()
 
-  if (!sale) {
-    throw new Error('Venda não encontrada.')
+  try {
+    let updatedSaleId = null
+
+    await session.withTransaction(async () => {
+      const id = getObjectId(saleId, 'Venda')
+
+      const sale = await Sale.findById(id).session(session)
+
+      if (!sale) {
+        throw createError('Venda não encontrada.', 404)
+      }
+
+      /*
+       * Venda cancelada não deve
+       * receber alterações financeiras.
+       */
+      if (sale.status === SALE_STATUS.CANCELLED) {
+        throw createError(
+          'Não é possível alterar o status financeiro de uma venda cancelada.',
+        )
+      }
+
+      const previousPaymentStatus = sale.paymentStatus
+
+      /*
+       * Mesmo status:
+       * não precisa gerar histórico.
+       */
+      if (previousPaymentStatus === paymentStatus) {
+        updatedSaleId = sale._id
+
+        return
+      }
+
+      sale.paymentStatus = paymentStatus
+
+      sale.updatedBy = getUserId(user)
+
+      await sale.save({
+        session,
+      })
+
+      /*
+       * Histórico.
+       */
+      const lead = await Lead.findById(sale.lead).session(session)
+
+      if (lead) {
+        await addLeadSaleHistory({
+          lead,
+          sale,
+          action: 'sale_payment_status_updated',
+          performedBy: getUserId(user),
+          description: `Status financeiro da venda alterado de "${previousPaymentStatus}" para "${paymentStatus}".`,
+          session,
+        })
+      }
+
+      updatedSaleId = sale._id
+    })
+
+    return Sale.findById(updatedSaleId).populate(SALE_POPULATE)
+  } finally {
+    await session.endSession()
   }
-
-  if (sale.status === SALE_STATUS.CANCELADA) {
-    throw new Error('Não é possível assinar contrato de uma venda cancelada.')
-  }
-
-  sale.status = SALE_STATUS.CONTRATO_ASSINADO
-
-  if (!sale.contractDate) {
-    sale.contractDate = new Date()
-  }
-
-  await sale.save()
-
-  return getSaleById(sale._id)
 }
 
-// ============================================================
-// COMPLETE SALE
-// ============================================================
-
-export const completeSale = async (saleId) => {
-  if (!isValidObjectId(saleId)) {
-    throw new Error('Venda inválida.')
-  }
-
-  const sale = await Sale.findById(saleId)
-
-  if (!sale) {
-    throw new Error('Venda não encontrada.')
-  }
-
-  if (sale.status === SALE_STATUS.CANCELADA) {
-    throw new Error('Não é possível concluir uma venda cancelada.')
-  }
-
-  sale.status = SALE_STATUS.CONCLUIDA
-
-  if (!sale.saleDate) {
-    sale.saleDate = new Date()
-  }
-
-  await sale.save()
-
-  return getSaleById(sale._id)
-}
-
-// ============================================================
-// CANCEL SALE
-// ============================================================
-
-export const cancelSale = async (saleId, reason = '') => {
-  if (!isValidObjectId(saleId)) {
-    throw new Error('Venda inválida.')
-  }
-
-  const sale = await Sale.findById(saleId)
-
-  if (!sale) {
-    throw new Error('Venda não encontrada.')
-  }
-
-  if (sale.status === SALE_STATUS.CONCLUIDA) {
-    throw new Error('Uma venda concluída não pode ser cancelada diretamente.')
-  }
-
-  sale.status = SALE_STATUS.CANCELADA
-
-  sale.cancelledAt = new Date()
-
-  if (reason) {
-    sale.cancelReason = reason
-  }
-
-  await sale.save()
-
-  return getSaleById(sale._id)
-}
-
-// ============================================================
-// UPDATE PAYMENT STATUS
-// ============================================================
-
-export const updatePaymentStatus = async (saleId, paymentStatus) => {
-  if (!isValidObjectId(saleId)) {
-    throw new Error('Venda inválida.')
-  }
-
-  if (!SALE_PAYMENT_STATUS_LIST.includes(paymentStatus)) {
-    throw new Error('Status de pagamento inválido.')
-  }
-
-  const sale = await Sale.findById(saleId)
-
-  if (!sale) {
-    throw new Error('Venda não encontrada.')
-  }
-
-  sale.paymentStatus = paymentStatus
-
-  if (paymentStatus === SALE_PAYMENT_STATUS.PAGO) {
-    sale.paidAt = new Date()
-  }
-
-  await sale.save()
-
-  return getSaleById(sale._id)
-}
-
-// ============================================================
-// GET SALES BY BROKER
-// ============================================================
-
-export const getSalesByBroker = async (brokerId, options = {}) => {
-  if (!isValidObjectId(brokerId)) {
-    throw new Error('Corretor inválido.')
-  }
-
-  return getSales({
-    ...options,
-    broker: brokerId,
-  })
-}
-
-// ============================================================
-// GET SALES BY LEAD
-// ============================================================
-
-export const getSalesByLead = async (leadId, options = {}) => {
-  if (!isValidObjectId(leadId)) {
-    throw new Error('Lead inválido.')
-  }
-
-  return getSales({
-    ...options,
-    lead: leadId,
-  })
-}
-
-// ============================================================
-// GET SALES BY PROPERTY
-// ============================================================
-
-export const getSalesByProperty = async (propertyId, options = {}) => {
-  if (!isValidObjectId(propertyId)) {
-    throw new Error('Imóvel inválido.')
-  }
-
-  return getSales({
-    ...options,
-    property: propertyId,
-  })
-}
-
-// ============================================================
-// GET SALE BY PROPOSAL
-// ============================================================
-
-export const getSaleByProposal = async (proposalId) => {
-  if (!isValidObjectId(proposalId)) {
-    throw new Error('Proposta inválida.')
-  }
-
-  const sale = await Sale.findOne({
-    proposal: proposalId,
-  }).populate(SALE_POPULATE)
-
-  return sale
-}
-
-// ============================================================
-// CHECK EXISTING SALE
-// ============================================================
-
-export const checkExistingSale = async ({ lead, property, proposal }) => {
-  const filter = {}
-
-  if (lead) {
-    filter.lead = normalizeId(lead)
-  }
-
-  if (property) {
-    filter.property = normalizeId(property)
-  }
-
-  if (proposal) {
-    filter.proposal = normalizeId(proposal)
-  }
-
-  if (!Object.keys(filter).length) {
-    return null
-  }
-
-  return Sale.findOne({
-    ...filter,
-
-    status: {
-      $ne: SALE_STATUS.CANCELADA,
-    },
-  }).populate(SALE_POPULATE)
-}
-
-// ============================================================
-// CREATE SALE FROM PROPOSAL
-// ============================================================
-
-export const createSaleFromProposal = async (
-  proposalId,
-  userId,
-  overrides = {},
-) => {
-  if (!isValidObjectId(proposalId)) {
-    throw new Error('Proposta inválida.')
-  }
-
-  const proposal = await Proposal.findById(proposalId)
-    .populate('lead')
-    .populate('property')
-    .populate('broker')
-
-  if (!proposal) {
-    throw new Error('Proposta não encontrada.')
-  }
-
-  const existingSale = await Sale.findOne({
-    proposal: proposal._id,
-    status: {
-      $ne: SALE_STATUS.CANCELADA,
-    },
-  })
-
-  if (existingSale) {
-    throw new Error('Já existe uma venda vinculada a esta proposta.')
-  }
-
-  const proposalValue =
-    proposal.value ?? proposal.totalValue ?? proposal.price ?? 0
-
-  const saleData = {
-    proposal: proposal._id,
-
-    lead: proposal.lead?._id || proposal.lead,
-
-    property: proposal.property?._id || proposal.property,
-
-    broker: proposal.broker?._id || proposal.broker,
-
-    saleValue: proposalValue,
-
-    type: overrides.type || SALE_TYPES.VENDA,
-
-    status: overrides.status || SALE_STATUS.APROVADA,
-
-    paymentStatus: overrides.paymentStatus || SALE_PAYMENT_STATUS.PENDENTE,
-
-    paymentMethod: overrides.paymentMethod || proposal.paymentMethod,
-
-    commissionPercentage:
-      overrides.commissionPercentage ?? proposal.commissionPercentage ?? 0,
-
-    notes:
-      overrides.notes ||
-      `Venda criada a partir da proposta ${proposal.code || proposal._id}.`,
-  }
-
-  return createSale(saleData, userId)
-}
-
-// ============================================================
-// METRICS
-// ============================================================
-
-export const getSaleMetrics = async ({ broker, startDate, endDate } = {}) => {
+/*
+|--------------------------------------------------------------------------
+| DASHBOARD / MÉTRICAS
+|--------------------------------------------------------------------------
+*/
+
+export const getSaleMetrics = async ({ user, startDate, endDate } = {}) => {
   const match = {}
 
-  if (broker) {
-    match.broker = ensureObjectId(broker, 'Corretor')
+  /*
+   * Broker:
+   * somente vendas próprias.
+   */
+  if (isBroker(user)) {
+    match.sellerBroker = getObjectId(getUserId(user), 'Corretor')
   }
 
+  /*
+   * Datas.
+   */
   if (startDate || endDate) {
     match.saleDate = {}
 
     if (startDate) {
-      match.saleDate.$gte = new Date(startDate)
+      const start = new Date(startDate)
+
+      if (Number.isNaN(start.getTime())) {
+        throw createError('Data inicial inválida.')
+      }
+
+      start.setHours(0, 0, 0, 0)
+
+      match.saleDate.$gte = start
     }
 
     if (endDate) {
-      const finalDate = new Date(endDate)
+      const end = new Date(endDate)
 
-      finalDate.setHours(23, 59, 59, 999)
+      if (Number.isNaN(end.getTime())) {
+        throw createError('Data final inválida.')
+      }
 
-      match.saleDate.$lte = finalDate
+      end.setHours(23, 59, 59, 999)
+
+      match.saleDate.$lte = end
     }
   }
 
-  const [
-    totalSales,
-    concludedSales,
-    cancelledSales,
-    pendingSales,
-    totalValueResult,
-    concludedValueResult,
-    commissionResult,
-  ] = await Promise.all([
-    Sale.countDocuments(match),
-
-    Sale.countDocuments({
-      ...match,
-      status: SALE_STATUS.CONCLUIDA,
-    }),
-
-    Sale.countDocuments({
-      ...match,
-      status: SALE_STATUS.CANCELADA,
-    }),
-
-    Sale.countDocuments({
-      ...match,
-      status: {
-        $nin: [SALE_STATUS.CONCLUIDA, SALE_STATUS.CANCELADA],
-      },
-    }),
-
+  const [summary, bySeller, byAcquisition] = await Promise.all([
+    /*
+     * RESUMO
+     */
     Sale.aggregate([
       {
         $match: match,
       },
+
       {
         $group: {
           _id: null,
-          value: {
-            $sum: '$saleValue',
-          },
-        },
-      },
-    ]),
 
-    Sale.aggregate([
-      {
-        $match: {
-          ...match,
-          status: SALE_STATUS.CONCLUIDA,
-        },
-      },
-      {
-        $group: {
-          _id: null,
-          value: {
-            $sum: '$saleValue',
-          },
-        },
-      },
-    ]),
-
-    Sale.aggregate([
-      {
-        $match: {
-          ...match,
-          status: SALE_STATUS.CONCLUIDA,
-        },
-      },
-      {
-        $group: {
-          _id: null,
-          value: {
-            $sum: '$commissionValue',
-          },
-        },
-      },
-    ]),
-  ])
-
-  const totalValue = totalValueResult[0]?.value || 0
-
-  const concludedValue = concludedValueResult[0]?.value || 0
-
-  const totalCommission = commissionResult[0]?.value || 0
-
-  const averageTicket =
-    concludedSales > 0
-      ? Number((concludedValue / concludedSales).toFixed(2))
-      : 0
-
-  const conversionRate =
-    totalSales > 0
-      ? Number(((concludedSales / totalSales) * 100).toFixed(2))
-      : 0
-
-  return {
-    totalSales,
-
-    concludedSales,
-
-    cancelledSales,
-
-    pendingSales,
-
-    totalValue,
-
-    concludedValue,
-
-    totalCommission,
-
-    averageTicket,
-
-    conversionRate,
-  }
-}
-
-// ============================================================
-// DASHBOARD
-// ============================================================
-
-export const getSalesDashboard = async ({
-  broker,
-  startDate,
-  endDate,
-} = {}) => {
-  const metrics = await getSaleMetrics({
-    broker,
-    startDate,
-    endDate,
-  })
-
-  const match = {}
-
-  if (broker) {
-    match.broker = ensureObjectId(broker, 'Corretor')
-  }
-
-  if (startDate || endDate) {
-    match.saleDate = {}
-
-    if (startDate) {
-      match.saleDate.$gte = new Date(startDate)
-    }
-
-    if (endDate) {
-      const finalDate = new Date(endDate)
-
-      finalDate.setHours(23, 59, 59, 999)
-
-      match.saleDate.$lte = finalDate
-    }
-  }
-
-  const [byStatus, byBroker, byType, recentSales] = await Promise.all([
-    Sale.aggregate([
-      {
-        $match: match,
-      },
-      {
-        $group: {
-          _id: '$status',
-          count: {
+          totalSales: {
             $sum: 1,
           },
-          value: {
-            $sum: '$saleValue',
+
+          totalVGV: {
+            $sum: '$saleAmount',
           },
-        },
-      },
-      {
-        $sort: {
-          count: -1,
+
+          completedSales: {
+            $sum: {
+              $cond: [
+                {
+                  $eq: ['$status', SALE_STATUS.COMPLETED],
+                },
+                1,
+                0,
+              ],
+            },
+          },
+
+          pendingSales: {
+            $sum: {
+              $cond: [
+                {
+                  $eq: ['$status', SALE_STATUS.PENDING],
+                },
+                1,
+                0,
+              ],
+            },
+          },
+
+          contractSales: {
+            $sum: {
+              $cond: [
+                {
+                  $eq: ['$status', SALE_STATUS.CONTRACT],
+                },
+                1,
+                0,
+              ],
+            },
+          },
+
+          cancelledSales: {
+            $sum: {
+              $cond: [
+                {
+                  $eq: ['$status', SALE_STATUS.CANCELLED],
+                },
+                1,
+                0,
+              ],
+            },
+          },
+
+          totalCommission: {
+            $sum: '$commission.totalAmount',
+          },
+
+          sellerCommission: {
+            $sum: '$commission.seller.amount',
+          },
+
+          acquisitionCommission: {
+            $sum: '$commission.acquisition.amount',
+          },
+
+          companyCommission: {
+            $sum: '$commission.company.amount',
+          },
         },
       },
     ]),
 
+    /*
+     * RANKING DE VENDEDORES
+     */
     Sale.aggregate([
       {
         $match: match,
       },
+
       {
         $group: {
-          _id: '$broker',
+          _id: '$sellerBroker',
+
           sales: {
             $sum: 1,
           },
-          value: {
-            $sum: '$saleValue',
+
+          vgv: {
+            $sum: '$saleAmount',
           },
+
           commission: {
-            $sum: '$commissionValue',
+            $sum: '$commission.seller.amount',
           },
         },
       },
-      {
-        $sort: {
-          value: -1,
-        },
-      },
-      {
-        $limit: 10,
-      },
+
       {
         $lookup: {
           from: 'users',
+
           localField: '_id',
+
           foreignField: '_id',
+
           as: 'broker',
         },
       },
+
       {
         $unwind: {
           path: '$broker',
+
           preserveNullAndEmptyArrays: true,
         },
       },
+
       {
         $project: {
+          brokerId: '$_id',
+
+          brokerName: '$broker.name',
+
           sales: 1,
-          value: 1,
+
+          vgv: 1,
+
           commission: 1,
-          broker: {
-            _id: '$broker._id',
-            name: '$broker.name',
-            email: '$broker.email',
-            avatar: '$broker.avatar',
-          },
         },
+      },
+
+      {
+        $sort: {
+          vgv: -1,
+        },
+      },
+
+      {
+        $limit: 10,
       },
     ]),
 
+    /*
+     * RANKING DE CAPTADORES
+     */
     Sale.aggregate([
       {
         $match: match,
       },
+
+      {
+        $match: {
+          acquisitionBroker: {
+            $ne: null,
+          },
+        },
+      },
+
       {
         $group: {
-          _id: '$type',
-          count: {
+          _id: '$acquisitionBroker',
+
+          sales: {
             $sum: 1,
           },
-          value: {
-            $sum: '$saleValue',
+
+          vgv: {
+            $sum: '$saleAmount',
+          },
+
+          commission: {
+            $sum: '$commission.acquisition.amount',
           },
         },
       },
+
       {
-        $sort: {
-          value: -1,
+        $lookup: {
+          from: 'users',
+
+          localField: '_id',
+
+          foreignField: '_id',
+
+          as: 'broker',
         },
       },
-    ]),
 
-    Sale.find(match)
-      .populate(SALE_POPULATE)
-      .sort('-createdAt')
-      .limit(10)
-      .lean(),
+      {
+        $unwind: {
+          path: '$broker',
+
+          preserveNullAndEmptyArrays: true,
+        },
+      },
+
+      {
+        $project: {
+          brokerId: '$_id',
+
+          brokerName: '$broker.name',
+
+          sales: 1,
+
+          vgv: 1,
+
+          commission: 1,
+        },
+      },
+
+      {
+        $sort: {
+          commission: -1,
+        },
+      },
+
+      {
+        $limit: 10,
+      },
+    ]),
   ])
 
+  /*
+   * Valores padrão.
+   */
+  const data = summary[0] || {
+    totalSales: 0,
+    totalVGV: 0,
+
+    completedSales: 0,
+    pendingSales: 0,
+    contractSales: 0,
+    cancelledSales: 0,
+
+    totalCommission: 0,
+    sellerCommission: 0,
+    acquisitionCommission: 0,
+    companyCommission: 0,
+  }
+
   return {
-    metrics,
+    summary: {
+      totalSales: data.totalSales || 0,
 
-    byStatus,
+      totalVGV: data.totalVGV || 0,
 
-    byBroker,
+      completedSales: data.completedSales || 0,
 
-    byType,
+      pendingSales: data.pendingSales || 0,
 
-    recentSales,
+      contractSales: data.contractSales || 0,
+
+      cancelledSales: data.cancelledSales || 0,
+
+      totalCommission: data.totalCommission || 0,
+
+      sellerCommission: data.sellerCommission || 0,
+
+      acquisitionCommission: data.acquisitionCommission || 0,
+
+      companyCommission: data.companyCommission || 0,
+    },
+
+    bySeller,
+
+    byAcquisition,
   }
 }
 
-// ============================================================
-// EXPORT DEFAULT
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| DEFAULT EXPORT
+|--------------------------------------------------------------------------
+*/
 
 export default {
-  createSale,
-  getSaleById,
-  getSales,
-  updateSale,
-  deleteSale,
-
-  changeSaleStatus,
-  approveSale,
-  signSaleContract,
-  completeSale,
-  cancelSale,
-
-  updatePaymentStatus,
-
-  getSalesByBroker,
-  getSalesByLead,
-  getSalesByProperty,
-  getSaleByProposal,
-
-  checkExistingSale,
-
   createSaleFromProposal,
 
+  getSaleById,
+
+  getSales,
+
+  updateSaleStatus,
+
+  completeSale,
+
+  cancelSale,
+
+  updateSalePaymentStatus,
+
   getSaleMetrics,
-  getSalesDashboard,
+
+  markPropertyAsReserved,
+
+  releaseProperty,
 }

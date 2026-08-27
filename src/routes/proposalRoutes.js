@@ -39,16 +39,25 @@ router.use(protect)
 |
 | Query params:
 |
-| ?page=1
-| ?limit=20
-| ?search=joao
-| ?status=pending
-| ?broker=ID
-| ?lead=ID
-| ?property=ID
-| ?startDate=2026-08-01
-| ?endDate=2026-08-31
-| ?sort=-createdAt
+| page
+| limit
+| search
+| status
+| broker
+| lead
+| property
+| startDate
+| endDate
+| sort
+|
+| Exemplos:
+|
+| GET /api/proposals?page=1&limit=20
+| GET /api/proposals?status=pending
+| GET /api/proposals?status=pending,accepted
+| GET /api/proposals?broker=ID
+| GET /api/proposals?lead=ID
+| GET /api/proposals?property=ID
 |
 */
 
@@ -61,6 +70,13 @@ router.get('/', getProposals)
 |
 | GET /api/proposals/metrics
 |
+| Query params:
+|
+| startDate
+| endDate
+| broker
+|
+| IMPORTANTE:
 | Deve ficar antes de /:proposalId.
 |
 */
@@ -69,10 +85,8 @@ router.get('/metrics', getProposalMetrics)
 
 /*
 |--------------------------------------------------------------------------
-| CONSULTAS ESPECÍFICAS
+| PROPOSTAS POR LEAD
 |--------------------------------------------------------------------------
-|
-| Propostas de um Lead
 |
 | GET /api/proposals/lead/:leadId
 |
@@ -82,7 +96,7 @@ router.get('/lead/:leadId', getProposalsByLead)
 
 /*
 |--------------------------------------------------------------------------
-| CONSULTAS POR IMÓVEL
+| PROPOSTAS POR IMÓVEL
 |--------------------------------------------------------------------------
 |
 | GET /api/proposals/property/:propertyId
@@ -98,19 +112,39 @@ router.get('/property/:propertyId', getProposalsByProperty)
 |
 | POST /api/proposals
 |
+| Cria uma proposta inicialmente como:
+|
+| DRAFT
+|
+| O body deve conter, entre outros:
+|
+| {
+|   opportunity,
+|   lead,
+|   property,
+|   broker,
+|   values,
+|   paymentMethod,
+|   installments,
+|   installmentValue,
+|   validityDays,
+|   clientMessage
+| }
+|
 */
 
 router.post('/', createProposal)
 
 /*
 |--------------------------------------------------------------------------
-| HISTÓRICO
+| HISTÓRICO DA PROPOSTA
 |--------------------------------------------------------------------------
 |
 | GET /api/proposals/:proposalId/history
 |
-| IMPORTANTE:
-| Esta rota fica antes de /:proposalId.
+| Deve ficar antes de:
+|
+| GET /api/proposals/:proposalId
 |
 */
 
@@ -118,34 +152,12 @@ router.get('/:proposalId/history', getProposalHistory)
 
 /*
 |--------------------------------------------------------------------------
-| DETALHES
-|--------------------------------------------------------------------------
-|
-| GET /api/proposals/:proposalId
-|
-*/
-
-router.get('/:proposalId', getProposalById)
-
-/*
-|--------------------------------------------------------------------------
-| ATUALIZAR
-|--------------------------------------------------------------------------
-|
-| PATCH /api/proposals/:proposalId
-|
-| Somente DRAFT.
-|
-*/
-
-router.patch('/:proposalId', updateProposal)
-
-/*
-|--------------------------------------------------------------------------
-| ENVIAR PARA APROVAÇÃO
+| ENVIAR PROPOSTA PARA APROVAÇÃO
 |--------------------------------------------------------------------------
 |
 | PATCH /api/proposals/:proposalId/submit
+|
+| Fluxo:
 |
 | DRAFT → PENDING
 |
@@ -155,14 +167,20 @@ router.patch('/:proposalId/submit', submitProposal)
 
 /*
 |--------------------------------------------------------------------------
-| APROVAR
+| APROVAR PROPOSTA
 |--------------------------------------------------------------------------
 |
 | PATCH /api/proposals/:proposalId/approve
 |
+| Fluxo:
+|
 | PENDING → ACCEPTED
 |
 | Somente ADMIN.
+|
+| Também atualiza o Pipeline do Lead:
+|
+| proposta_enviada → negociacao
 |
 */
 
@@ -170,14 +188,22 @@ router.patch('/:proposalId/approve', approveProposal)
 
 /*
 |--------------------------------------------------------------------------
-| REJEITAR
+| REJEITAR PROPOSTA
 |--------------------------------------------------------------------------
 |
 | PATCH /api/proposals/:proposalId/reject
 |
+| Fluxo:
+|
 | PENDING → REJECTED
 |
 | Somente ADMIN.
+|
+| Body:
+|
+| {
+|   reason: "Motivo da rejeição"
+| }
 |
 */
 
@@ -185,14 +211,46 @@ router.patch('/:proposalId/reject', rejectProposal)
 
 /*
 |--------------------------------------------------------------------------
-| CANCELAR
+| CANCELAR PROPOSTA
 |--------------------------------------------------------------------------
 |
 | PATCH /api/proposals/:proposalId/cancel
 |
+| Body opcional:
+|
+| {
+|   reason: "Motivo do cancelamento"
+| }
+|
 */
 
 router.patch('/:proposalId/cancel', cancelProposal)
+
+/*
+|--------------------------------------------------------------------------
+| ATUALIZAR PROPOSTA
+|--------------------------------------------------------------------------
+|
+| PATCH /api/proposals/:proposalId
+|
+| Somente propostas DRAFT podem ser editadas.
+|
+*/
+
+router.patch('/:proposalId', updateProposal)
+
+/*
+|--------------------------------------------------------------------------
+| DETALHES DA PROPOSTA
+|--------------------------------------------------------------------------
+|
+| GET /api/proposals/:proposalId
+|
+| Esta deve ficar depois das rotas específicas.
+|
+*/
+
+router.get('/:proposalId', getProposalById)
 
 /*
 |--------------------------------------------------------------------------

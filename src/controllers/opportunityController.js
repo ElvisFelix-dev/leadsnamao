@@ -10,7 +10,100 @@ import {
 
 /**
  * =========================================================
+ * HELPERS
+ * =========================================================
+ */
+
+/**
+ * Verifica se o erro é relacionado a ObjectId inválido.
+ */
+const isCastError = (error) => {
+  return error?.name === 'CastError'
+}
+
+/**
+ * Verifica erros de validação do Mongoose.
+ */
+const isValidationError = (error) => {
+  return error?.name === 'ValidationError'
+}
+
+/**
+ * Verifica erro de chave duplicada.
+ */
+const isDuplicateKeyError = (error) => {
+  return error?.code === 11000
+}
+
+/**
+ * Retorno padronizado para erros.
+ */
+const sendError = ({ res, error, defaultMessage, statusCode = 500 }) => {
+  console.error(defaultMessage, error)
+
+  /**
+   * ObjectId inválido
+   */
+  if (isCastError(error)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Identificador inválido.',
+      error: error.message,
+    })
+  }
+
+  /**
+   * Validação do Mongoose
+   */
+  if (isValidationError(error)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Dados inválidos.',
+      error: error.message,
+      errors: error.errors,
+    })
+  }
+
+  /**
+   * Documento duplicado
+   */
+  if (isDuplicateKeyError(error)) {
+    return res.status(409).json({
+      success: false,
+      message: 'Já existe um registro com esses dados.',
+      error: error.message,
+    })
+  }
+
+  /**
+   * Erro padrão
+   */
+  return res.status(statusCode).json({
+    success: false,
+    message: defaultMessage,
+    error: error.message,
+  })
+}
+
+/**
+ * =========================================================
  * CREATE
+ * =========================================================
+ *
+ * POST /api/opportunities
+ *
+ * Responsabilidades:
+ *
+ * 1. Receber dados da oportunidade
+ * 2. Identificar usuário logado
+ * 3. Enviar para OpportunityService
+ *
+ * createdBy NÃO vem do frontend.
+ *
+ * O Service utiliza:
+ *
+ * req.user._id
+ *
  * =========================================================
  */
 
@@ -24,12 +117,10 @@ export const create = async (req, res) => {
       data: opportunity,
     })
   } catch (error) {
-    console.error('Erro ao criar oportunidade:', error)
-
-    return res.status(500).json({
-      success: false,
-      message: 'Erro ao criar oportunidade.',
-      error: error.message,
+    return sendError({
+      res,
+      error,
+      defaultMessage: 'Erro ao criar oportunidade.',
     })
   }
 }
@@ -37,6 +128,32 @@ export const create = async (req, res) => {
 /**
  * =========================================================
  * GET ALL
+ * =========================================================
+ *
+ * GET /api/opportunities
+ *
+ * Filtros suportados:
+ *
+ * page
+ * limit
+ * search
+ * stage
+ * status
+ * type
+ * temperature
+ * priority
+ * assignedTo
+ * property
+ * lead
+ *
+ * O Service é responsável por:
+ *
+ * - permissões
+ * - filtros
+ * - busca
+ * - paginação
+ * - populate
+ *
  * =========================================================
  */
 
@@ -46,16 +163,45 @@ export const getAll = async (req, res) => {
       userId: req.user._id,
       role: req.user.role,
 
+      /**
+       * Paginação
+       */
       page: req.query.page,
       limit: req.query.limit,
 
+      /**
+       * Busca
+       */
       search: req.query.search,
+
+      /**
+       * Pipeline
+       */
       stage: req.query.stage,
+
+      /**
+       * Status
+       */
       status: req.query.status,
+
+      /**
+       * Tipo de negócio
+       */
       type: req.query.type,
+
+      /**
+       * Temperatura
+       */
       temperature: req.query.temperature,
+
+      /**
+       * Prioridade
+       */
       priority: req.query.priority,
 
+      /**
+       * Relacionamentos
+       */
       assignedTo: req.query.assignedTo,
       property: req.query.property,
       lead: req.query.lead,
@@ -66,12 +212,10 @@ export const getAll = async (req, res) => {
       ...result,
     })
   } catch (error) {
-    console.error('Erro ao buscar oportunidades:', error)
-
-    return res.status(500).json({
-      success: false,
-      message: 'Erro ao buscar oportunidades.',
-      error: error.message,
+    return sendError({
+      res,
+      error,
+      defaultMessage: 'Erro ao buscar oportunidades.',
     })
   }
 }
@@ -79,6 +223,10 @@ export const getAll = async (req, res) => {
 /**
  * =========================================================
  * GET BY ID
+ * =========================================================
+ *
+ * GET /api/opportunities/:id
+ *
  * =========================================================
  */
 
@@ -98,12 +246,10 @@ export const getById = async (req, res) => {
       data: opportunity,
     })
   } catch (error) {
-    console.error('Erro ao buscar oportunidade:', error)
-
-    return res.status(500).json({
-      success: false,
-      message: 'Erro ao buscar oportunidade.',
-      error: error.message,
+    return sendError({
+      res,
+      error,
+      defaultMessage: 'Erro ao buscar oportunidade.',
     })
   }
 }
@@ -111,6 +257,26 @@ export const getById = async (req, res) => {
 /**
  * =========================================================
  * UPDATE
+ * =========================================================
+ *
+ * PUT/PATCH /api/opportunities/:id
+ *
+ * O Service protege:
+ *
+ * createdBy
+ * stageHistory
+ * interactions
+ * assignmentHistory
+ * _id
+ *
+ * O responsável pode ser alterado através do Service.
+ *
+ * Quando isso acontecer:
+ *
+ * Opportunity.assignedTo
+ *        ↓
+ * Lead.assignedTo
+ *
  * =========================================================
  */
 
@@ -136,12 +302,10 @@ export const update = async (req, res) => {
       data: opportunity,
     })
   } catch (error) {
-    console.error('Erro ao atualizar oportunidade:', error)
-
-    return res.status(500).json({
-      success: false,
-      message: 'Erro ao atualizar oportunidade.',
-      error: error.message,
+    return sendError({
+      res,
+      error,
+      defaultMessage: 'Erro ao atualizar oportunidade.',
     })
   }
 }
@@ -150,12 +314,84 @@ export const update = async (req, res) => {
  * =========================================================
  * UPDATE STAGE
  * =========================================================
+ *
+ * PATCH /api/opportunities/:id/stage
+ *
+ * Body:
+ *
+ * {
+ *   "stage": "negociacao",
+ *   "note": "Cliente avançou na negociação"
+ * }
+ *
+ * OU:
+ *
+ * {
+ *   "stage": "perdida",
+ *   "note": "Cliente desistiu",
+ *   "lostReason": "Valor acima do orçamento"
+ * }
+ *
+ * =========================================================
+ *
+ * FLUXO DE GANHA
+ *
+ * Opportunity:
+ *
+ * stage  = ganha
+ * status = ganha
+ * wonAt  = agora
+ *
+ * Lead:
+ *
+ * stage = fechado
+ *
+ * Sale:
+ *
+ * NÃO criada aqui.
+ *
+ * =========================================================
+ *
+ * FLUXO DE PERDIDA
+ *
+ * Opportunity:
+ *
+ * stage      = perdida
+ * status     = perdida
+ * lostAt     = agora
+ * lostReason = motivo
+ *
+ * Lead:
+ *
+ * stage = perdido
+ *
+ * =========================================================
  */
 
 export const updateStage = async (req, res) => {
   try {
-    const { stage, note, lostReason } = req.body
+    const { stage, note = '', lostReason = '' } = req.body
 
+    /**
+     * Stage é obrigatório.
+     *
+     * O Model também valida,
+     * mas retornamos uma mensagem mais clara.
+     */
+    if (!stage) {
+      return res.status(400).json({
+        success: false,
+        message: 'O campo "stage" é obrigatório.',
+      })
+    }
+
+    /**
+     * Não permitimos enviar lostReason
+     * para qualquer stage como regra de negócio.
+     *
+     * O Service também controla o comportamento,
+     * mas o controller mantém o contrato claro.
+     */
     const opportunity = await updateOpportunityStage(
       req.params.id,
       stage,
@@ -178,19 +414,28 @@ export const updateStage = async (req, res) => {
       data: opportunity,
     })
   } catch (error) {
-    console.error('Erro ao atualizar etapa:', error)
-
-    return res.status(500).json({
-      success: false,
-      message: 'Erro ao atualizar etapa.',
-      error: error.message,
+    return sendError({
+      res,
+      error,
+      defaultMessage: 'Erro ao atualizar etapa.',
     })
   }
 }
 
 /**
  * =========================================================
- * INTERACTION
+ * ADD INTERACTION
+ * =========================================================
+ *
+ * POST /api/opportunities/:id/interactions
+ *
+ * Body:
+ *
+ * {
+ *   "type": "whatsapp",
+ *   "description": "Cliente confirmou interesse no imóvel."
+ * }
+ *
  * =========================================================
  */
 
@@ -216,12 +461,10 @@ export const addInteraction = async (req, res) => {
       data: opportunity,
     })
   } catch (error) {
-    console.error('Erro ao adicionar interação:', error)
-
-    return res.status(500).json({
-      success: false,
-      message: 'Erro ao adicionar interação.',
-      error: error.message,
+    return sendError({
+      res,
+      error,
+      defaultMessage: 'Erro ao adicionar interação.',
     })
   }
 }
@@ -229,6 +472,16 @@ export const addInteraction = async (req, res) => {
 /**
  * =========================================================
  * ARCHIVE
+ * =========================================================
+ *
+ * PATCH /api/opportunities/:id/archive
+ *
+ * A oportunidade não é excluída.
+ *
+ * Apenas:
+ *
+ * isArchived = true
+ *
  * =========================================================
  */
 
@@ -253,12 +506,10 @@ export const archive = async (req, res) => {
       data: opportunity,
     })
   } catch (error) {
-    console.error('Erro ao arquivar oportunidade:', error)
-
-    return res.status(500).json({
-      success: false,
-      message: 'Erro ao arquivar oportunidade.',
-      error: error.message,
+    return sendError({
+      res,
+      error,
+      defaultMessage: 'Erro ao arquivar oportunidade.',
     })
   }
 }

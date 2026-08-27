@@ -1,4 +1,8 @@
-import Opportunity from '../models/Opportunity.js'
+import Opportunity, {
+  OPPORTUNITY_STAGES,
+  OPPORTUNITY_STATUS,
+} from '../models/Opportunity.js'
+
 import Lead from '../models/Lead.js'
 
 /**
@@ -12,68 +16,164 @@ const MAX_LIMIT = 100
 
 /**
  * =========================================================
+ * LEAD STAGES
+ * =========================================================
+ *
+ * O Lead possui um pipeline próprio.
+ *
+ * Opportunity:
+ *
+ * ganha
+ *   ↓
+ * Lead.stage = fechado
+ *
+ * perdida
+ *   ↓
+ * Lead.stage = perdido
+ *
+ * IMPORTANTE:
+ *
+ * Não usamos:
+ *
+ * ganho
+ * ganha no Lead
+ * perdido na Opportunity
+ *
+ * Cada módulo possui sua responsabilidade.
+ */
+
+export const LEAD_STAGES = Object.freeze({
+  NEW: 'novo_lead',
+  FIRST_CONTACT: 'primeiro_contato',
+  QUALIFIED: 'qualificado',
+  VISIT: 'visita_agendada',
+  PROPOSAL: 'proposta_enviada',
+  NEGOTIATION: 'negociacao',
+  WON: 'fechado',
+  LOST: 'perdido',
+})
+
+/**
+ * =========================================================
+ * OPPORTUNITY TERMINAL STAGES
+ * =========================================================
+ *
+ * Estes valores DEVEM ser exatamente iguais
+ * aos definidos em Opportunity.js.
+ */
+
+const OPPORTUNITY_TERMINAL_STAGES = Object.freeze({
+  WON: OPPORTUNITY_STAGES.GANHA,
+  LOST: OPPORTUNITY_STAGES.PERDIDA,
+})
+
+/**
+ * =========================================================
+ * OPPORTUNITY STATUS
+ * =========================================================
+ */
+
+const OPPORTUNITY_OPEN_STATUS = OPPORTUNITY_STATUS.OPEN
+const OPPORTUNITY_WON_STATUS = OPPORTUNITY_STATUS.WON
+const OPPORTUNITY_LOST_STATUS = OPPORTUNITY_STATUS.LOST
+
+/**
+ * =========================================================
  * POPULATE
  * =========================================================
  */
 
 const OPPORTUNITY_POPULATE = [
   /**
+   * -------------------------------------------------------
    * Lead
+   * -------------------------------------------------------
    */
+
   {
     path: 'lead',
   },
 
   /**
+   * -------------------------------------------------------
    * Imóvel
+   * -------------------------------------------------------
    */
+
   {
     path: 'property',
   },
 
   /**
+   * -------------------------------------------------------
    * Responsável atual
+   * -------------------------------------------------------
    */
+
   {
     path: 'assignedTo',
     select: 'name email phone avatar position',
   },
 
   /**
+   * -------------------------------------------------------
    * Criador
+   * -------------------------------------------------------
    */
+
   {
     path: 'createdBy',
     select: 'name email phone avatar position',
   },
 
   /**
-   * Histórico do Pipeline
+   * -------------------------------------------------------
+   * Proposta
+   * -------------------------------------------------------
    */
+
+  {
+    path: 'proposal',
+  },
+
+  /**
+   * -------------------------------------------------------
+   * Venda
+   * -------------------------------------------------------
+   */
+
+  {
+    path: 'sale',
+  },
+
+  /**
+   * -------------------------------------------------------
+   * Histórico do Pipeline
+   * -------------------------------------------------------
+   */
+
   {
     path: 'stageHistory.changedBy',
     select: 'name email avatar position',
   },
 
   /**
+   * -------------------------------------------------------
    * Interações
+   * -------------------------------------------------------
    */
+
   {
     path: 'interactions.createdBy',
     select: 'name email avatar position',
   },
 
   /**
+   * -------------------------------------------------------
    * Histórico de responsáveis
-   *
-   * Exemplo:
-   *
-   * Corretor A
-   *     ↓
-   * Corretor B
-   *
-   * Alterado por Admin
+   * -------------------------------------------------------
    */
+
   {
     path: 'assignmentHistory.changedBy',
     select: 'name email avatar position',
@@ -121,7 +221,7 @@ const populateOpportunity = (query) => {
  * 2. Oportunidades criadas por ele
  *
  * Isso permite que uma oportunidade continue visível
- * para quem a criou mesmo depois de ser transferida.
+ * para quem a criou mesmo depois de uma transferência.
  */
 
 const buildOpportunityAccessFilter = (userId, role) => {
@@ -163,11 +263,17 @@ const mergeSearchFilter = (filter, search) => {
     {
       title: searchRegex,
     },
+
     {
       description: searchRegex,
     },
+
     {
       notes: searchRegex,
+    },
+
+    {
+      source: searchRegex,
     },
   ]
 
@@ -185,6 +291,7 @@ const mergeSearchFilter = (filter, search) => {
       {
         $or: permissionConditions,
       },
+
       {
         $or: searchConditions,
       },
@@ -196,6 +303,16 @@ const mergeSearchFilter = (filter, search) => {
   filter.$or = searchConditions
 
   return filter
+}
+
+/**
+ * =========================================================
+ * VALIDAR STAGE
+ * =========================================================
+ */
+
+const isValidOpportunityStage = (stage) => {
+  return Object.values(OPPORTUNITY_STAGES).includes(stage)
 }
 
 /**
@@ -213,14 +330,14 @@ const normalizeAssignedTo = (assignedTo, userId) => {
  * SINCRONIZAR RESPONSÁVEL DO LEAD
  * =========================================================
  *
- * REGRA CENTRAL:
- *
  * Opportunity.assignedTo
  *          ↓
  * Lead.assignedTo
  *
- * Sempre que a oportunidade possuir um Lead,
- * o responsável do Lead será sincronizado.
+ * REGRA:
+ *
+ * Quando o responsável da oportunidade muda,
+ * o Lead também muda.
  */
 
 const syncLeadResponsible = async (leadId, assignedTo) => {
@@ -253,10 +370,147 @@ const syncLeadResponsible = async (leadId, assignedTo) => {
   await lead.save()
 
   console.log('==============================================')
-  console.log('🔄 LEAD SINCRONIZADO')
+  console.log('🔄 LEAD RESPONSÁVEL SINCRONIZADO')
   console.log('🧲 Lead:', lead._id.toString())
-  console.log('👤 Antigo responsável:', previousAssignedTo?.toString())
-  console.log('👤 Novo responsável:', assignedTo.toString())
+  console.log('👤 Antigo:', previousAssignedTo?.toString())
+  console.log('👤 Novo:', assignedTo.toString())
+  console.log('==============================================')
+
+  return lead
+}
+
+/**
+ * =========================================================
+ * SINCRONIZAR STAGE DO LEAD
+ * =========================================================
+ *
+ * Opportunity.ganha
+ *       ↓
+ * Lead.fechar
+ *
+ * Opportunity.perdida
+ *       ↓
+ * Lead.perdido
+ *
+ * NÃO:
+ *
+ * - cria Sale
+ * - altera Lead.status
+ * - cria Proposal
+ *
+ * Isso pertence aos respectivos módulos.
+ */
+
+const syncLeadStage = async ({
+  leadId,
+  opportunityStage,
+  userId,
+  note = '',
+}) => {
+  if (!leadId) {
+    return null
+  }
+
+  /**
+   * =======================================================
+   * DETERMINAR STAGE DO LEAD
+   * =======================================================
+   */
+
+  let newLeadStage = null
+
+  if (opportunityStage === OPPORTUNITY_TERMINAL_STAGES.WON) {
+    newLeadStage = LEAD_STAGES.WON
+  }
+
+  if (opportunityStage === OPPORTUNITY_TERMINAL_STAGES.LOST) {
+    newLeadStage = LEAD_STAGES.LOST
+  }
+
+  /**
+   * Não é stage terminal.
+   */
+
+  if (!newLeadStage) {
+    return null
+  }
+
+  /**
+   * =======================================================
+   * BUSCAR LEAD
+   * =======================================================
+   */
+
+  const lead = await Lead.findById(leadId)
+
+  if (!lead) {
+    console.warn(
+      `⚠️ Lead ${leadId} não encontrado para sincronização do stage.`,
+    )
+
+    return null
+  }
+
+  const previousStage = lead.stage
+
+  /**
+   * Evita update desnecessário.
+   */
+
+  if (previousStage === newLeadStage) {
+    return lead
+  }
+
+  /**
+   * =======================================================
+   * ATUALIZAR STAGE
+   * =======================================================
+   */
+
+  lead.stage = newLeadStage
+
+  /**
+   * =======================================================
+   * DATA DE FECHAMENTO
+   * =======================================================
+   *
+   * Só tentamos utilizar closeDate se o schema
+   * realmente possuir esse campo.
+   */
+
+  if (newLeadStage === LEAD_STAGES.WON && lead.schema?.path('closeDate')) {
+    lead.closeDate = new Date()
+  }
+
+  /**
+   * =======================================================
+   * HISTÓRICO
+   * =======================================================
+   */
+
+  if (lead.schema?.path('stageHistory')) {
+    if (!Array.isArray(lead.stageHistory)) {
+      lead.stageHistory = []
+    }
+
+    lead.stageHistory.push({
+      from: previousStage,
+      to: newLeadStage,
+      changedBy: userId,
+      changedAt: new Date(),
+      note: note?.trim() || '',
+    })
+  }
+
+  await lead.save()
+
+  console.log('==============================================')
+  console.log('🔄 LEAD STAGE SINCRONIZADO')
+  console.log('🧲 Lead:', lead._id.toString())
+  console.log('📌 Stage anterior:', previousStage)
+  console.log('📌 Novo stage:', newLeadStage)
+  console.log('🎯 Opportunity stage:', opportunityStage)
+  console.log('👤 Alterado por:', userId?.toString())
   console.log('==============================================')
 
   return lead
@@ -273,9 +527,10 @@ const registerAssignmentHistory = ({
   previousAssignedTo,
   newAssignedTo,
   changedBy,
+  note = '',
 }) => {
   /**
-   * Não registra se não houve mudança.
+   * Não registra se não houve alteração.
    */
 
   if (String(previousAssignedTo || '') === String(newAssignedTo || '')) {
@@ -284,7 +539,7 @@ const registerAssignmentHistory = ({
 
   /**
    * Segurança:
-   * verifica se o schema realmente possui o campo.
+   * verifica se o schema possui o campo.
    */
 
   const assignmentHistoryPath = opportunity.schema?.path('assignmentHistory')
@@ -304,6 +559,7 @@ const registerAssignmentHistory = ({
     to: newAssignedTo || null,
     changedBy,
     changedAt: new Date(),
+    note: note?.trim() || '',
   })
 
   return true
@@ -317,17 +573,19 @@ const registerAssignmentHistory = ({
 
 export const createOpportunity = async (data, userId) => {
   /**
-   * Responsável:
-   *
-   * 1. assignedTo enviado
-   * 2. usuário logado
+   * =======================================================
+   * RESPONSÁVEL
+   * =======================================================
    */
 
   const assignedTo = normalizeAssignedTo(data.assignedTo, userId)
 
   /**
-   * Nunca confiamos no createdBy enviado
-   * pelo frontend.
+   * =======================================================
+   * DADOS PROTEGIDOS
+   * =======================================================
+   *
+   * Nunca confiamos nesses campos vindos do frontend.
    */
 
   const opportunityData = {
@@ -336,10 +594,35 @@ export const createOpportunity = async (data, userId) => {
     createdBy: userId,
 
     assignedTo,
+
+    /**
+     * Garantimos que uma oportunidade nova
+     * comece aberta.
+     */
+
+    status: OPPORTUNITY_OPEN_STATUS,
+
+    /**
+     * Garantimos que o stage inicial seja
+     * nova caso não seja informado.
+     */
+
+    stage: data.stage || OPPORTUNITY_STAGES.NOVA,
   }
 
+  delete opportunityData._id
+  delete opportunityData.stageHistory
+  delete opportunityData.assignmentHistory
+  delete opportunityData.interactions
+  delete opportunityData.wonAt
+  delete opportunityData.lostAt
+  delete opportunityData.lostReason
+  delete opportunityData.sale
+
   /**
-   * Criação.
+   * =======================================================
+   * CRIAÇÃO
+   * =======================================================
    */
 
   const opportunity = await Opportunity.create(opportunityData)
@@ -349,6 +632,8 @@ export const createOpportunity = async (data, userId) => {
   console.log('🎯 Opportunity:', opportunity._id.toString())
   console.log('👤 Criada por:', userId.toString())
   console.log('🧑 Responsável:', assignedTo.toString())
+  console.log('📌 Stage:', opportunity.stage)
+  console.log('📊 Status:', opportunity.status)
   console.log('==============================================')
 
   /**
@@ -500,12 +785,6 @@ export const getOpportunities = async ({
     Opportunity.countDocuments(filter),
   ])
 
-  /**
-   * =======================================================
-   * RESULT DEBUG
-   * =======================================================
-   */
-
   console.log('📦 oportunidades encontradas:', opportunities.length)
 
   console.log('📊 total:', total)
@@ -537,13 +816,24 @@ export const getOpportunities = async ({
  * =========================================================
  */
 
-export const getOpportunityById = async (id) => {
-  return populateOpportunity(
-    Opportunity.findOne({
-      _id: id,
-      isArchived: false,
-    }),
-  )
+export const getOpportunityById = async (id, userId = null, role = 'admin') => {
+  const filter = {
+    _id: id,
+    isArchived: false,
+  }
+
+  /**
+   * Se receber usuário,
+   * aplicamos controle de acesso.
+   */
+
+  if (userId) {
+    const accessFilter = buildOpportunityAccessFilter(userId, role)
+
+    Object.assign(filter, accessFilter)
+  }
+
+  return populateOpportunity(Opportunity.findOne(filter))
 }
 
 /**
@@ -585,27 +875,31 @@ export const updateOpportunity = async (id, data, userId, role) => {
 
   /**
    * =======================================================
-   * LIMPAR CAMPOS PROTEGIDOS
+   * CAMPOS PROTEGIDOS
    * =======================================================
-   *
-   * Esses campos não devem ser alterados
-   * através de update genérico.
    */
 
   const updateData = {
     ...data,
   }
 
+  delete updateData._id
   delete updateData.createdBy
   delete updateData.stageHistory
   delete updateData.interactions
   delete updateData.assignmentHistory
+  delete updateData.wonAt
+  delete updateData.lostAt
+  delete updateData.lostReason
+  delete updateData.sale
 
   /**
-   * Também protegemos o _id.
+   * Stage deve ser alterado exclusivamente
+   * por updateOpportunityStage().
    */
 
-  delete updateData._id
+  delete updateData.stage
+  delete updateData.status
 
   /**
    * =======================================================
@@ -636,18 +930,12 @@ export const updateOpportunity = async (id, data, userId, role) => {
 
   /**
    * =======================================================
-   * VERIFICAR ALTERAÇÃO
+   * ALTERAÇÃO DE RESPONSÁVEL
    * =======================================================
    */
 
   const responsibleChanged =
     String(previousAssignedTo || '') !== String(newAssignedTo || '')
-
-  /**
-   * =======================================================
-   * ALTERAÇÃO DE RESPONSÁVEL
-   * =======================================================
-   */
 
   if (responsibleChanged) {
     console.log('==============================================')
@@ -658,34 +946,34 @@ export const updateOpportunity = async (id, data, userId, role) => {
     console.log('📝 Alterado por:', userId.toString())
     console.log('==============================================')
 
-    /**
-     * Registra no histórico.
-     */
-
     registerAssignmentHistory({
       opportunity,
       previousAssignedTo,
       newAssignedTo,
       changedBy: userId,
+      note: data.assignmentNote || '',
     })
-
-    /**
-     * Atualiza responsável.
-     */
 
     opportunity.assignedTo = newAssignedTo
   }
 
   /**
+   * Campo auxiliar que não pertence
+   * ao OpportunitySchema.
+   */
+
+  delete updateData.assignmentNote
+
+  /**
    * =======================================================
-   * APLICAR OUTROS CAMPOS
+   * APLICAR CAMPOS
    * =======================================================
    */
 
   Object.assign(opportunity, updateData)
 
   /**
-   * Garantia final do responsável.
+   * Garantia final.
    */
 
   if (responsibleChanged) {
@@ -704,17 +992,6 @@ export const updateOpportunity = async (id, data, userId, role) => {
    * =======================================================
    * SINCRONIZAR LEAD
    * =======================================================
-   *
-   * Se:
-   *
-   * Corretor A
-   *    ↓
-   * Corretor B
-   *
-   * então:
-   *
-   * Opportunity → B
-   * Lead        → B
    */
 
   if (responsibleChanged && opportunity.lead) {
@@ -734,6 +1011,21 @@ export const updateOpportunity = async (id, data, userId, role) => {
  * =========================================================
  * ALTERAR STAGE
  * =========================================================
+ *
+ * RESPONSABILIDADES:
+ *
+ * 1. Alterar Opportunity.stage
+ * 2. Atualizar Opportunity.status
+ * 3. Registrar stageHistory
+ * 4. Sincronizar Lead
+ *
+ * NÃO:
+ *
+ * - cria Sale
+ * - cria Proposal
+ * - altera Lead.status
+ *
+ * A Sale possui seu próprio ciclo.
  */
 
 export const updateOpportunityStage = async (
@@ -746,6 +1038,16 @@ export const updateOpportunityStage = async (
 ) => {
   /**
    * =======================================================
+   * VALIDAR STAGE
+   * =======================================================
+   */
+
+  if (!isValidOpportunityStage(newStage)) {
+    throw new Error(`Stage de oportunidade inválido: ${newStage}`)
+  }
+
+  /**
+   * =======================================================
    * ACCESS
    * =======================================================
    */
@@ -753,6 +1055,12 @@ export const updateOpportunityStage = async (
   const filter = buildOpportunityAccessFilter(userId, role)
 
   filter._id = id
+
+  /**
+   * =======================================================
+   * BUSCAR OPORTUNIDADE
+   * =======================================================
+   */
 
   const opportunity = await Opportunity.findOne(filter)
 
@@ -774,7 +1082,7 @@ export const updateOpportunityStage = async (
 
   /**
    * =======================================================
-   * ALTERAR STAGE
+   * NOVO STAGE
    * =======================================================
    */
 
@@ -784,36 +1092,69 @@ export const updateOpportunityStage = async (
    * =======================================================
    * GANHA
    * =======================================================
+   *
+   * Opportunity:
+   *
+   * stage  = ganha
+   * status = ganha
+   *
+   * Lead:
+   *
+   * stage = fechado
+   *
+   * Sale:
+   *
+   * não criada aqui.
    */
 
-  if (newStage === 'ganha') {
-    opportunity.status = 'ganha'
+  if (newStage === OPPORTUNITY_TERMINAL_STAGES.WON) {
+    opportunity.status = OPPORTUNITY_WON_STATUS
 
     opportunity.wonAt = new Date()
 
     opportunity.lostAt = null
 
     opportunity.lostReason = ''
-  } else if (newStage === 'perdida') {
+
+    /**
+     * A probabilidade de fechamento
+     * passa naturalmente para 100%.
+     */
+
+    opportunity.probability = 100
+  } else if (newStage === OPPORTUNITY_TERMINAL_STAGES.LOST) {
     /**
      * =======================================================
      * PERDIDA
      * =======================================================
      */
-    opportunity.status = 'perdida'
+    opportunity.status = OPPORTUNITY_LOST_STATUS
 
     opportunity.lostAt = new Date()
 
     opportunity.wonAt = null
 
     opportunity.lostReason = lostReason?.trim() || ''
+
+    /**
+     * O motivo de perda é importante.
+     */
+
+    if (!opportunity.lostReason) {
+      console.warn('⚠️ Oportunidade marcada como perdida sem motivo.')
+    }
+
+    /**
+     * Não obrigamos probability = 0
+     * para preservar histórico comercial.
+     */
   } else {
     /**
      * =======================================================
      * ABERTA
      * =======================================================
      */
-    opportunity.status = 'aberta'
+    opportunity.status = OPPORTUNITY_OPEN_STATUS
 
     opportunity.wonAt = null
 
@@ -828,6 +1169,10 @@ export const updateOpportunityStage = async (
    * =======================================================
    */
 
+  if (!Array.isArray(opportunity.stageHistory)) {
+    opportunity.stageHistory = []
+  }
+
   opportunity.stageHistory.push({
     from: previousStage,
     to: newStage,
@@ -836,7 +1181,45 @@ export const updateOpportunityStage = async (
     note: note?.trim() || '',
   })
 
+  /**
+   * =======================================================
+   * SALVAR OPPORTUNITY
+   * =======================================================
+   */
+
   await opportunity.save()
+
+  console.log('==============================================')
+  console.log('🚀 OPPORTUNITY STAGE ALTERADO')
+  console.log('🎯 Opportunity:', opportunity._id.toString())
+  console.log('📌 Stage anterior:', previousStage)
+  console.log('📌 Novo stage:', newStage)
+  console.log('📊 Status:', opportunity.status)
+  console.log('👤 Alterado por:', userId?.toString())
+  console.log('==============================================')
+
+  /**
+   * =======================================================
+   * SINCRONIZAR LEAD
+   * =======================================================
+   *
+   * Somente stages terminais alteram o Lead.
+   */
+
+  if (opportunity.lead) {
+    await syncLeadStage({
+      leadId: opportunity.lead,
+      opportunityStage: newStage,
+      userId,
+      note,
+    })
+  }
+
+  /**
+   * =======================================================
+   * RETORNO
+   * =======================================================
+   */
 
   return populateOpportunity(Opportunity.findById(opportunity._id))
 }
@@ -866,17 +1249,50 @@ export const addOpportunityInteraction = async (id, data, userId, role) => {
 
   /**
    * =======================================================
-   * INTERACTION
+   * VALIDAR TIPO
    * =======================================================
    */
 
+  if (!data?.type) {
+    throw new Error('O tipo da interação é obrigatório.')
+  }
+
+  /**
+   * =======================================================
+   * INTERAÇÃO
+   * =======================================================
+   */
+
+  if (!Array.isArray(opportunity.interactions)) {
+    opportunity.interactions = []
+  }
+
   opportunity.interactions.push({
     type: data.type,
+
     description: data.description || '',
+
     createdBy: userId,
   })
 
   opportunity.lastInteractionAt = new Date()
+
+  /**
+   * =======================================================
+   * PRÓXIMA AÇÃO
+   * =======================================================
+   *
+   * Se enviada, atualizamos também
+   * a próxima ação comercial.
+   */
+
+  if (Object.prototype.hasOwnProperty.call(data, 'nextAction')) {
+    opportunity.nextAction = data.nextAction || ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(data, 'nextActionAt')) {
+    opportunity.nextActionAt = data.nextActionAt || null
+  }
 
   await opportunity.save()
 
@@ -914,10 +1330,16 @@ export const archiveOpportunity = async (id, userId, role) => {
 
 export default {
   createOpportunity,
+
   getOpportunities,
+
   getOpportunityById,
+
   updateOpportunity,
+
   updateOpportunityStage,
+
   addOpportunityInteraction,
+
   archiveOpportunity,
 }

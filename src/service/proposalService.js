@@ -8,6 +8,7 @@ import Proposal, {
 import Lead from '../models/Lead.js'
 import Property from '../models/Property.js'
 import User from '../models/User.js'
+import Opportunity from '../models/Opportunity.js'
 
 /*
 |--------------------------------------------------------------------------
@@ -59,6 +60,16 @@ const normalizeNumber = (value) => {
   return Number.isFinite(number) ? number : 0
 }
 
+const normalizePositiveInteger = (value, fallback = 1) => {
+  const number = Number(value)
+
+  if (!Number.isFinite(number)) {
+    return fallback
+  }
+
+  return Math.max(Math.floor(number), 1)
+}
+
 const calculateBalance = ({
   proposalPrice,
   downPayment = 0,
@@ -66,6 +77,13 @@ const calculateBalance = ({
   fgts = 0,
 }) => {
   return Math.max(proposalPrice - downPayment - financing - fgts, 0)
+}
+
+const formatCurrency = (value) => {
+  return normalizeNumber(value).toLocaleString('pt-BR', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
 }
 
 const getPagination = ({ page = 1, limit = 20 } = {}) => {
@@ -99,12 +117,6 @@ const buildPaginationResponse = ({ page, limit, total }) => {
 |--------------------------------------------------------------------------
 */
 
-/**
- * Retorna todos os status existentes no Proposal model.
- *
- * Mantemos essa função em apenas um lugar para evitar
- * declarações duplicadas.
- */
 const getProposalStatuses = () => {
   return {
     draft: PROPOSAL_STATUS.DRAFT,
@@ -326,6 +338,10 @@ const addLeadProposalTimeline = ({
   }
 
   if (!currentHistory) {
+    if (!Array.isArray(lead.stageHistory)) {
+      lead.stageHistory = []
+    }
+
     lead.stageHistory.push({
       stage: lead.stage,
       changedBy: performedBy,
@@ -471,6 +487,48 @@ const getPropertyForProposal = async (propertyId, session = null) => {
 
 /*
 |--------------------------------------------------------------------------
+| BUSCA OPORTUNIDADE
+|--------------------------------------------------------------------------
+*/
+
+const getOpportunityForProposal = async (opportunityId, session = null) => {
+  const query = Opportunity.findById(opportunityId)
+
+  if (session) {
+    query.session(session)
+  }
+
+  return query
+}
+
+/*
+|--------------------------------------------------------------------------
+| VALIDAÇÃO DA OPORTUNIDADE
+|--------------------------------------------------------------------------
+*/
+
+const validateOpportunityForProposal = ({ opportunity, lead }) => {
+  if (!opportunity) {
+    throw createError('Oportunidade não encontrada.', 404)
+  }
+
+  if (opportunity.isDeleted === true) {
+    throw createError('Esta oportunidade foi removida.')
+  }
+
+  const opportunityLeadId = opportunity.lead?._id || opportunity.lead
+
+  if (!opportunityLeadId || String(opportunityLeadId) !== String(lead._id)) {
+    throw createError(
+      'A oportunidade selecionada não pertence ao Lead informado.',
+    )
+  }
+
+  return true
+}
+
+/*
+|--------------------------------------------------------------------------
 | CREATE PROPOSAL
 |--------------------------------------------------------------------------
 */
@@ -479,21 +537,59 @@ export const createProposal = async ({ data, user }) => {
   const session = await mongoose.startSession()
 
   try {
-    let createdProposal
+    let createdProposalId = null
 
     await session.withTransaction(async () => {
+      /*
+       * --------------------------------------------------------------
+       * VALIDAÇÃO INICIAL
+       * --------------------------------------------------------------
+       */
+
+      if (!data) {
+        throw createError('Dados da proposta não informados.')
+      }
+
+      if (!user?._id) {
+        throw createError('Usuário não autenticado.', 401)
+      }
+
+      /*
+       * --------------------------------------------------------------
+       * IDS
+       * --------------------------------------------------------------
+       */
+
       const leadId = getObjectId(data.lead, 'Lead')
 
       const propertyId = getObjectId(data.property, 'Imóvel')
 
+      const opportunityId = getObjectId(data.opportunity, 'Oportunidade')
+
+      /*
+       * --------------------------------------------------------------
+       * LEAD
+       * --------------------------------------------------------------
+       */
+
       const lead = await getLeadForProposal(leadId, session)
 
-      const property = await getPropertyForProposal(propertyId, session)
+      if (!lead) {
+        throw createError('Lead não encontrado.', 404)
+      }
 
       validateLeadAccess({
         lead,
         user,
       })
+
+      /*
+       * --------------------------------------------------------------
+       * IMÓVEL
+       * --------------------------------------------------------------
+       */
+
+      const property = await getPropertyForProposal(propertyId, session)
 
       if (!property) {
         throw createError('Imóvel não encontrado.', 404)
@@ -503,17 +599,52 @@ export const createProposal = async ({ data, user }) => {
         throw createError('Este imóvel não está disponível.')
       }
 
+      /*
+       * --------------------------------------------------------------
+       * OPORTUNIDADE
+       * --------------------------------------------------------------
+       */
+
+      const opportunity = await getOpportunityForProposal(
+        opportunityId,
+        session,
+      )
+
+      validateOpportunityForProposal({
+        opportunity,
+        lead,
+      })
+
+      /*
+       * --------------------------------------------------------------
+       * CORRETOR
+       * --------------------------------------------------------------
+       */
+
       const brokerId = isAdmin(user) ? data.broker || lead.assignedTo : user._id
 
       if (!brokerId) {
         throw createError('O Lead não possui corretor responsável.')
       }
 
+      /*
+       * --------------------------------------------------------------
+       * O CORRETOR DA PROPOSTA PRECISA
+       * SER O CORRETOR RESPONSÁVEL PELO LEAD
+       * --------------------------------------------------------------
+       */
+
       if (lead.assignedTo && String(brokerId) !== String(lead.assignedTo)) {
         throw createError(
           'O corretor da proposta deve ser o corretor responsável pelo Lead.',
         )
       }
+
+      /*
+       * --------------------------------------------------------------
+       * BUSCAR CORRETOR
+       * --------------------------------------------------------------
+       */
 
       const broker = await User.findById(brokerId).session(session)
 
@@ -524,6 +655,12 @@ export const createProposal = async ({ data, user }) => {
       if (broker.role !== BROKER_ROLE) {
         throw createError('O usuário selecionado não é um corretor.')
       }
+
+      /*
+       * --------------------------------------------------------------
+       * VALORES
+       * --------------------------------------------------------------
+       */
 
       const values = normalizeProposalValues({
         propertyPrice: data.values?.propertyPrice ?? property.price,
@@ -537,21 +674,54 @@ export const createProposal = async ({ data, user }) => {
         fgts: data.values?.fgts,
       })
 
-      const validityDays = Math.max(Number(data.validityDays ?? 7), 1)
+      /*
+       * --------------------------------------------------------------
+       * VALIDADE
+       * --------------------------------------------------------------
+       */
+
+      const validityDays = normalizePositiveInteger(data.validityDays, 7)
 
       const expiresAt = new Date()
 
       expiresAt.setDate(expiresAt.getDate() + validityDays)
 
+      /*
+       * --------------------------------------------------------------
+       * CRIAR PROPOSTA
+       * --------------------------------------------------------------
+       */
+
       const proposal = new Proposal({
+        /*
+         * RELACIONAMENTOS
+         */
+
+        opportunity: opportunity._id,
+
         lead: lead._id,
+
         property: property._id,
+
         broker: broker._id,
+
         createdBy: user._id,
+
+        /*
+         * STATUS
+         */
 
         status: PROPOSAL_STATUS.DRAFT,
 
+        /*
+         * VALORES
+         */
+
         values,
+
+        /*
+         * PAGAMENTO
+         */
 
         paymentMethod: data.paymentMethod || 'financing',
 
@@ -559,35 +729,83 @@ export const createProposal = async ({ data, user }) => {
 
         installmentValue: normalizeNumber(data.installmentValue),
 
+        /*
+         * VALIDADE
+         */
+
         validityDays,
 
         expiresAt,
 
-        clientMessage: data.clientMessage || '',
+        /*
+         * MENSAGEM
+         */
+
+        clientMessage:
+          typeof data.clientMessage === 'string'
+            ? data.clientMessage.trim()
+            : '',
+
+        /*
+         * SNAPSHOTS
+         */
 
         leadSnapshot: buildLeadSnapshot(lead),
 
         propertySnapshot: buildPropertySnapshot(property),
 
+        /*
+         * HISTÓRICO
+         */
+
         history: [
           createProposalHistoryEntry({
             action: 'created',
+
             performedBy: user._id,
+
             previousStatus: null,
+
             newStatus: PROPOSAL_STATUS.DRAFT,
 
             metadata: {
-              property: property._id,
+              opportunity: opportunity._id,
+
               lead: lead._id,
+
+              property: property._id,
+
+              broker: broker._id,
+
               proposalPrice: values.proposalPrice,
+
+              propertyPrice: values.propertyPrice,
+
+              paymentMethod: data.paymentMethod || 'financing',
+
+              validityDays,
             },
           }),
         ],
       })
 
+      /*
+       * --------------------------------------------------------------
+       * SALVAR PROPOSTA
+       * --------------------------------------------------------------
+       */
+
       await proposal.save({
         session,
       })
+
+      createdProposalId = proposal._id
+
+      /*
+       * --------------------------------------------------------------
+       * INCREMENTAR PROPOSAL COUNT
+       * --------------------------------------------------------------
+       */
 
       await Property.findByIdAndUpdate(
         property._id,
@@ -601,26 +819,36 @@ export const createProposal = async ({ data, user }) => {
         },
       )
 
+      /*
+       * --------------------------------------------------------------
+       * HISTÓRICO DO LEAD
+       * --------------------------------------------------------------
+       */
+
       await addLeadProposalHistory({
         lead,
+
         proposalId: proposal._id,
+
         action: 'proposal_created',
+
         performedBy: user._id,
 
-        description: `Proposta criada no valor de R$ ${values.proposalPrice.toLocaleString(
-          'pt-BR',
-          {
-            minimumFractionDigits: 2,
-          },
+        description: `Proposta criada no valor de R$ ${formatCurrency(
+          values.proposalPrice,
         )}.`,
 
         session,
       })
-
-      createdProposal = proposal
     })
 
-    return Proposal.findById(createdProposal._id).populate(PROPOSAL_POPULATE)
+    /*
+     * --------------------------------------------------------------
+     * RETORNO
+     * --------------------------------------------------------------
+     */
+
+    return Proposal.findById(createdProposalId).populate(PROPOSAL_POPULATE)
   } finally {
     await session.endSession()
   }
@@ -654,6 +882,14 @@ export const updateProposal = async ({ proposalId, data, user }) => {
     throw createError('Somente propostas em rascunho podem ser editadas.')
   }
 
+  if (!data) {
+    throw createError('Nenhum dado informado para atualização.')
+  }
+
+  /*
+   * VALORES
+   */
+
   if (data.values) {
     proposal.values = normalizeProposalValues({
       propertyPrice: data.values.propertyPrice ?? proposal.values.propertyPrice,
@@ -668,6 +904,10 @@ export const updateProposal = async ({ proposalId, data, user }) => {
     })
   }
 
+  /*
+   * PAGAMENTO
+   */
+
   if (data.paymentMethod !== undefined) {
     proposal.paymentMethod = data.paymentMethod
   }
@@ -680,8 +920,12 @@ export const updateProposal = async ({ proposalId, data, user }) => {
     proposal.installmentValue = normalizeNumber(data.installmentValue)
   }
 
+  /*
+   * VALIDADE
+   */
+
   if (data.validityDays !== undefined) {
-    const validityDays = Math.max(Number(data.validityDays), 1)
+    const validityDays = normalizePositiveInteger(data.validityDays, 7)
 
     proposal.validityDays = validityDays
 
@@ -692,15 +936,27 @@ export const updateProposal = async ({ proposalId, data, user }) => {
     proposal.expiresAt = expiresAt
   }
 
+  /*
+   * MENSAGEM
+   */
+
   if (data.clientMessage !== undefined) {
-    proposal.clientMessage = data.clientMessage
+    proposal.clientMessage =
+      typeof data.clientMessage === 'string' ? data.clientMessage.trim() : ''
   }
+
+  /*
+   * HISTÓRICO
+   */
 
   proposal.history.push(
     createProposalHistoryEntry({
       action: 'updated',
+
       performedBy: user._id,
+
       previousStatus: proposal.status,
+
       newStatus: proposal.status,
 
       metadata: {
@@ -711,14 +967,22 @@ export const updateProposal = async ({ proposalId, data, user }) => {
 
   await proposal.save()
 
+  /*
+   * HISTÓRICO DO LEAD
+   */
+
   const lead = await Lead.findById(proposal.lead)
 
   if (lead) {
     await addLeadProposalHistory({
       lead,
+
       proposalId: proposal._id,
+
       action: 'proposal_updated',
+
       performedBy: user._id,
+
       description: 'Proposta em rascunho atualizada.',
     })
   }
@@ -736,7 +1000,7 @@ export const submitProposal = async ({ proposalId, user }) => {
   const session = await mongoose.startSession()
 
   try {
-    let updatedProposal
+    let updatedProposalId = null
 
     await session.withTransaction(async () => {
       const id = getObjectId(proposalId, 'Proposta')
@@ -745,6 +1009,10 @@ export const submitProposal = async ({ proposalId, user }) => {
 
       if (!proposal) {
         throw createError('Proposta não encontrada.', 404)
+      }
+
+      if (proposal.isDeleted) {
+        throw createError('Esta proposta foi removida.')
       }
 
       if (proposal.status !== PROPOSAL_STATUS.DRAFT) {
@@ -778,8 +1046,11 @@ export const submitProposal = async ({ proposalId, user }) => {
       proposal.history.push(
         createProposalHistoryEntry({
           action: 'submitted',
+
           performedBy: user._id,
+
           previousStatus,
+
           newStatus: PROPOSAL_STATUS.PENDING,
         }),
       )
@@ -790,7 +1061,9 @@ export const submitProposal = async ({ proposalId, user }) => {
 
       await updateLeadStage({
         lead,
+
         newStage: PIPELINE_STAGES.PROPOSAL_SENT,
+
         performedBy: user._id,
 
         reason: 'Proposta enviada para aprovação administrativa.',
@@ -800,8 +1073,11 @@ export const submitProposal = async ({ proposalId, user }) => {
 
       await addLeadProposalHistory({
         lead,
+
         proposalId: proposal._id,
+
         action: 'proposal_submitted',
+
         performedBy: user._id,
 
         description: 'Proposta enviada para aprovação administrativa.',
@@ -809,10 +1085,10 @@ export const submitProposal = async ({ proposalId, user }) => {
         session,
       })
 
-      updatedProposal = proposal
+      updatedProposalId = proposal._id
     })
 
-    return Proposal.findById(updatedProposal._id).populate(PROPOSAL_POPULATE)
+    return Proposal.findById(updatedProposalId).populate(PROPOSAL_POPULATE)
   } finally {
     await session.endSession()
   }
@@ -832,7 +1108,7 @@ export const approveProposal = async ({ proposalId, user, comment = '' }) => {
   const session = await mongoose.startSession()
 
   try {
-    let updatedProposal
+    let updatedProposalId = null
 
     await session.withTransaction(async () => {
       const id = getObjectId(proposalId, 'Proposta')
@@ -841,6 +1117,10 @@ export const approveProposal = async ({ proposalId, user, comment = '' }) => {
 
       if (!proposal) {
         throw createError('Proposta não encontrada.', 404)
+      }
+
+      if (proposal.isDeleted) {
+        throw createError('Esta proposta foi removida.')
       }
 
       if (proposal.status !== PROPOSAL_STATUS.PENDING) {
@@ -863,15 +1143,19 @@ export const approveProposal = async ({ proposalId, user, comment = '' }) => {
 
       proposal.approvedAt = new Date()
 
-      proposal.adminComment = comment || ''
+      proposal.adminComment = typeof comment === 'string' ? comment.trim() : ''
 
       proposal.history.push(
         createProposalHistoryEntry({
           action: 'approved',
+
           performedBy: user._id,
+
           previousStatus,
+
           newStatus: PROPOSAL_STATUS.ACCEPTED,
-          comment: comment || '',
+
+          comment: proposal.adminComment,
         }),
       )
 
@@ -881,7 +1165,9 @@ export const approveProposal = async ({ proposalId, user, comment = '' }) => {
 
       await updateLeadStage({
         lead,
+
         newStage: PIPELINE_STAGES.NEGOTIATION,
+
         performedBy: user._id,
 
         reason: 'Proposta aprovada pelo administrador.',
@@ -891,24 +1177,24 @@ export const approveProposal = async ({ proposalId, user, comment = '' }) => {
 
       await addLeadProposalHistory({
         lead,
+
         proposalId: proposal._id,
+
         action: 'proposal_approved',
+
         performedBy: user._id,
 
-        description: `Proposta aprovada pelo administrador no valor de R$ ${proposal.values.proposalPrice.toLocaleString(
-          'pt-BR',
-          {
-            minimumFractionDigits: 2,
-          },
+        description: `Proposta aprovada pelo administrador no valor de R$ ${formatCurrency(
+          proposal.values.proposalPrice,
         )}.`,
 
         session,
       })
 
-      updatedProposal = proposal
+      updatedProposalId = proposal._id
     })
 
-    return Proposal.findById(updatedProposal._id).populate(PROPOSAL_POPULATE)
+    return Proposal.findById(updatedProposalId).populate(PROPOSAL_POPULATE)
   } finally {
     await session.endSession()
   }
@@ -929,10 +1215,12 @@ export const rejectProposal = async ({ proposalId, user, reason }) => {
     throw createError('Informe o motivo da rejeição.')
   }
 
+  const cleanReason = reason.trim()
+
   const session = await mongoose.startSession()
 
   try {
-    let updatedProposal
+    let updatedProposalId = null
 
     await session.withTransaction(async () => {
       const id = getObjectId(proposalId, 'Proposta')
@@ -941,6 +1229,10 @@ export const rejectProposal = async ({ proposalId, user, reason }) => {
 
       if (!proposal) {
         throw createError('Proposta não encontrada.', 404)
+      }
+
+      if (proposal.isDeleted) {
+        throw createError('Esta proposta foi removida.')
       }
 
       if (proposal.status !== PROPOSAL_STATUS.PENDING) {
@@ -959,19 +1251,23 @@ export const rejectProposal = async ({ proposalId, user, reason }) => {
 
       proposal.status = PROPOSAL_STATUS.REJECTED
 
-      proposal.rejectionReason = reason.trim()
+      proposal.rejectionReason = cleanReason
 
-      proposal.adminComment = reason.trim()
+      proposal.adminComment = cleanReason
 
       proposal.rejectedAt = new Date()
 
       proposal.history.push(
         createProposalHistoryEntry({
           action: 'rejected',
+
           performedBy: user._id,
+
           previousStatus,
+
           newStatus: PROPOSAL_STATUS.REJECTED,
-          comment: reason.trim(),
+
+          comment: cleanReason,
         }),
       )
 
@@ -981,19 +1277,22 @@ export const rejectProposal = async ({ proposalId, user, reason }) => {
 
       await addLeadProposalHistory({
         lead,
+
         proposalId: proposal._id,
+
         action: 'proposal_rejected',
+
         performedBy: user._id,
 
-        description: `Proposta rejeitada pelo administrador. Motivo: ${reason.trim()}`,
+        description: `Proposta rejeitada pelo administrador. Motivo: ${cleanReason}`,
 
         session,
       })
 
-      updatedProposal = proposal
+      updatedProposalId = proposal._id
     })
 
-    return Proposal.findById(updatedProposal._id).populate(PROPOSAL_POPULATE)
+    return Proposal.findById(updatedProposalId).populate(PROPOSAL_POPULATE)
   } finally {
     await session.endSession()
   }
@@ -1009,7 +1308,7 @@ export const cancelProposal = async ({ proposalId, user, reason = '' }) => {
   const session = await mongoose.startSession()
 
   try {
-    let updatedProposal
+    let updatedProposalId = null
 
     await session.withTransaction(async () => {
       const id = getObjectId(proposalId, 'Proposta')
@@ -1018,6 +1317,10 @@ export const cancelProposal = async ({ proposalId, user, reason = '' }) => {
 
       if (!proposal) {
         throw createError('Proposta não encontrada.', 404)
+      }
+
+      if (proposal.isDeleted) {
+        throw createError('Esta proposta foi removida.')
       }
 
       const finalStatuses = [
@@ -1038,6 +1341,8 @@ export const cancelProposal = async ({ proposalId, user, reason = '' }) => {
 
       const previousStatus = proposal.status
 
+      const cleanReason = typeof reason === 'string' ? reason.trim() : ''
+
       proposal.status = PROPOSAL_STATUS.CANCELLED
 
       proposal.cancelledAt = new Date()
@@ -1045,10 +1350,14 @@ export const cancelProposal = async ({ proposalId, user, reason = '' }) => {
       proposal.history.push(
         createProposalHistoryEntry({
           action: 'cancelled',
+
           performedBy: user._id,
+
           previousStatus,
+
           newStatus: PROPOSAL_STATUS.CANCELLED,
-          comment: reason || '',
+
+          comment: cleanReason,
         }),
       )
 
@@ -1061,22 +1370,25 @@ export const cancelProposal = async ({ proposalId, user, reason = '' }) => {
       if (lead) {
         await addLeadProposalHistory({
           lead,
+
           proposalId: proposal._id,
+
           action: 'proposal_cancelled',
+
           performedBy: user._id,
 
-          description: reason
-            ? `Proposta cancelada. Motivo: ${reason}`
+          description: cleanReason
+            ? `Proposta cancelada. Motivo: ${cleanReason}`
             : 'Proposta cancelada.',
 
           session,
         })
       }
 
-      updatedProposal = proposal
+      updatedProposalId = proposal._id
     })
 
-    return Proposal.findById(updatedProposal._id).populate(PROPOSAL_POPULATE)
+    return Proposal.findById(updatedProposalId).populate(PROPOSAL_POPULATE)
   } finally {
     await session.endSession()
   }
@@ -1123,6 +1435,7 @@ export const getProposals = async ({
   broker,
   lead,
   property,
+  opportunity,
   startDate,
   endDate,
   sort = '-createdAt',
@@ -1140,6 +1453,10 @@ export const getProposals = async ({
     isDeleted: false,
   }
 
+  /*
+   * CORRETOR
+   */
+
   if (isBroker(user)) {
     filter.broker = user._id
   }
@@ -1148,13 +1465,33 @@ export const getProposals = async ({
     filter.broker = getObjectId(broker, 'Corretor')
   }
 
+  /*
+   * LEAD
+   */
+
   if (lead) {
     filter.lead = getObjectId(lead, 'Lead')
   }
 
+  /*
+   * IMÓVEL
+   */
+
   if (property) {
     filter.property = getObjectId(property, 'Imóvel')
   }
+
+  /*
+   * OPORTUNIDADE
+   */
+
+  if (opportunity) {
+    filter.opportunity = getObjectId(opportunity, 'Oportunidade')
+  }
+
+  /*
+   * STATUS
+   */
 
   if (status) {
     if (Array.isArray(status)) {
@@ -1166,11 +1503,19 @@ export const getProposals = async ({
     }
   }
 
+  /*
+   * DATA
+   */
+
   if (startDate || endDate) {
     filter.createdAt = {}
 
     if (startDate) {
       const start = new Date(startDate)
+
+      if (Number.isNaN(start.getTime())) {
+        throw createError('Data inicial inválida.')
+      }
 
       start.setHours(0, 0, 0, 0)
 
@@ -1179,6 +1524,10 @@ export const getProposals = async ({
 
     if (endDate) {
       const end = new Date(endDate)
+
+      if (Number.isNaN(end.getTime())) {
+        throw createError('Data final inválida.')
+      }
 
       end.setHours(23, 59, 59, 999)
 
@@ -1196,27 +1545,57 @@ export const getProposals = async ({
       'i',
     )
 
-    const [leads, properties, brokers] = await Promise.all([
+    const [leads, properties, brokers, opportunities] = await Promise.all([
       Lead.find({
         $or: [
-          { name: searchRegex },
-          { email: searchRegex },
-          { phone: searchRegex },
+          {
+            name: searchRegex,
+          },
+          {
+            email: searchRegex,
+          },
+          {
+            phone: searchRegex,
+          },
         ],
       }).select('_id'),
 
       Property.find({
         $or: [
-          { title: searchRegex },
-          { name: searchRegex },
-          { code: searchRegex },
+          {
+            title: searchRegex,
+          },
+          {
+            name: searchRegex,
+          },
+          {
+            code: searchRegex,
+          },
         ],
       }).select('_id'),
 
       User.find({
         role: BROKER_ROLE,
 
-        $or: [{ name: searchRegex }, { email: searchRegex }],
+        $or: [
+          {
+            name: searchRegex,
+          },
+          {
+            email: searchRegex,
+          },
+        ],
+      }).select('_id'),
+
+      Opportunity.find({
+        $or: [
+          {
+            title: searchRegex,
+          },
+          {
+            name: searchRegex,
+          },
+        ],
       }).select('_id'),
     ])
 
@@ -1225,6 +1604,8 @@ export const getProposals = async ({
     const propertyIds = properties.map((item) => item._id)
 
     const brokerIds = brokers.map((item) => item._id)
+
+    const opportunityIds = opportunities.map((item) => item._id)
 
     const orConditions = []
 
@@ -1252,6 +1633,14 @@ export const getProposals = async ({
       })
     }
 
+    if (opportunityIds.length) {
+      orConditions.push({
+        opportunity: {
+          $in: opportunityIds,
+        },
+      })
+    }
+
     if (orConditions.length) {
       filter.$or = orConditions
     } else {
@@ -1274,6 +1663,7 @@ export const getProposals = async ({
   ]
 
   let sortField = 'createdAt'
+
   let sortDirection = -1
 
   if (sort) {
@@ -1281,9 +1671,14 @@ export const getProposals = async ({
 
     if (allowedSortFields.includes(cleanSort)) {
       sortField = cleanSort
+
       sortDirection = sort.startsWith('-') ? -1 : 1
     }
   }
+
+  /*
+   * CONSULTA
+   */
 
   const [proposals, total] = await Promise.all([
     Proposal.find(filter)
@@ -1399,6 +1794,59 @@ export const getProposalsByProperty = async ({ propertyId, user }) => {
 
 /*
 |--------------------------------------------------------------------------
+| GET PROPOSALS BY OPPORTUNITY
+|--------------------------------------------------------------------------
+*/
+
+export const getProposalsByOpportunity = async ({ opportunityId, user }) => {
+  const id = getObjectId(opportunityId, 'Oportunidade')
+
+  const opportunity = await Opportunity.findById(id)
+
+  if (!opportunity) {
+    throw createError('Oportunidade não encontrada.', 404)
+  }
+
+  if (opportunity.isDeleted) {
+    throw createError('Esta oportunidade foi removida.')
+  }
+
+  const opportunityLeadId = opportunity.lead?._id || opportunity.lead
+
+  if (!opportunityLeadId) {
+    throw createError('A oportunidade não possui Lead associado.')
+  }
+
+  const lead = await Lead.findById(opportunityLeadId)
+
+  if (!lead) {
+    throw createError('Lead da oportunidade não encontrado.', 404)
+  }
+
+  validateLeadAccess({
+    lead,
+    user,
+  })
+
+  const filter = {
+    opportunity: id,
+    isDeleted: false,
+  }
+
+  if (isBroker(user)) {
+    filter.broker = user._id
+  }
+
+  return Proposal.find(filter)
+    .populate(PROPOSAL_POPULATE)
+    .sort({
+      createdAt: -1,
+    })
+    .lean()
+}
+
+/*
+|--------------------------------------------------------------------------
 | METRICS
 |--------------------------------------------------------------------------
 */
@@ -1413,6 +1861,10 @@ export const getProposalMetrics = async ({
     isDeleted: false,
   }
 
+  /*
+   * CORRETOR
+   */
+
   if (isBroker(user)) {
     match.broker = getObjectId(user._id, 'Usuário')
   }
@@ -1420,6 +1872,10 @@ export const getProposalMetrics = async ({
   if (isAdmin(user) && broker) {
     match.broker = getObjectId(broker, 'Corretor')
   }
+
+  /*
+   * DATA
+   */
 
   if (startDate || endDate) {
     match.createdAt = {}
@@ -1652,8 +2108,11 @@ export const getProposalMetrics = async ({
       {
         $lookup: {
           from: 'users',
+
           localField: '_id',
+
           foreignField: '_id',
+
           as: 'broker',
         },
       },
@@ -1661,6 +2120,7 @@ export const getProposalMetrics = async ({
       {
         $unwind: {
           path: '$broker',
+
           preserveNullAndEmptyArrays: true,
         },
       },
@@ -1668,13 +2128,19 @@ export const getProposalMetrics = async ({
       {
         $project: {
           brokerId: '$_id',
+
           brokerName: '$broker.name',
 
           total: 1,
+
           accepted: 1,
+
           pending: 1,
+
           rejected: 1,
+
           totalValue: 1,
+
           acceptedValue: 1,
         },
       },
@@ -1726,8 +2192,11 @@ export const getProposalMetrics = async ({
       {
         $lookup: {
           from: 'properties',
+
           localField: '_id',
+
           foreignField: '_id',
+
           as: 'property',
         },
       },
@@ -1735,6 +2204,7 @@ export const getProposalMetrics = async ({
       {
         $unwind: {
           path: '$property',
+
           preserveNullAndEmptyArrays: true,
         },
       },
@@ -1750,7 +2220,9 @@ export const getProposalMetrics = async ({
           proposalCount: '$property.proposalCount',
 
           total: 1,
+
           accepted: 1,
+
           totalValue: 1,
         },
       },
@@ -1780,6 +2252,7 @@ export const getProposalMetrics = async ({
           _id: {
             $dateToString: {
               format: '%Y-%m-%d',
+
               date: '$createdAt',
             },
           },
@@ -1855,6 +2328,10 @@ export const getProposalMetrics = async ({
     status.total += item.count || 0
   })
 
+  /*
+   * VALORES
+   */
+
   const values = valueMetrics[0] || {
     totalProposalValue: 0,
     averageProposalValue: 0,
@@ -1869,7 +2346,8 @@ export const getProposalMetrics = async ({
   /*
    * TAXA DE APROVAÇÃO
    *
-   * accepted / (accepted + rejected)
+   * accepted /
+   * (accepted + rejected)
    */
 
   const approvalBase = status.accepted + status.rejected
@@ -1889,11 +2367,17 @@ export const getProposalMetrics = async ({
   return {
     summary: {
       total: status.total,
+
       draft: status.draft,
+
       pending: status.pending,
+
       accepted: status.accepted,
+
       rejected: status.rejected,
+
       cancelled: status.cancelled,
+
       expired: status.expired,
     },
 
@@ -1929,15 +2413,28 @@ export const getProposalMetrics = async ({
 
 export default {
   createProposal,
+
   updateProposal,
+
   submitProposal,
+
   approveProposal,
+
   rejectProposal,
+
   cancelProposal,
+
   getProposalById,
+
   getProposals,
+
   getProposalHistory,
+
   getProposalsByLead,
+
   getProposalsByProperty,
+
+  getProposalsByOpportunity,
+
   getProposalMetrics,
 }

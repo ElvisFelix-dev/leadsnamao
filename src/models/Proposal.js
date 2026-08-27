@@ -75,6 +75,13 @@ const proposalSchema = new mongoose.Schema(
      * RELACIONAMENTOS
      */
 
+    opportunity: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Opportunity',
+      required: true,
+      index: true,
+    },
+
     lead: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Lead',
@@ -364,6 +371,11 @@ proposalSchema.index({
 })
 
 proposalSchema.index({
+  opportunity: 1,
+  createdAt: -1,
+})
+
+proposalSchema.index({
   broker: 1,
   status: 1,
 })
@@ -424,6 +436,12 @@ export const PROPOSAL_POPULATE = [
   {
     path: 'history.performedBy',
     select: 'name email avatar role',
+  },
+
+  {
+    path: 'opportunity',
+    select:
+      'title description stage status type temperature priority estimatedValue expectedClosingValue assignedTo createdBy',
   },
 ]
 

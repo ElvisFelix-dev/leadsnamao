@@ -1,219 +1,308 @@
-// controllers/saleController.js
+/*
+|--------------------------------------------------------------------------
+| SALE CONTROLLER
+|--------------------------------------------------------------------------
+|
+| Controller responsável pelo módulo de Vendas.
+|
+| Fluxo principal:
+|
+| Proposal ACCEPTED
+|       ↓
+| createSaleFromProposal()
+|       ↓
+| Sale PENDING
+|       ↓
+| Sale CONTRACT
+|       ↓
+| Sale COMPLETED
+|       ↓
+| Lead GANHO
+|       ↓
+| Property SOLD
+|
+|--------------------------------------------------------------------------
+*/
 
-import * as saleService from '../service/saleService.js'
+import {
+  createSaleFromProposal,
+  getSaleById,
+  getSales,
+  updateSaleStatus,
+  completeSale,
+  cancelSale,
+  updateSalePaymentStatus,
+  getSaleMetrics,
+} from '../service/saleService.js'
 
-// ============================================================
-// HELPERS
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| HELPERS
+|--------------------------------------------------------------------------
+*/
 
-const getUserId = (req) => {
-  return (
-    req.user?._id || req.user?.id || req.auth?.userId || req.auth?.id || null
-  )
-}
-
-const getErrorMessage = (error, fallback) => {
-  return error?.message || error?.response?.data?.message || fallback
-}
-
-const getStatusCode = (error) => {
-  const message = error?.message || ''
-
-  if (
-    message.toLowerCase().includes('não encontrada') ||
-    message.toLowerCase().includes('nao encontrada')
-  ) {
-    return 404
+/**
+ * Obtém o usuário autenticado.
+ *
+ * O middleware de autenticação deve
+ * disponibilizar req.user.
+ */
+const getAuthenticatedUser = (req) => {
+  if (!req.user) {
+    const error = new Error('Usuário não autenticado.')
+    error.statusCode = 401
+    throw error
   }
 
-  if (
-    message.toLowerCase().includes('inválido') ||
-    message.toLowerCase().includes('invalido') ||
-    message.toLowerCase().includes('obrigatório') ||
-    message.toLowerCase().includes('obrigatoria') ||
-    message.toLowerCase().includes('já existe') ||
-    message.toLowerCase().includes('ja existe') ||
-    message.toLowerCase().includes('não pode') ||
-    message.toLowerCase().includes('nao pode')
-  ) {
-    return 400
-  }
-
-  return 500
+  return req.user
 }
 
-// ============================================================
-// CREATE
-// POST /api/sales
-// ============================================================
+/**
+ * Normaliza erro para resposta HTTP.
+ */
+const handleControllerError = (res, error) => {
+  console.error('❌ SaleController:', error)
 
-export const createSale = async (req, res) => {
+  const statusCode =
+    error?.statusCode || (error?.name === 'ValidationError' ? 400 : 500)
+
+  return res.status(statusCode).json({
+    success: false,
+    message: error?.message || 'Erro interno ao processar a venda.',
+  })
+}
+
+/**
+ * Converte valor para número quando necessário.
+ */
+const parseNumber = (value, defaultValue = undefined) => {
+  if (value === undefined || value === null || value === '') {
+    return defaultValue
+  }
+
+  const number = Number(value)
+
+  return Number.isFinite(number) ? number : defaultValue
+}
+
+/*
+|--------------------------------------------------------------------------
+| CREATE SALE FROM PROPOSAL
+|--------------------------------------------------------------------------
+|
+| POST /api/sales/from-proposal/:proposalId
+|
+| Também pode ser utilizado pelo:
+|
+| POST /api/proposals/:proposalId/convert-sale
+|
+| dependendo da configuração das rotas.
+|
+|--------------------------------------------------------------------------
+*/
+
+export const createSaleFromProposalController = async (req, res) => {
   try {
-    const userId = getUserId(req)
+    const user = getAuthenticatedUser(req)
 
-    if (!userId) {
-      return res.status(401).json({
+    const { proposalId } = req.params
+
+    if (!proposalId) {
+      return res.status(400).json({
         success: false,
-        message: 'Usuário não autenticado.',
+        message: 'ID da proposta é obrigatório.',
       })
     }
 
-    const sale = await saleService.createSale(req.body, userId)
+    const { saleNumber, status, paymentStatus, saleDate, notes, commission } =
+      req.body || {}
+
+    const sale = await createSaleFromProposal({
+      proposalId,
+
+      user,
+
+      data: {
+        saleNumber,
+
+        status,
+
+        paymentStatus,
+
+        saleDate,
+
+        notes,
+
+        commission,
+      },
+    })
 
     return res.status(201).json({
       success: true,
+
       message: 'Venda criada com sucesso.',
-      sale,
+
+      data: sale,
     })
   } catch (error) {
-    console.error('❌ Erro ao criar venda:', error)
-
-    return res.status(getStatusCode(error)).json({
-      success: false,
-      message: getErrorMessage(error, 'Não foi possível criar a venda.'),
-    })
+    return handleControllerError(res, error)
   }
 }
 
-// ============================================================
-// GET BY ID
-// GET /api/sales/:id
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| GET SALE BY ID
+|--------------------------------------------------------------------------
+|
+| GET /api/sales/:saleId
+|
+|--------------------------------------------------------------------------
+*/
 
-export const getSaleById = async (req, res) => {
+export const getSaleByIdController = async (req, res) => {
   try {
-    const { id } = req.params
+    const user = getAuthenticatedUser(req)
 
-    const sale = await saleService.getSaleById(id)
+    const { saleId } = req.params
+
+    if (!saleId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID da venda é obrigatório.',
+      })
+    }
+
+    const sale = await getSaleById({
+      saleId,
+
+      user,
+    })
 
     return res.status(200).json({
       success: true,
-      sale,
+
+      data: sale,
     })
   } catch (error) {
-    console.error('❌ Erro ao buscar venda:', error)
-
-    return res.status(getStatusCode(error)).json({
-      success: false,
-      message: getErrorMessage(error, 'Não foi possível buscar a venda.'),
-    })
+    return handleControllerError(res, error)
   }
 }
 
-// ============================================================
-// LIST
-// GET /api/sales
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| GET SALES
+|--------------------------------------------------------------------------
+|
+| GET /api/sales
+|
+| Query params:
+|
+| page
+| limit
+| search
+| status
+| paymentStatus
+| sellerBroker
+| acquisitionBroker
+| lead
+| property
+| startDate
+| endDate
+| sort
+|
+|--------------------------------------------------------------------------
+*/
 
-export const getSales = async (req, res) => {
+export const getSalesController = async (req, res) => {
   try {
+    const user = getAuthenticatedUser(req)
+
     const {
       page,
       limit,
       search,
       status,
       paymentStatus,
-      type,
-      broker,
+      sellerBroker,
+      acquisitionBroker,
       lead,
       property,
-      proposal,
       startDate,
       endDate,
       sort,
     } = req.query
 
-    const result = await saleService.getSales({
-      page,
-      limit,
-      search,
+    const result = await getSales({
+      user,
+
+      page: parseNumber(page, 1),
+
+      limit: parseNumber(limit, 20),
+
+      search: search || '',
+
       status,
+
       paymentStatus,
-      type,
-      broker,
+
+      sellerBroker,
+
+      acquisitionBroker,
+
       lead,
+
       property,
-      proposal,
+
       startDate,
+
       endDate,
-      sort,
+
+      sort: sort || '-createdAt',
     })
 
     return res.status(200).json({
       success: true,
-      ...result,
+
+      data: result.data,
+
+      pagination: result.pagination,
     })
   } catch (error) {
-    console.error('❌ Erro ao buscar vendas:', error)
-
-    return res.status(getStatusCode(error)).json({
-      success: false,
-      message: getErrorMessage(error, 'Não foi possível buscar as vendas.'),
-    })
+    return handleControllerError(res, error)
   }
 }
 
-// ============================================================
-// UPDATE
-// PATCH /api/sales/:id
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| UPDATE SALE STATUS
+|--------------------------------------------------------------------------
+|
+| PATCH /api/sales/:saleId/status
+|
+| Body:
+|
+| {
+|   "status": "contract",
+|   "notes": "Contrato enviado"
+| }
+|
+|--------------------------------------------------------------------------
+*/
 
-export const updateSale = async (req, res) => {
+export const updateSaleStatusController = async (req, res) => {
   try {
-    const { id } = req.params
+    const user = getAuthenticatedUser(req)
 
-    const sale = await saleService.updateSale(id, req.body)
+    const { saleId } = req.params
 
-    return res.status(200).json({
-      success: true,
-      message: 'Venda atualizada com sucesso.',
-      sale,
-    })
-  } catch (error) {
-    console.error('❌ Erro ao atualizar venda:', error)
+    const { status, notes } = req.body || {}
 
-    return res.status(getStatusCode(error)).json({
-      success: false,
-      message: getErrorMessage(error, 'Não foi possível atualizar a venda.'),
-    })
-  }
-}
-
-// ============================================================
-// DELETE
-// DELETE /api/sales/:id
-// ============================================================
-
-export const deleteSale = async (req, res) => {
-  try {
-    const { id } = req.params
-
-    const result = await saleService.deleteSale(id)
-
-    return res.status(200).json({
-      success: true,
-      ...result,
-    })
-  } catch (error) {
-    console.error('❌ Erro ao excluir venda:', error)
-
-    return res.status(getStatusCode(error)).json({
-      success: false,
-      message: getErrorMessage(error, 'Não foi possível excluir a venda.'),
-    })
-  }
-}
-
-// ============================================================
-// CHANGE STATUS
-// PATCH /api/sales/:id/status
-// ============================================================
-
-export const changeSaleStatus = async (req, res) => {
-  try {
-    const { id } = req.params
-
-    const { status } = req.body
+    if (!saleId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID da venda é obrigatório.',
+      })
+    }
 
     if (!status) {
       return res.status(400).json({
@@ -222,446 +311,279 @@ export const changeSaleStatus = async (req, res) => {
       })
     }
 
-    const sale = await saleService.changeSaleStatus(id, status)
+    const sale = await updateSaleStatus({
+      saleId,
+
+      status,
+
+      user,
+
+      notes,
+    })
 
     return res.status(200).json({
       success: true,
+
       message: 'Status da venda atualizado com sucesso.',
-      sale,
+
+      data: sale,
     })
   } catch (error) {
-    console.error('❌ Erro ao alterar status da venda:', error)
-
-    return res.status(getStatusCode(error)).json({
-      success: false,
-      message: getErrorMessage(
-        error,
-        'Não foi possível alterar o status da venda.',
-      ),
-    })
+    return handleControllerError(res, error)
   }
 }
 
-// ============================================================
-// APPROVE
-// PATCH /api/sales/:id/approve
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| COMPLETE SALE
+|--------------------------------------------------------------------------
+|
+| PATCH /api/sales/:saleId/complete
+|
+| Body:
+|
+| {
+|   "notes": "Venda concluída."
+| }
+|
+|--------------------------------------------------------------------------
+*/
 
-export const approveSale = async (req, res) => {
+export const completeSaleController = async (req, res) => {
   try {
-    const { id } = req.params
+    const user = getAuthenticatedUser(req)
 
-    const sale = await saleService.approveSale(id)
+    const { saleId } = req.params
+
+    const { notes } = req.body || {}
+
+    if (!saleId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID da venda é obrigatório.',
+      })
+    }
+
+    const sale = await completeSale({
+      saleId,
+
+      user,
+
+      notes,
+    })
 
     return res.status(200).json({
       success: true,
-      message: 'Venda aprovada com sucesso.',
-      sale,
-    })
-  } catch (error) {
-    console.error('❌ Erro ao aprovar venda:', error)
 
-    return res.status(getStatusCode(error)).json({
-      success: false,
-      message: getErrorMessage(error, 'Não foi possível aprovar a venda.'),
-    })
-  }
-}
-
-// ============================================================
-// SIGN CONTRACT
-// PATCH /api/sales/:id/sign-contract
-// ============================================================
-
-export const signSaleContract = async (req, res) => {
-  try {
-    const { id } = req.params
-
-    const sale = await saleService.signSaleContract(id)
-
-    return res.status(200).json({
-      success: true,
-      message: 'Contrato registrado com sucesso.',
-      sale,
-    })
-  } catch (error) {
-    console.error('❌ Erro ao registrar contrato da venda:', error)
-
-    return res.status(getStatusCode(error)).json({
-      success: false,
-      message: getErrorMessage(error, 'Não foi possível registrar o contrato.'),
-    })
-  }
-}
-
-// ============================================================
-// COMPLETE
-// PATCH /api/sales/:id/complete
-// ============================================================
-
-export const completeSale = async (req, res) => {
-  try {
-    const { id } = req.params
-
-    const sale = await saleService.completeSale(id)
-
-    return res.status(200).json({
-      success: true,
       message: 'Venda concluída com sucesso.',
-      sale,
+
+      data: sale,
     })
   } catch (error) {
-    console.error('❌ Erro ao concluir venda:', error)
-
-    return res.status(getStatusCode(error)).json({
-      success: false,
-      message: getErrorMessage(error, 'Não foi possível concluir a venda.'),
-    })
+    return handleControllerError(res, error)
   }
 }
 
-// ============================================================
-// CANCEL
-// PATCH /api/sales/:id/cancel
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| CANCEL SALE
+|--------------------------------------------------------------------------
+|
+| PATCH /api/sales/:saleId/cancel
+|
+| Body:
+|
+| {
+|   "reason": "Cliente desistiu da compra."
+| }
+|
+|--------------------------------------------------------------------------
+*/
 
-export const cancelSale = async (req, res) => {
+export const cancelSaleController = async (req, res) => {
   try {
-    const { id } = req.params
+    const user = getAuthenticatedUser(req)
 
-    const { reason = '' } = req.body
+    const { saleId } = req.params
 
-    const sale = await saleService.cancelSale(id, reason)
+    const { reason } = req.body || {}
+
+    if (!saleId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID da venda é obrigatório.',
+      })
+    }
+
+    if (!reason || !reason.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Informe o motivo do cancelamento.',
+      })
+    }
+
+    const sale = await cancelSale({
+      saleId,
+
+      user,
+
+      reason,
+    })
 
     return res.status(200).json({
       success: true,
+
       message: 'Venda cancelada com sucesso.',
-      sale,
+
+      data: sale,
     })
   } catch (error) {
-    console.error('❌ Erro ao cancelar venda:', error)
-
-    return res.status(getStatusCode(error)).json({
-      success: false,
-      message: getErrorMessage(error, 'Não foi possível cancelar a venda.'),
-    })
+    return handleControllerError(res, error)
   }
 }
 
-// ============================================================
-// PAYMENT STATUS
-// PATCH /api/sales/:id/payment-status
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| UPDATE PAYMENT STATUS
+|--------------------------------------------------------------------------
+|
+| PATCH /api/sales/:saleId/payment-status
+|
+| Body:
+|
+| {
+|   "paymentStatus": "partial"
+| }
+|
+|--------------------------------------------------------------------------
+*/
 
-export const updatePaymentStatus = async (req, res) => {
+export const updateSalePaymentStatusController = async (req, res) => {
   try {
-    const { id } = req.params
+    const user = getAuthenticatedUser(req)
 
-    const { paymentStatus } = req.body
+    const { saleId } = req.params
+
+    const { paymentStatus } = req.body || {}
+
+    if (!saleId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID da venda é obrigatório.',
+      })
+    }
 
     if (!paymentStatus) {
       return res.status(400).json({
         success: false,
-        message: 'O status de pagamento é obrigatório.',
+        message: 'O status financeiro é obrigatório.',
       })
     }
 
-    const sale = await saleService.updatePaymentStatus(id, paymentStatus)
+    const sale = await updateSalePaymentStatus({
+      saleId,
 
-    return res.status(200).json({
-      success: true,
-      message: 'Status de pagamento atualizado com sucesso.',
-      sale,
-    })
-  } catch (error) {
-    console.error('❌ Erro ao atualizar pagamento da venda:', error)
+      paymentStatus,
 
-    return res.status(getStatusCode(error)).json({
-      success: false,
-      message: getErrorMessage(
-        error,
-        'Não foi possível atualizar o pagamento.',
-      ),
-    })
-  }
-}
-
-// ============================================================
-// SALES BY BROKER
-// GET /api/sales/broker/:brokerId
-// ============================================================
-
-export const getSalesByBroker = async (req, res) => {
-  try {
-    const { brokerId } = req.params
-
-    const result = await saleService.getSalesByBroker(brokerId, req.query)
-
-    return res.status(200).json({
-      success: true,
-      ...result,
-    })
-  } catch (error) {
-    console.error('❌ Erro ao buscar vendas do corretor:', error)
-
-    return res.status(getStatusCode(error)).json({
-      success: false,
-      message: getErrorMessage(
-        error,
-        'Não foi possível buscar as vendas do corretor.',
-      ),
-    })
-  }
-}
-
-// ============================================================
-// SALES BY LEAD
-// GET /api/sales/lead/:leadId
-// ============================================================
-
-export const getSalesByLead = async (req, res) => {
-  try {
-    const { leadId } = req.params
-
-    const result = await saleService.getSalesByLead(leadId, req.query)
-
-    return res.status(200).json({
-      success: true,
-      ...result,
-    })
-  } catch (error) {
-    console.error('❌ Erro ao buscar vendas do lead:', error)
-
-    return res.status(getStatusCode(error)).json({
-      success: false,
-      message: getErrorMessage(
-        error,
-        'Não foi possível buscar as vendas do lead.',
-      ),
-    })
-  }
-}
-
-// ============================================================
-// SALES BY PROPERTY
-// GET /api/sales/property/:propertyId
-// ============================================================
-
-export const getSalesByProperty = async (req, res) => {
-  try {
-    const { propertyId } = req.params
-
-    const result = await saleService.getSalesByProperty(propertyId, req.query)
-
-    return res.status(200).json({
-      success: true,
-      ...result,
-    })
-  } catch (error) {
-    console.error('❌ Erro ao buscar vendas do imóvel:', error)
-
-    return res.status(getStatusCode(error)).json({
-      success: false,
-      message: getErrorMessage(
-        error,
-        'Não foi possível buscar as vendas do imóvel.',
-      ),
-    })
-  }
-}
-
-// ============================================================
-// SALE BY PROPOSAL
-// GET /api/sales/proposal/:proposalId
-// ============================================================
-
-export const getSaleByProposal = async (req, res) => {
-  try {
-    const { proposalId } = req.params
-
-    const sale = await saleService.getSaleByProposal(proposalId)
-
-    return res.status(200).json({
-      success: true,
-      sale,
-    })
-  } catch (error) {
-    console.error('❌ Erro ao buscar venda da proposta:', error)
-
-    return res.status(getStatusCode(error)).json({
-      success: false,
-      message: getErrorMessage(
-        error,
-        'Não foi possível buscar a venda da proposta.',
-      ),
-    })
-  }
-}
-
-// ============================================================
-// CHECK EXISTING SALE
-// GET /api/sales/check
-// ============================================================
-
-export const checkExistingSale = async (req, res) => {
-  try {
-    const { lead, property, proposal } = req.query
-
-    const sale = await saleService.checkExistingSale({
-      lead,
-      property,
-      proposal,
+      user,
     })
 
     return res.status(200).json({
       success: true,
-      exists: Boolean(sale),
-      sale,
+
+      message: 'Status financeiro atualizado com sucesso.',
+
+      data: sale,
     })
   } catch (error) {
-    console.error('❌ Erro ao verificar venda existente:', error)
-
-    return res.status(getStatusCode(error)).json({
-      success: false,
-      message: getErrorMessage(error, 'Não foi possível verificar a venda.'),
-    })
+    return handleControllerError(res, error)
   }
 }
 
-// ============================================================
-// CREATE SALE FROM PROPOSAL
-// POST /api/sales/from-proposal/:proposalId
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| SALE METRICS
+|--------------------------------------------------------------------------
+|
+| GET /api/sales/metrics
+|
+| Query:
+|
+| startDate
+| endDate
+|
+|--------------------------------------------------------------------------
+*/
 
-export const createSaleFromProposal = async (req, res) => {
+export const getSaleMetricsController = async (req, res) => {
   try {
-    const userId = getUserId(req)
+    const user = getAuthenticatedUser(req)
 
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message: 'Usuário não autenticado.',
-      })
-    }
+    const { startDate, endDate } = req.query
 
-    const { proposalId } = req.params
+    const metrics = await getSaleMetrics({
+      user,
 
-    const sale = await saleService.createSaleFromProposal(
-      proposalId,
-      userId,
-      req.body || {},
-    )
-
-    return res.status(201).json({
-      success: true,
-      message: 'Venda criada a partir da proposta com sucesso.',
-      sale,
-    })
-  } catch (error) {
-    console.error('❌ Erro ao converter proposta em venda:', error)
-
-    return res.status(getStatusCode(error)).json({
-      success: false,
-      message: getErrorMessage(
-        error,
-        'Não foi possível converter a proposta em venda.',
-      ),
-    })
-  }
-}
-
-// ============================================================
-// METRICS
-// GET /api/sales/metrics
-// ============================================================
-
-export const getSaleMetrics = async (req, res) => {
-  try {
-    const { broker, startDate, endDate } = req.query
-
-    const metrics = await saleService.getSaleMetrics({
-      broker,
       startDate,
+
       endDate,
     })
 
     return res.status(200).json({
       success: true,
-      metrics,
+
+      data: metrics,
     })
   } catch (error) {
-    console.error('❌ Erro ao buscar métricas de vendas:', error)
-
-    return res.status(getStatusCode(error)).json({
-      success: false,
-      message: getErrorMessage(
-        error,
-        'Não foi possível buscar as métricas de vendas.',
-      ),
-    })
+    return handleControllerError(res, error)
   }
 }
 
-// ============================================================
-// DASHBOARD
-// GET /api/sales/dashboard
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| CONVERT SALE
+|--------------------------------------------------------------------------
+|
+| Alias para facilitar integração com o módulo
+| de Propostas.
+|
+| POST /api/proposals/:proposalId/convert-sale
+|
+|--------------------------------------------------------------------------
+|
+| Caso suas rotas estejam apontando diretamente
+| para createSaleFromProposalController, este
+| método também pode ser usado como alias.
+|
+|--------------------------------------------------------------------------
+*/
 
-export const getSalesDashboard = async (req, res) => {
-  try {
-    const { broker, startDate, endDate } = req.query
-
-    const dashboard = await saleService.getSalesDashboard({
-      broker,
-      startDate,
-      endDate,
-    })
-
-    return res.status(200).json({
-      success: true,
-      ...dashboard,
-    })
-  } catch (error) {
-    console.error('❌ Erro ao buscar dashboard de vendas:', error)
-
-    return res.status(getStatusCode(error)).json({
-      success: false,
-      message: getErrorMessage(
-        error,
-        'Não foi possível carregar o dashboard de vendas.',
-      ),
-    })
-  }
+export const convertProposalToSaleController = async (req, res) => {
+  return createSaleFromProposalController(req, res)
 }
 
-// ============================================================
-// DEFAULT EXPORT
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| DEFAULT EXPORT
+|--------------------------------------------------------------------------
+*/
 
 export default {
-  createSale,
-  getSaleById,
-  getSales,
-  updateSale,
-  deleteSale,
+  createSaleFromProposalController,
 
-  changeSaleStatus,
-  approveSale,
-  signSaleContract,
-  completeSale,
-  cancelSale,
+  convertProposalToSaleController,
 
-  updatePaymentStatus,
+  getSaleByIdController,
 
-  getSalesByBroker,
-  getSalesByLead,
-  getSalesByProperty,
-  getSaleByProposal,
+  getSalesController,
 
-  checkExistingSale,
+  updateSaleStatusController,
 
-  createSaleFromProposal,
+  completeSaleController,
 
-  getSaleMetrics,
-  getSalesDashboard,
+  cancelSaleController,
+
+  updateSalePaymentStatusController,
+
+  getSaleMetricsController,
 }

@@ -8,6 +8,41 @@ const { Schema } = mongoose
  * =========================================================
  */
 
+/**
+ * =========================================================
+ * PIPELINE DA OPORTUNIDADE
+ * =========================================================
+ *
+ * IMPORTANTE:
+ *
+ * Os estágios representam o PROCESSO COMERCIAL.
+ *
+ * GANHA / PERDIDA NÃO são stages.
+ *
+ * O resultado final é controlado por:
+ *
+ * opportunity.status
+ *
+ * Dessa forma:
+ *
+ * Opportunity.stage
+ *       ↓
+ * nova
+ * qualificacao
+ * imovel_definido
+ * visita_realizada
+ * interesse_confirmado
+ * proposta_solicitada
+ * proposta_enviada
+ * negociacao
+ *
+ * E o resultado:
+ *
+ * status = aberta
+ * status = ganha
+ * status = perdida
+ */
+
 export const OPPORTUNITY_STAGES = {
   NOVA: 'nova',
   QUALIFICACAO: 'qualificacao',
@@ -17,11 +52,17 @@ export const OPPORTUNITY_STAGES = {
   PROPOSTA_SOLICITADA: 'proposta_solicitada',
   PROPOSTA_ENVIADA: 'proposta_enviada',
   NEGOCIACAO: 'negociacao',
-  GANHA: 'ganha',
-  PERDIDA: 'perdida',
 }
 
 export const OPPORTUNITY_STAGE_LIST = Object.values(OPPORTUNITY_STAGES)
+
+/**
+ * =========================================================
+ * STATUS DA OPORTUNIDADE
+ * =========================================================
+ *
+ * O status representa o RESULTADO do negócio.
+ */
 
 export const OPPORTUNITY_STATUS = {
   OPEN: 'aberta',
@@ -31,12 +72,24 @@ export const OPPORTUNITY_STATUS = {
 
 export const OPPORTUNITY_STATUS_LIST = Object.values(OPPORTUNITY_STATUS)
 
+/**
+ * =========================================================
+ * TIPOS
+ * =========================================================
+ */
+
 export const OPPORTUNITY_TYPES = {
   VENDA: 'venda',
   LOCACAO: 'locacao',
 }
 
 export const OPPORTUNITY_TYPE_LIST = Object.values(OPPORTUNITY_TYPES)
+
+/**
+ * =========================================================
+ * TEMPERATURA
+ * =========================================================
+ */
 
 export const OPPORTUNITY_TEMPERATURE = {
   FRIO: 'frio',
@@ -47,6 +100,12 @@ export const OPPORTUNITY_TEMPERATURE = {
 export const OPPORTUNITY_TEMPERATURE_LIST = Object.values(
   OPPORTUNITY_TEMPERATURE,
 )
+
+/**
+ * =========================================================
+ * PRIORIDADES
+ * =========================================================
+ */
 
 export const OPPORTUNITY_PRIORITIES = {
   BAIXA: 'baixa',
@@ -62,19 +121,23 @@ export const OPPORTUNITY_PRIORITY_LIST = Object.values(OPPORTUNITY_PRIORITIES)
  * HISTÓRICO DE ESTÁGIOS
  * =========================================================
  *
- * Registra toda alteração no pipeline.
+ * Registra toda alteração no pipeline da oportunidade.
  *
  * Exemplo:
  *
  * nova
  *   ↓
  * qualificacao
+ *   ↓
+ * imovel_definido
+ *   ↓
+ * visita_realizada
+ *   ↓
+ * negociacao
  *
- * Quem alterou:
- * João
+ * O GANHA/PERDIDA não entra aqui.
  *
- * Observação:
- * Cliente demonstrou interesse.
+ * O resultado é controlado pelo status.
  */
 
 const stageHistorySchema = new Schema(
@@ -124,10 +187,8 @@ const stageHistorySchema = new Schema(
  *
  * Exemplo:
  *
- * Responsável anterior:
  * João
- *
- * Novo responsável:
+ *   ↓
  * Maria
  *
  * Alterado por:
@@ -226,9 +287,9 @@ const interactionSchema = new Schema(
 const opportunitySchema = new Schema(
   {
     /**
-     * -------------------------------------------------------
+     * =======================================================
      * IDENTIFICAÇÃO
-     * -------------------------------------------------------
+     * =======================================================
      */
 
     title: {
@@ -247,9 +308,15 @@ const opportunitySchema = new Schema(
     },
 
     /**
-     * -------------------------------------------------------
+     * =======================================================
      * RELACIONAMENTOS
-     * -------------------------------------------------------
+     * =======================================================
+     */
+
+    /**
+     * Lead relacionado.
+     *
+     * Toda oportunidade pertence a um Lead.
      */
 
     lead: {
@@ -259,6 +326,12 @@ const opportunitySchema = new Schema(
       index: true,
     },
 
+    /**
+     * Imóvel relacionado.
+     *
+     * Pode ser definido posteriormente.
+     */
+
     property: {
       type: Schema.Types.ObjectId,
       ref: 'Property',
@@ -267,9 +340,9 @@ const opportunitySchema = new Schema(
     },
 
     /**
-     * -------------------------------------------------------
+     * =======================================================
      * RESPONSÁVEL ATUAL
-     * -------------------------------------------------------
+     * =======================================================
      */
 
     assignedTo: {
@@ -280,9 +353,9 @@ const opportunitySchema = new Schema(
     },
 
     /**
-     * -------------------------------------------------------
+     * =======================================================
      * CRIADOR
-     * -------------------------------------------------------
+     * =======================================================
      */
 
     createdBy: {
@@ -293,9 +366,9 @@ const opportunitySchema = new Schema(
     },
 
     /**
-     * -------------------------------------------------------
+     * =======================================================
      * NEGÓCIO
-     * -------------------------------------------------------
+     * =======================================================
      */
 
     type: {
@@ -306,12 +379,37 @@ const opportunitySchema = new Schema(
       index: true,
     },
 
+    /**
+     * =======================================================
+     * STAGE
+     * =======================================================
+     *
+     * Somente etapas do processo comercial.
+     *
+     * NÃO contém:
+     *
+     * ganha
+     * perdida
+     */
+
     stage: {
       type: String,
       enum: OPPORTUNITY_STAGE_LIST,
       default: OPPORTUNITY_STAGES.NOVA,
       index: true,
     },
+
+    /**
+     * =======================================================
+     * STATUS
+     * =======================================================
+     *
+     * Resultado da oportunidade.
+     *
+     * aberta
+     * ganha
+     * perdida
+     */
 
     status: {
       type: String,
@@ -320,12 +418,24 @@ const opportunitySchema = new Schema(
       index: true,
     },
 
+    /**
+     * =======================================================
+     * TEMPERATURA
+     * =======================================================
+     */
+
     temperature: {
       type: String,
       enum: OPPORTUNITY_TEMPERATURE_LIST,
       default: OPPORTUNITY_TEMPERATURE.MORNO,
       index: true,
     },
+
+    /**
+     * =======================================================
+     * PRIORIDADE
+     * =======================================================
+     */
 
     priority: {
       type: String,
@@ -335,9 +445,13 @@ const opportunitySchema = new Schema(
     },
 
     /**
-     * -------------------------------------------------------
+     * =======================================================
      * VALORES
-     * -------------------------------------------------------
+     * =======================================================
+     */
+
+    /**
+     * Valor estimado inicialmente.
      */
 
     estimatedValue: {
@@ -346,11 +460,21 @@ const opportunitySchema = new Schema(
       default: 0,
     },
 
+    /**
+     * Valor esperado para fechamento.
+     */
+
     expectedClosingValue: {
       type: Number,
       min: 0,
       default: 0,
     },
+
+    /**
+     * Probabilidade de fechamento.
+     *
+     * 0 - 100
+     */
 
     probability: {
       type: Number,
@@ -360,9 +484,9 @@ const opportunitySchema = new Schema(
     },
 
     /**
-     * -------------------------------------------------------
+     * =======================================================
      * DATAS
-     * -------------------------------------------------------
+     * =======================================================
      */
 
     expectedClosingDate: {
@@ -384,9 +508,9 @@ const opportunitySchema = new Schema(
     },
 
     /**
-     * -------------------------------------------------------
+     * =======================================================
      * PRÓXIMA AÇÃO
-     * -------------------------------------------------------
+     * =======================================================
      */
 
     nextAction: {
@@ -397,9 +521,9 @@ const opportunitySchema = new Schema(
     },
 
     /**
-     * -------------------------------------------------------
+     * =======================================================
      * ORIGEM
-     * -------------------------------------------------------
+     * =======================================================
      */
 
     source: {
@@ -411,9 +535,13 @@ const opportunitySchema = new Schema(
     },
 
     /**
-     * -------------------------------------------------------
+     * =======================================================
      * MOTIVO DE PERDA
-     * -------------------------------------------------------
+     * =======================================================
+     *
+     * Só deve ser preenchido quando:
+     *
+     * status = perdida
      */
 
     lostReason: {
@@ -424,9 +552,9 @@ const opportunitySchema = new Schema(
     },
 
     /**
-     * -------------------------------------------------------
+     * =======================================================
      * OBSERVAÇÕES
-     * -------------------------------------------------------
+     * =======================================================
      */
 
     notes: {
@@ -457,9 +585,6 @@ const opportunitySchema = new Schema(
      * -------------------------------------------------------
      * HISTÓRICO DE RESPONSÁVEIS
      * -------------------------------------------------------
-     *
-     * Aqui ficará registrado sempre que a oportunidade
-     * mudar de corretor.
      */
 
     assignmentHistory: {
@@ -479,9 +604,19 @@ const opportunitySchema = new Schema(
     },
 
     /**
-     * -------------------------------------------------------
-     * CONVERSÃO
-     * -------------------------------------------------------
+     * =======================================================
+     * RESULTADO / CONVERSÃO
+     * =======================================================
+     */
+
+    /**
+     * Data em que a oportunidade foi ganha.
+     *
+     * IMPORTANTE:
+     *
+     * Isto não representa o Lead.stage.
+     *
+     * É o registro do fechamento da oportunidade.
      */
 
     wonAt: {
@@ -490,6 +625,10 @@ const opportunitySchema = new Schema(
       index: true,
     },
 
+    /**
+     * Data em que a oportunidade foi perdida.
+     */
+
     lostAt: {
       type: Date,
       default: null,
@@ -497,33 +636,55 @@ const opportunitySchema = new Schema(
     },
 
     /**
-     * -------------------------------------------------------
+     * =======================================================
      * PROPOSTA
-     * -------------------------------------------------------
+     * =======================================================
+     *
+     * Fluxo:
+     *
+     * Opportunity
+     *      ↓
+     * Proposal
      */
 
     proposal: {
       type: Schema.Types.ObjectId,
       ref: 'Proposal',
       default: null,
+      index: true,
     },
 
     /**
-     * -------------------------------------------------------
+     * =======================================================
      * VENDA
-     * -------------------------------------------------------
+     * =======================================================
+     *
+     * Fluxo:
+     *
+     * Opportunity
+     *      ↓
+     * Proposal
+     *      ↓
+     * Sale
+     *
+     * Quando a venda for criada:
+     *
+     * opportunity.sale = sale._id
+     *
+     * opportunity.status = ganha
      */
 
     sale: {
       type: Schema.Types.ObjectId,
       ref: 'Sale',
       default: null,
+      index: true,
     },
 
     /**
-     * -------------------------------------------------------
+     * =======================================================
      * CONTROLE
-     * -------------------------------------------------------
+     * =======================================================
      */
 
     isArchived: {
@@ -544,8 +705,9 @@ const opportunitySchema = new Schema(
  */
 
 /**
- * Pipeline por responsável
+ * Pipeline por responsável.
  */
+
 opportunitySchema.index({
   assignedTo: 1,
   status: 1,
@@ -553,40 +715,45 @@ opportunitySchema.index({
 })
 
 /**
- * Oportunidades de um lead
+ * Oportunidades de um lead.
  */
+
 opportunitySchema.index({
   lead: 1,
   createdAt: -1,
 })
 
 /**
- * Oportunidades relacionadas a imóvel
+ * Oportunidades relacionadas a imóvel.
  */
+
 opportunitySchema.index({
   property: 1,
   status: 1,
 })
 
 /**
- * Fechamento previsto
+ * Fechamento previsto.
  */
+
 opportunitySchema.index({
   expectedClosingDate: 1,
   status: 1,
 })
 
 /**
- * Busca por criador
+ * Busca por criador.
  */
+
 opportunitySchema.index({
   createdBy: 1,
   createdAt: -1,
 })
 
 /**
- * Oportunidades abertas
+ * Oportunidades abertas.
  */
+
 opportunitySchema.index({
   isArchived: 1,
   status: 1,
@@ -594,7 +761,23 @@ opportunitySchema.index({
 })
 
 /**
- =========================================================
+ * Oportunidades por proposta.
+ */
+
+opportunitySchema.index({
+  proposal: 1,
+})
+
+/**
+ * Oportunidades por venda.
+ */
+
+opportunitySchema.index({
+  sale: 1,
+})
+
+/**
+ * =========================================================
  * VIRTUAL — VALOR PONDERADO
  * =========================================================
  *
@@ -604,6 +787,7 @@ opportunitySchema.index({
  * Probabilidade: 40%
  *
  * weightedValue:
+ *
  * R$ 200.000
  */
 
@@ -613,6 +797,56 @@ opportunitySchema.virtual('weightedValue').get(function () {
   const probability = this.probability || 0
 
   return value * (probability / 100)
+})
+
+/**
+ * =========================================================
+ * VIRTUAL — OPORTUNIDADE ABERTA
+ * =========================================================
+ */
+
+opportunitySchema.virtual('isOpen').get(function () {
+  return this.status === OPPORTUNITY_STATUS.OPEN
+})
+
+/**
+ * =========================================================
+ * VIRTUAL — OPORTUNIDADE GANHA
+ * =========================================================
+ */
+
+opportunitySchema.virtual('isWon').get(function () {
+  return this.status === OPPORTUNITY_STATUS.WON
+})
+
+/**
+ * =========================================================
+ * VIRTUAL — OPORTUNIDADE PERDIDA
+ * =========================================================
+ */
+
+opportunitySchema.virtual('isLost').get(function () {
+  return this.status === OPPORTUNITY_STATUS.LOST
+})
+
+/**
+ * =========================================================
+ * VIRTUAL — TEM PROPOSTA
+ * =========================================================
+ */
+
+opportunitySchema.virtual('hasProposal').get(function () {
+  return Boolean(this.proposal)
+})
+
+/**
+ * =========================================================
+ * VIRTUAL — TEM VENDA
+ * =========================================================
+ */
+
+opportunitySchema.virtual('hasSale').get(function () {
+  return Boolean(this.sale)
 })
 
 /**

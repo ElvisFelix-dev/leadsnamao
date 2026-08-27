@@ -26,46 +26,77 @@ const router = express.Router()
 
 /**
  * =========================================================
- * TODAS AS ROTAS EXIGEM AUTENTICAÇÃO
+ * AUTHENTICATION
  * =========================================================
+ *
+ * Todas as rotas de oportunidades exigem usuário autenticado.
  */
 
 router.use(protect)
 
 /**
  * =========================================================
- * LIST
+ * OPPORTUNITIES
  * =========================================================
  */
 
 /**
- * GET
- * /api/opportunities
+ * =========================================================
+ * LIST
+ * =========================================================
+ *
+ * GET /api/opportunities
+ *
+ * Suporta:
+ *
+ * ?page=1
+ * ?limit=12
+ * ?search=João
+ * ?stage=negociacao
+ * ?status=aberta
+ * ?type=venda
+ * ?temperature=quente
+ * ?priority=alta
+ * ?assignedTo=USER_ID
+ * ?property=PROPERTY_ID
+ * ?lead=LEAD_ID
  */
+
 router.get('/', getAll)
 
 /**
  * =========================================================
  * CREATE
  * =========================================================
+ *
+ * POST /api/opportunities
  */
 
-/**
- * POST
- * /api/opportunities
- */
 router.post('/', createOpportunityValidator, validateRequest, create)
 
 /**
  * =========================================================
  * STAGE
  * =========================================================
+ *
+ * PATCH /api/opportunities/:id/stage
+ *
+ * Body:
+ *
+ * {
+ *   "stage": "negociacao",
+ *   "note": "Cliente solicitou nova condição"
+ * }
+ *
+ * Para perda:
+ *
+ * {
+ *   "stage": "perdida",
+ *   "note": "Cliente desistiu",
+ *   "lostReason": "Valor acima do orçamento"
+ * }
  */
 
-/**
- * PATCH
- * /api/opportunities/:id/stage
- */
 router.patch(
   '/:id/stage',
   opportunityIdValidator,
@@ -78,12 +109,17 @@ router.patch(
  * =========================================================
  * INTERACTIONS
  * =========================================================
+ *
+ * POST /api/opportunities/:id/interactions
+ *
+ * Body:
+ *
+ * {
+ *   "type": "whatsapp",
+ *   "description": "Cliente confirmou interesse no imóvel."
+ * }
  */
 
-/**
- * POST
- * /api/opportunities/:id/interactions
- */
 router.post(
   '/:id/interactions',
   opportunityIdValidator,
@@ -96,24 +132,37 @@ router.post(
  * =========================================================
  * GET BY ID
  * =========================================================
+ *
+ * GET /api/opportunities/:id
+ *
+ * IMPORTANTE:
+ *
+ * Esta rota deve ficar antes das rotas genéricas
+ * somente por organização e legibilidade.
+ *
+ * O Express não terá conflito com /:id/stage ou
+ * /:id/interactions porque essas rotas possuem segmentos
+ * adicionais.
  */
 
-/**
- * GET
- * /api/opportunities/:id
- */
 router.get('/:id', opportunityIdValidator, validateRequest, getById)
 
 /**
  * =========================================================
  * UPDATE
  * =========================================================
+ *
+ * PATCH /api/opportunities/:id
+ *
+ * Atualiza dados gerais da oportunidade.
+ *
+ * Não deve ser utilizado para alteração de stage.
+ *
+ * Alteração de stage deve passar por:
+ *
+ * PATCH /:id/stage
  */
 
-/**
- * PATCH
- * /api/opportunities/:id
- */
 router.patch(
   '/:id',
   opportunityIdValidator,
@@ -126,12 +175,22 @@ router.patch(
  * =========================================================
  * ARCHIVE
  * =========================================================
+ *
+ * DELETE /api/opportunities/:id
+ *
+ * Não remove fisicamente.
+ *
+ * Apenas:
+ *
+ * isArchived = true
  */
 
-/**
- * DELETE
- * /api/opportunities/:id
- */
 router.delete('/:id', opportunityIdValidator, validateRequest, archive)
+
+/**
+ * =========================================================
+ * EXPORT
+ * =========================================================
+ */
 
 export default router

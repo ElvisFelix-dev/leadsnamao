@@ -1,597 +1,372 @@
 import mongoose from 'mongoose'
 
-const { Schema } = mongoose
-
 /*
 |--------------------------------------------------------------------------
-| CONSTANTS
+| STATUS DA VENDA
 |--------------------------------------------------------------------------
 */
 
-export const SALE_STATUS = {
-  NEGOCIACAO: 'negociacao',
-  EM_ANDAMENTO: 'em_andamento',
-  DOCUMENTACAO: 'documentacao',
-  CONTRATO: 'contrato',
-  PAGAMENTO: 'pagamento',
-  CONCLUIDA: 'concluida',
-  CANCELADA: 'cancelada',
-}
+export const SALE_STATUS = Object.freeze({
+  PENDING: 'pending',
+  CONTRACT: 'contract',
+  COMPLETED: 'completed',
+  CANCELLED: 'cancelled',
+})
 
-export const SALE_STATUS_LIST = Object.values(SALE_STATUS)
-
-export const SALE_PAYMENT_METHOD = {
-  FINANCIAMENTO: 'financiamento',
-  A_VISTA: 'a_vista',
-  PARCELADO: 'parcelado',
-  FGTS: 'fgts',
-  CONSORCIO: 'consorcio',
-  MISTO: 'misto',
-  OUTRO: 'outro',
-}
-
-export const SALE_PAYMENT_METHOD_LIST = Object.values(SALE_PAYMENT_METHOD)
-
-export const SALE_TYPE = {
-  VENDA: 'venda',
-  LOCACAO: 'locacao',
-}
-
-export const SALE_TYPE_LIST = Object.values(SALE_TYPE)
+export const SALE_STATUS_LIST = Object.freeze(Object.values(SALE_STATUS))
 
 /*
 |--------------------------------------------------------------------------
-| BUYER SCHEMA
+| STATUS FINANCEIRO
 |--------------------------------------------------------------------------
-|
-| Mantemos os dados principais do comprador dentro da venda.
-| Isso evita perder o histórico caso os dados do Lead sejam alterados
-| posteriormente.
-|
 */
 
-const buyerSchema = new Schema(
-  {
-    name: {
-      type: String,
-      trim: true,
-      required: [true, 'Nome do comprador é obrigatório'],
-      minlength: [2, 'Nome do comprador deve ter pelo menos 2 caracteres'],
-      maxlength: [150, 'Nome do comprador deve ter no máximo 150 caracteres'],
-    },
+export const SALE_PAYMENT_STATUS = Object.freeze({
+  PENDING: 'pending',
+  PARTIAL: 'partial',
+  PAID: 'paid',
+})
 
-    email: {
-      type: String,
-      trim: true,
-      lowercase: true,
-      maxlength: [150, 'E-mail deve ter no máximo 150 caracteres'],
-      match: [/^\S+@\S+\.\S+$/, 'Informe um e-mail válido'],
-    },
-
-    phone: {
-      type: String,
-      trim: true,
-      maxlength: [30, 'Telefone inválido'],
-    },
-
-    document: {
-      type: String,
-      trim: true,
-      maxlength: [30, 'Documento inválido'],
-    },
-
-    documentType: {
-      type: String,
-      trim: true,
-      enum: {
-        values: ['cpf', 'cnpj', 'outro'],
-        message: 'Tipo de documento inválido',
-      },
-      default: 'cpf',
-    },
-
-    notes: {
-      type: String,
-      trim: true,
-      maxlength: [2000, 'Observações devem ter no máximo 2000 caracteres'],
-    },
-  },
-  {
-    _id: false,
-  },
+export const SALE_PAYMENT_STATUS_LIST = Object.freeze(
+  Object.values(SALE_PAYMENT_STATUS),
 )
 
 /*
 |--------------------------------------------------------------------------
-| SELLER / OWNER SNAPSHOT
+| TIPOS DE COMISSÃO
+|--------------------------------------------------------------------------
+*/
+
+export const COMMISSION_TYPE = Object.freeze({
+  SELLER: 'seller',
+  ACQUISITION: 'acquisition',
+})
+
+export const COMMISSION_TYPE_LIST = Object.freeze(
+  Object.values(COMMISSION_TYPE),
+)
+
+/*
+|--------------------------------------------------------------------------
+| SNAPSHOT DA COMISSÃO POR CORRETOR
 |--------------------------------------------------------------------------
 |
-| Futuramente podemos utilizar isso para registrar os dados do proprietário
-| no momento da venda, sem depender exclusivamente do Property.
+| Guarda os dados da comissão exatamente como estavam
+| no momento em que a venda foi criada.
+|
+| Isso evita que alterações futuras na regra de comissão
+| modifiquem vendas antigas.
 |
 */
 
-const sellerSchema = new Schema(
-  {
-    name: {
-      type: String,
-      trim: true,
-      maxlength: 150,
-    },
-
-    email: {
-      type: String,
-      trim: true,
-      lowercase: true,
-      maxlength: 150,
-    },
-
-    phone: {
-      type: String,
-      trim: true,
-      maxlength: 30,
-    },
-
-    document: {
-      type: String,
-      trim: true,
-      maxlength: 30,
-    },
-
-    notes: {
-      type: String,
-      trim: true,
-      maxlength: 2000,
-    },
-  },
-  {
-    _id: false,
-  },
-)
-
-/*
-|--------------------------------------------------------------------------
-| PAYMENT SCHEMA
-|--------------------------------------------------------------------------
-*/
-
-const paymentSchema = new Schema(
-  {
-    method: {
-      type: String,
-      enum: {
-        values: SALE_PAYMENT_METHOD_LIST,
-        message: 'Forma de pagamento inválida',
-      },
-      default: SALE_PAYMENT_METHOD.OUTRO,
-    },
-
-    totalAmount: {
-      type: Number,
-      min: [0, 'Valor total do pagamento não pode ser negativo'],
-      default: 0,
-    },
-
-    downPayment: {
-      type: Number,
-      min: [0, 'Valor da entrada não pode ser negativo'],
-      default: 0,
-    },
-
-    financedAmount: {
-      type: Number,
-      min: [0, 'Valor financiado não pode ser negativo'],
-      default: 0,
-    },
-
-    installmentAmount: {
-      type: Number,
-      min: [0, 'Valor da parcela não pode ser negativo'],
-      default: 0,
-    },
-
-    installmentCount: {
-      type: Number,
-      min: [0, 'Quantidade de parcelas não pode ser negativa'],
-      default: 0,
-    },
-
-    fgtsAmount: {
-      type: Number,
-      min: [0, 'Valor de FGTS não pode ser negativo'],
-      default: 0,
-    },
-
-    consortiumAmount: {
-      type: Number,
-      min: [0, 'Valor do consórcio não pode ser negativo'],
-      default: 0,
-    },
-
-    notes: {
-      type: String,
-      trim: true,
-      maxlength: [3000, 'Observações devem ter no máximo 3000 caracteres'],
-    },
-  },
-  {
-    _id: false,
-  },
-)
-
-/*
-|--------------------------------------------------------------------------
-| COMMISSION SCHEMA
-|--------------------------------------------------------------------------
-*/
-
-const commissionSchema = new Schema(
-  {
-    percentage: {
-      type: Number,
-      min: [0, 'Percentual de comissão não pode ser negativo'],
-      max: [100, 'Percentual de comissão não pode ser maior que 100'],
-      default: 0,
-    },
-
-    totalAmount: {
-      type: Number,
-      min: [0, 'Valor da comissão não pode ser negativo'],
-      default: 0,
-    },
-
-    brokerAmount: {
-      type: Number,
-      min: [0, 'Comissão do corretor não pode ser negativa'],
-      default: 0,
-    },
-
-    companyAmount: {
-      type: Number,
-      min: [0, 'Comissão da imobiliária não pode ser negativa'],
-      default: 0,
-    },
-
-    status: {
-      type: String,
-      enum: {
-        values: ['prevista', 'parcial', 'paga', 'cancelada'],
-        message: 'Status da comissão inválido',
-      },
-      default: 'prevista',
-    },
-
-    paidAt: {
-      type: Date,
-    },
-
-    notes: {
-      type: String,
-      trim: true,
-      maxlength: [3000, 'Observações devem ter no máximo 3000 caracteres'],
-    },
-  },
-  {
-    _id: false,
-  },
-)
-
-/*
-|--------------------------------------------------------------------------
-| DOCUMENTATION SCHEMA
-|--------------------------------------------------------------------------
-*/
-
-const documentationSchema = new Schema(
-  {
-    status: {
-      type: String,
-      enum: {
-        values: ['pendente', 'em_analise', 'completa', 'aprovada', 'rejeitada'],
-        message: 'Status da documentação inválido',
-      },
-      default: 'pendente',
-    },
-
-    requestedAt: {
-      type: Date,
-    },
-
-    completedAt: {
-      type: Date,
-    },
-
-    approvedAt: {
-      type: Date,
-    },
-
-    notes: {
-      type: String,
-      trim: true,
-      maxlength: [3000, 'Observações devem ter no máximo 3000 caracteres'],
-    },
-  },
-  {
-    _id: false,
-  },
-)
-
-/*
-|--------------------------------------------------------------------------
-| CONTRACT SCHEMA
-|--------------------------------------------------------------------------
-*/
-
-const contractSchema = new Schema(
-  {
-    status: {
-      type: String,
-      enum: {
-        values: [
-          'pendente',
-          'em_elaboracao',
-          'enviado',
-          'assinado',
-          'cancelado',
-        ],
-        message: 'Status do contrato inválido',
-      },
-      default: 'pendente',
-    },
-
-    contractNumber: {
-      type: String,
-      trim: true,
-      maxlength: 100,
-    },
-
-    sentAt: {
-      type: Date,
-    },
-
-    signedAt: {
-      type: Date,
-    },
-
-    notes: {
-      type: String,
-      trim: true,
-      maxlength: [3000, 'Observações devem ter no máximo 3000 caracteres'],
-    },
-  },
-  {
-    _id: false,
-  },
-)
-
-/*
-|--------------------------------------------------------------------------
-| SALE HISTORY SCHEMA
-|--------------------------------------------------------------------------
-*/
-
-const saleHistorySchema = new Schema(
-  {
-    action: {
-      type: String,
-      trim: true,
-      required: true,
-      maxlength: 100,
-    },
-
-    description: {
-      type: String,
-      trim: true,
-      maxlength: 1000,
-    },
-
-    fromStatus: {
-      type: String,
-      enum: SALE_STATUS_LIST,
-    },
-
-    toStatus: {
-      type: String,
-      enum: SALE_STATUS_LIST,
-    },
-
-    performedBy: {
-      type: Schema.Types.ObjectId,
-      ref: 'User',
-    },
-
-    metadata: {
-      type: Schema.Types.Mixed,
-      default: {},
-    },
-
-    createdAt: {
-      type: Date,
-      default: Date.now,
-    },
-  },
-  {
-    _id: true,
-  },
-)
-
-/*
-|--------------------------------------------------------------------------
-| MAIN SALE SCHEMA
-|--------------------------------------------------------------------------
-*/
-
-const saleSchema = new Schema(
+const commissionPersonSchema = new mongoose.Schema(
   {
     /*
     |--------------------------------------------------------------------------
-    | IDENTIFICATION
+    | CORRETOR
     |--------------------------------------------------------------------------
     */
-
-    code: {
-      type: String,
-      unique: true,
-      sparse: true,
-      trim: true,
-      uppercase: true,
-      maxlength: 50,
-    },
-
-    type: {
-      type: String,
-      enum: {
-        values: SALE_TYPE_LIST,
-        message: 'Tipo de negociação inválido',
-      },
-      default: SALE_TYPE.VENDA,
-      index: true,
-    },
-
-    status: {
-      type: String,
-      enum: {
-        values: SALE_STATUS_LIST,
-        message: 'Status da venda inválido',
-      },
-      default: SALE_STATUS.NEGOCIACAO,
-      index: true,
-    },
-
-    /*
-    |--------------------------------------------------------------------------
-    | RELATIONSHIPS
-    |--------------------------------------------------------------------------
-    */
-
-    lead: {
-      type: Schema.Types.ObjectId,
-      ref: 'Lead',
-      index: true,
-    },
-
-    proposal: {
-      type: Schema.Types.ObjectId,
-      ref: 'Proposal',
-      index: true,
-    },
-
-    property: {
-      type: Schema.Types.ObjectId,
-      ref: 'Property',
-      index: true,
-    },
 
     broker: {
-      type: Schema.Types.ObjectId,
+      type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      index: true,
-    },
-
-    createdBy: {
-      type: Schema.Types.ObjectId,
-      ref: 'User',
-      required: true,
-      index: true,
+      default: null,
     },
 
     /*
     |--------------------------------------------------------------------------
-    | CLIENT / BUYER
+    | PERCENTUAL
     |--------------------------------------------------------------------------
+    |
+    | Exemplo:
+    | 20 = 20%
+    |
     */
 
-    buyer: {
-      type: buyerSchema,
-      required: true,
-    },
-
-    additionalBuyers: {
-      type: [buyerSchema],
-      default: [],
+    percentage: {
+      type: Number,
+      default: 0,
+      min: 0,
     },
 
     /*
     |--------------------------------------------------------------------------
-    | SELLER
+    | VALOR
+    |--------------------------------------------------------------------------
+    |
+    | Exemplo:
+    | R$ 8.000
+    |
+    */
+
+    amount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+  },
+  {
+    _id: false,
+  },
+)
+
+/*
+|--------------------------------------------------------------------------
+| COMISSÃO DA VENDA
+|--------------------------------------------------------------------------
+*/
+
+const commissionSchema = new mongoose.Schema(
+  {
+    /*
+    |--------------------------------------------------------------------------
+    | COMISSÃO TOTAL
+    |--------------------------------------------------------------------------
+    |
+    | Exemplo:
+    |
+    | Venda: R$ 800.000
+    | Comissão: 5%
+    |
+    | totalPercentage = 5
+    | totalAmount = 40.000
+    |
+    */
+
+    totalPercentage: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    totalAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    /*
+    |--------------------------------------------------------------------------
+    | CORRETOR VENDEDOR
     |--------------------------------------------------------------------------
     */
 
     seller: {
-      type: sellerSchema,
-      default: undefined,
-    },
-
-    /*
-    |--------------------------------------------------------------------------
-    | PROPERTY SNAPSHOT
-    |--------------------------------------------------------------------------
-    |
-    | Guardamos algumas informações da propriedade no momento da venda.
-    | Isso é útil para preservar o histórico comercial.
-    |
-    */
-
-    propertySnapshot: {
-      name: {
-        type: String,
-        trim: true,
-        maxlength: 200,
-      },
-
-      code: {
-        type: String,
-        trim: true,
-        maxlength: 100,
-      },
-
-      type: {
-        type: String,
-        trim: true,
-        maxlength: 100,
-      },
-
-      address: {
-        type: String,
-        trim: true,
-        maxlength: 500,
-      },
-    },
-
-    /*
-    |--------------------------------------------------------------------------
-    | FINANCIAL
-    |--------------------------------------------------------------------------
-    */
-
-    saleValue: {
-      type: Number,
-      required: [true, 'Valor da venda é obrigatório'],
-      min: [0, 'Valor da venda não pode ser negativo'],
-      index: true,
-    },
-
-    originalValue: {
-      type: Number,
-      min: [0, 'Valor original não pode ser negativo'],
-      default: 0,
-    },
-
-    discountAmount: {
-      type: Number,
-      min: [0, 'Desconto não pode ser negativo'],
-      default: 0,
-    },
-
-    payment: {
-      type: paymentSchema,
+      type: commissionPersonSchema,
       default: () => ({}),
     },
 
     /*
     |--------------------------------------------------------------------------
-    | COMMISSION
+    | CORRETOR CAPTADOR
     |--------------------------------------------------------------------------
+    */
+
+    acquisition: {
+      type: commissionPersonSchema,
+      default: () => ({}),
+    },
+
+    /*
+    |--------------------------------------------------------------------------
+    | IMOBILIÁRIA
+    |--------------------------------------------------------------------------
+    */
+
+    company: {
+      percentage: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+
+      amount: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+    },
+  },
+  {
+    _id: false,
+  },
+)
+
+/*
+|--------------------------------------------------------------------------
+| SALE SCHEMA
+|--------------------------------------------------------------------------
+*/
+
+const saleSchema = new mongoose.Schema(
+  {
+    /*
+    |--------------------------------------------------------------------------
+    | IDENTIFICAÇÃO
+    |--------------------------------------------------------------------------
+    */
+
+    saleNumber: {
+      type: String,
+      trim: true,
+      unique: true,
+      sparse: true,
+      index: true,
+    },
+
+    /*
+    |--------------------------------------------------------------------------
+    | PROPOSTA DE ORIGEM
+    |--------------------------------------------------------------------------
+    |
+    | Uma proposta só pode gerar uma venda.
+    |
+    */
+
+    proposal: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Proposal',
+      required: true,
+      unique: true,
+      index: true,
+    },
+
+    /*
+    |--------------------------------------------------------------------------
+    | LEAD / CLIENTE
+    |--------------------------------------------------------------------------
+    */
+
+    lead: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Lead',
+      required: true,
+      index: true,
+    },
+
+    /*
+    |--------------------------------------------------------------------------
+    | IMÓVEL
+    |--------------------------------------------------------------------------
+    */
+
+    property: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Property',
+      required: true,
+      index: true,
+    },
+
+    /*
+    |--------------------------------------------------------------------------
+    | CORRETOR VENDEDOR
+    |--------------------------------------------------------------------------
+    |
+    | Vem da Proposal.broker
+    |
+    */
+
+    sellerBroker: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+      index: true,
+    },
+
+    /*
+    |--------------------------------------------------------------------------
+    | CORRETOR CAPTADOR
+    |--------------------------------------------------------------------------
+    |
+    | Vem de:
+    |
+    | Property.captation.broker
+    |
+    */
+
+    acquisitionBroker: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true,
+    },
+
+    /*
+    |--------------------------------------------------------------------------
+    | VALOR DA VENDA
+    |--------------------------------------------------------------------------
+    */
+
+    saleAmount: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+
+    /*
+    |--------------------------------------------------------------------------
+    | VALOR DA PROPOSTA
+    |--------------------------------------------------------------------------
+    |
+    | Mantemos separado para preservar o histórico.
+    |
+    */
+
+    proposalAmount: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+
+    /*
+    |--------------------------------------------------------------------------
+    | CONDIÇÕES FINANCEIRAS
+    |--------------------------------------------------------------------------
+    */
+
+    downPayment: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    financing: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    fgts: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    balance: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    /*
+    |--------------------------------------------------------------------------
+    | COMISSÃO
+    |--------------------------------------------------------------------------
+    |
+    | IMPORTANTE:
+    |
+    | Aqui NÃO colocamos:
+    |
+    | totalPercentage,
+    | totalAmount,
+    | broker,
+    | percentage,
+    | amount...
+    |
+    | diretamente.
+    |
+    | O commissionSchema acima define a estrutura.
+    |
     */
 
     commission: {
@@ -601,129 +376,94 @@ const saleSchema = new Schema(
 
     /*
     |--------------------------------------------------------------------------
-    | DOCUMENTATION
+    | STATUS DA VENDA
     |--------------------------------------------------------------------------
     */
 
-    documentation: {
-      type: documentationSchema,
-      default: () => ({}),
+    status: {
+      type: String,
+      enum: SALE_STATUS_LIST,
+      default: SALE_STATUS.PENDING,
+      index: true,
     },
 
     /*
     |--------------------------------------------------------------------------
-    | CONTRACT
+    | STATUS DO PAGAMENTO
     |--------------------------------------------------------------------------
     */
 
-    contract: {
-      type: contractSchema,
-      default: () => ({}),
+    paymentStatus: {
+      type: String,
+      enum: SALE_PAYMENT_STATUS_LIST,
+      default: SALE_PAYMENT_STATUS.PENDING,
+      index: true,
     },
 
     /*
     |--------------------------------------------------------------------------
-    | DATES
+    | DATAS
     |--------------------------------------------------------------------------
     */
-
-    negotiationStartedAt: {
-      type: Date,
-      default: Date.now,
-    },
-
-    proposalAcceptedAt: {
-      type: Date,
-    },
 
     saleDate: {
       type: Date,
+      default: Date.now,
+      index: true,
     },
 
-    expectedClosingDate: {
+    completedAt: {
       type: Date,
-    },
-
-    closedAt: {
-      type: Date,
+      default: null,
     },
 
     cancelledAt: {
       type: Date,
+      default: null,
     },
 
     /*
     |--------------------------------------------------------------------------
-    | CANCELLATION
+    | CANCELAMENTO
     |--------------------------------------------------------------------------
     */
 
-    cancellation: {
-      reason: {
-        type: String,
-        trim: true,
-        maxlength: [2000, 'Motivo do cancelamento muito longo'],
-      },
-
-      cancelledBy: {
-        type: Schema.Types.ObjectId,
-        ref: 'User',
-      },
+    cancellationReason: {
+      type: String,
+      trim: true,
+      maxlength: 2000,
+      default: '',
     },
 
     /*
     |--------------------------------------------------------------------------
-    | NOTES
+    | OBSERVAÇÕES
     |--------------------------------------------------------------------------
     */
 
     notes: {
       type: String,
       trim: true,
-      maxlength: [5000, 'Observações devem ter no máximo 5000 caracteres'],
+      maxlength: 5000,
+      default: '',
     },
 
     /*
     |--------------------------------------------------------------------------
-    | HISTORY
+    | AUDITORIA
     |--------------------------------------------------------------------------
     */
 
-    history: {
-      type: [saleHistorySchema],
-      default: [],
-    },
-
-    /*
-    |--------------------------------------------------------------------------
-    | METADATA
-    |--------------------------------------------------------------------------
-    */
-
-    metadata: {
-      type: Schema.Types.Mixed,
-      default: {},
-    },
-
-    /*
-    |--------------------------------------------------------------------------
-    | SOFT DELETE
-    |--------------------------------------------------------------------------
-    */
-
-    isDeleted: {
-      type: Boolean,
-      default: false,
-      index: true,
-    },
-
-    deletedAt: {
-      type: Date,
-    },
-
-    deletedBy: {
-      type: Schema.Types.ObjectId,
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
+      required: true,
+    },
+
+    updatedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
     },
   },
   {
@@ -734,7 +474,7 @@ const saleSchema = new Schema(
 
 /*
 |--------------------------------------------------------------------------
-| INDEXES
+| ÍNDICES
 |--------------------------------------------------------------------------
 */
 
@@ -744,7 +484,12 @@ saleSchema.index({
 })
 
 saleSchema.index({
-  broker: 1,
+  sellerBroker: 1,
+  status: 1,
+})
+
+saleSchema.index({
+  acquisitionBroker: 1,
   status: 1,
 })
 
@@ -755,154 +500,209 @@ saleSchema.index({
 
 saleSchema.index({
   property: 1,
-  status: 1,
-})
-
-saleSchema.index({
-  proposal: 1,
+  createdAt: -1,
 })
 
 saleSchema.index({
   saleDate: -1,
 })
 
-saleSchema.index({
-  createdAt: -1,
-})
-
 /*
 |--------------------------------------------------------------------------
-| VIRTUALS
+| VALIDAÇÃO DAS COMISSÕES
 |--------------------------------------------------------------------------
+|
+| A soma da distribuição não pode ultrapassar
+| o percentual total da comissão.
+|
+| Exemplo:
+|
+| Comissão total: 5%
+|
+| Vendedor:     2.5%
+| Captador:     1%
+| Imobiliária:  1.5%
+|
+| Total:        5%
+|
 */
 
-saleSchema.virtual('isActive').get(function () {
-  return (
-    !this.isDeleted &&
-    this.status !== SALE_STATUS.CANCELADA &&
-    this.status !== SALE_STATUS.CONCLUIDA
-  )
-})
+saleSchema.pre('validate', function (next) {
+  const commission = this.commission
 
-saleSchema.virtual('isCompleted').get(function () {
-  return this.status === SALE_STATUS.CONCLUIDA
-})
-
-saleSchema.virtual('isCancelled').get(function () {
-  return this.status === SALE_STATUS.CANCELADA
-})
-
-/*
-|--------------------------------------------------------------------------
-| INSTANCE METHODS
-|--------------------------------------------------------------------------
-*/
-
-saleSchema.methods.addHistory = function ({
-  action,
-  description,
-  fromStatus,
-  toStatus,
-  performedBy,
-  metadata = {},
-}) {
-  this.history.push({
-    action,
-    description,
-    fromStatus,
-    toStatus,
-    performedBy,
-    metadata,
-    createdAt: new Date(),
-  })
-
-  return this
-}
-
-saleSchema.methods.changeStatus = function (
-  newStatus,
-  performedBy,
-  description = '',
-) {
-  if (!SALE_STATUS_LIST.includes(newStatus)) {
-    throw new Error('Status da venda inválido')
+  if (!commission) {
+    return next()
   }
 
-  const previousStatus = this.status
+  const sellerPercentage = Number(commission.seller?.percentage || 0)
 
-  this.status = newStatus
+  const acquisitionPercentage = Number(commission.acquisition?.percentage || 0)
 
-  const now = new Date()
+  const companyPercentage = Number(commission.company?.percentage || 0)
 
-  if (newStatus === SALE_STATUS.CONCLUIDA) {
-    this.closedAt = now
+  const distributedPercentage =
+    sellerPercentage + acquisitionPercentage + companyPercentage
 
-    if (!this.saleDate) {
-      this.saleDate = now
-    }
+  /*
+  |--------------------------------------------------------------------------
+  | A distribuição interna deve representar 100%
+  | da comissão total.
+  |--------------------------------------------------------------------------
+  */
+
+  if (Math.abs(distributedPercentage - 100) > 0.0001) {
+    return next(new Error('A distribuição da comissão deve totalizar 100%.'))
   }
 
-  if (newStatus === SALE_STATUS.CANCELADA) {
-    this.cancelledAt = now
-  }
-
-  this.addHistory({
-    action: 'status_changed',
-    description:
-      description || `Status alterado de ${previousStatus} para ${newStatus}`,
-    fromStatus: previousStatus,
-    toStatus: newStatus,
-    performedBy,
-  })
-
-  return this
-}
-
-saleSchema.methods.softDelete = function (userId) {
-  this.isDeleted = true
-  this.deletedAt = new Date()
-  this.deletedBy = userId
-
-  this.addHistory({
-    action: 'deleted',
-    description: 'Venda excluída',
-    performedBy: userId,
-  })
-
-  return this
-}
+  next()
+})
 
 /*
 |--------------------------------------------------------------------------
-| QUERY HELPERS
+| CONTROLE AUTOMÁTICO DAS DATAS
 |--------------------------------------------------------------------------
 */
 
-saleSchema.query.active = function () {
-  return this.where({
-    isDeleted: false,
-  })
-}
+saleSchema.pre('save', function (next) {
+  /*
+  |--------------------------------------------------------------------------
+  | VENDA CONCLUÍDA
+  |--------------------------------------------------------------------------
+  */
 
-saleSchema.query.notDeleted = function () {
-  return this.where({
-    isDeleted: false,
-  })
-}
+  if (
+    this.isModified('status') &&
+    this.status === SALE_STATUS.COMPLETED &&
+    !this.completedAt
+  ) {
+    this.completedAt = new Date()
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | VENDA CANCELADA
+  |--------------------------------------------------------------------------
+  */
+
+  if (
+    this.isModified('status') &&
+    this.status === SALE_STATUS.CANCELLED &&
+    !this.cancelledAt
+  ) {
+    this.cancelledAt = new Date()
+  }
+
+  next()
+})
 
 /*
 |--------------------------------------------------------------------------
-| JSON
+| POPULATE PADRÃO
 |--------------------------------------------------------------------------
 */
 
-saleSchema.set('toJSON', {
-  virtuals: true,
-})
+export const SALE_POPULATE = [
+  /*
+  |--------------------------------------------------------------------------
+  | PROPOSTA
+  |--------------------------------------------------------------------------
+  */
 
-saleSchema.set('toObject', {
-  virtuals: true,
-})
+  {
+    path: 'proposal',
+    select:
+      'status values paymentMethod installments installmentValue approvedAt',
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | LEAD
+  |--------------------------------------------------------------------------
+  */
+
+  {
+    path: 'lead',
+    select: 'name email phone source stage status assignedTo',
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | IMÓVEL
+  |--------------------------------------------------------------------------
+  */
+
+  {
+    path: 'property',
+    select:
+      'name slug code type category purpose status images coverImage prices location captation broker',
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | CORRETOR VENDEDOR
+  |--------------------------------------------------------------------------
+  */
+
+  {
+    path: 'sellerBroker',
+    select: 'name email avatar position phone',
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | CORRETOR CAPTADOR
+  |--------------------------------------------------------------------------
+  */
+
+  {
+    path: 'acquisitionBroker',
+    select: 'name email avatar position phone',
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | USUÁRIO QUE CRIOU
+  |--------------------------------------------------------------------------
+  */
+
+  {
+    path: 'createdBy',
+    select: 'name email avatar role',
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | USUÁRIO QUE ATUALIZOU
+  |--------------------------------------------------------------------------
+  */
+
+  {
+    path: 'updatedBy',
+    select: 'name email avatar role',
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | CORRETOR DA COMISSÃO DO VENDEDOR
+  |--------------------------------------------------------------------------
+  */
+
+  {
+    path: 'commission.seller.broker',
+    select: 'name email avatar position phone',
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | CORRETOR DA COMISSÃO DO CAPTADOR
+  |--------------------------------------------------------------------------
+  */
+
+  {
+    path: 'commission.acquisition.broker',
+    select: 'name email avatar position phone',
+  },
+]
 
 /*
 |--------------------------------------------------------------------------
@@ -910,6 +710,6 @@ saleSchema.set('toObject', {
 |--------------------------------------------------------------------------
 */
 
-const Sale = mongoose.models.Sale || mongoose.model('Sale', saleSchema)
+const Sale = mongoose.model('Sale', saleSchema)
 
 export default Sale

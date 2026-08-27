@@ -15,10 +15,16 @@ import {
  * =========================================================
  */
 
+/**
+ * Verifica se o valor é um ObjectId válido.
+ */
 const isValidObjectId = (value) => {
   return mongoose.Types.ObjectId.isValid(value)
 }
 
+/**
+ * Verifica se uma data é válida.
+ */
 const isValidDate = (value) => {
   if (!value) return true
 
@@ -26,6 +32,23 @@ const isValidDate = (value) => {
 
   return !Number.isNaN(date.getTime())
 }
+
+/**
+ * =========================================================
+ * CONSTANTES
+ * =========================================================
+ */
+
+const INTERACTION_TYPES = [
+  'ligacao',
+  'whatsapp',
+  'email',
+  'mensagem',
+  'visita',
+  'reuniao',
+  'nota',
+  'outro',
+]
 
 /**
  * =========================================================
@@ -117,7 +140,7 @@ export const createOpportunityValidator = [
       if (!value) return true
 
       if (!isValidObjectId(value)) {
-        throw new Error('O ID do corretor responsável é inválido.')
+        throw new Error('O ID do responsável pela oportunidade é inválido.')
       }
 
       return true
@@ -142,6 +165,12 @@ export const createOpportunityValidator = [
    * -------------------------------------------------------
    * STAGE
    * -------------------------------------------------------
+   *
+   * Pode ser informado na criação.
+   *
+   * Depois da criação, alterações de stage devem utilizar:
+   *
+   * PATCH /api/opportunities/:id/stage
    */
 
   body('stage')
@@ -157,6 +186,11 @@ export const createOpportunityValidator = [
    * -------------------------------------------------------
    * STATUS
    * -------------------------------------------------------
+   *
+   * Permitido somente na criação.
+   *
+   * Porém o ideal é que normalmente seja omitido,
+   * deixando o Model utilizar "aberta".
    */
 
   body('status')
@@ -333,6 +367,10 @@ export const createOpportunityValidator = [
    * -------------------------------------------------------
    * LOST REASON
    * -------------------------------------------------------
+   *
+   * Normalmente não deve ser enviado na criação.
+   *
+   * A perda será tratada pelo endpoint /stage.
    */
 
   body('lostReason')
@@ -366,6 +404,21 @@ export const createOpportunityValidator = [
  * =========================================================
  * UPDATE OPPORTUNITY
  * =========================================================
+ *
+ * IMPORTANTE:
+ *
+ * Este endpoint NÃO altera:
+ *
+ * - stage
+ * - status
+ * - stageHistory
+ * - interactions
+ * - assignmentHistory
+ * - createdBy
+ * - wonAt
+ * - lostAt
+ *
+ * Stage possui endpoint próprio.
  */
 
 export const updateOpportunityValidator = [
@@ -449,8 +502,10 @@ export const updateOpportunityValidator = [
       nullable: true,
     })
     .custom((value) => {
+      if (!value) return true
+
       if (!isValidObjectId(value)) {
-        throw new Error('O ID do corretor responsável é inválido.')
+        throw new Error('O ID do responsável pela oportunidade é inválido.')
       }
 
       return true
@@ -467,21 +522,6 @@ export const updateOpportunityValidator = [
     .isIn(OPPORTUNITY_TYPE_LIST)
     .withMessage(
       `O tipo deve ser um dos seguintes valores: ${OPPORTUNITY_TYPE_LIST.join(
-        ', ',
-      )}.`,
-    ),
-
-  /**
-   * -------------------------------------------------------
-   * STATUS
-   * -------------------------------------------------------
-   */
-
-  body('status')
-    .optional()
-    .isIn(OPPORTUNITY_STATUS_LIST)
-    .withMessage(
-      `O status deve ser um dos seguintes valores: ${OPPORTUNITY_STATUS_LIST.join(
         ', ',
       )}.`,
     ),
@@ -581,6 +621,24 @@ export const updateOpportunityValidator = [
 
   /**
    * -------------------------------------------------------
+   * LAST INTERACTION
+   * -------------------------------------------------------
+   */
+
+  body('lastInteractionAt')
+    .optional({
+      nullable: true,
+    })
+    .custom((value) => {
+      if (!isValidDate(value)) {
+        throw new Error('A data da última interação é inválida.')
+      }
+
+      return true
+    }),
+
+  /**
+   * -------------------------------------------------------
    * NEXT ACTION
    * -------------------------------------------------------
    */
@@ -631,22 +689,6 @@ export const updateOpportunityValidator = [
 
   /**
    * -------------------------------------------------------
-   * LOST REASON
-   * -------------------------------------------------------
-   */
-
-  body('lostReason')
-    .optional({
-      nullable: true,
-    })
-    .trim()
-    .isLength({
-      max: 1000,
-    })
-    .withMessage('O motivo da perda deve ter no máximo 1000 caracteres.'),
-
-  /**
-   * -------------------------------------------------------
    * NOTES
    * -------------------------------------------------------
    */
@@ -685,9 +727,27 @@ export const opportunityIdValidator = [
  * =========================================================
  * UPDATE STAGE
  * =========================================================
+ *
+ * Endpoint:
+ *
+ * PATCH /api/opportunities/:id/stage
+ *
+ * Responsável por:
+ *
+ * - alterar stage
+ * - atualizar status
+ * - registrar histórico
+ * - sincronizar Lead
+ * - controlar ganha/perdida
  */
 
 export const updateOpportunityStageValidator = [
+  /**
+   * -------------------------------------------------------
+   * STAGE
+   * -------------------------------------------------------
+   */
+
   body('stage')
     .notEmpty()
     .withMessage('O estágio da oportunidade é obrigatório.')
@@ -697,6 +757,12 @@ export const updateOpportunityStageValidator = [
         ', ',
       )}.`,
     ),
+
+  /**
+   * -------------------------------------------------------
+   * NOTE
+   * -------------------------------------------------------
+   */
 
   body('note')
     .optional({
@@ -712,14 +778,6 @@ export const updateOpportunityStageValidator = [
    * -------------------------------------------------------
    * LOST REASON
    * -------------------------------------------------------
-   *
-   * A validação abaixo permite que o frontend envie:
-   *
-   * {
-   *   stage: "perdida",
-   *   lostReason: "Cliente comprou outro imóvel"
-   * }
-   *
    */
 
   body('lostReason')
@@ -732,6 +790,12 @@ export const updateOpportunityStageValidator = [
     })
     .withMessage('O motivo da perda deve ter no máximo 1000 caracteres.'),
 
+  /**
+   * -------------------------------------------------------
+   * REGRA DE PERDA
+   * -------------------------------------------------------
+   */
+
   body().custom((body) => {
     if (
       body.stage === 'perdida' &&
@@ -741,6 +805,11 @@ export const updateOpportunityStageValidator = [
         'O motivo da perda é obrigatório quando a oportunidade é marcada como perdida.',
       )
     }
+
+    /**
+     * Se não for perdida, ignoramos qualquer
+     * lostReason enviado.
+     */
 
     return true
   }),
@@ -753,20 +822,27 @@ export const updateOpportunityStageValidator = [
  */
 
 export const addOpportunityInteractionValidator = [
+  /**
+   * -------------------------------------------------------
+   * TYPE
+   * -------------------------------------------------------
+   */
+
   body('type')
     .notEmpty()
     .withMessage('O tipo da interação é obrigatório.')
-    .isIn([
-      'ligacao',
-      'whatsapp',
-      'email',
-      'mensagem',
-      'visita',
-      'reuniao',
-      'nota',
-      'outro',
-    ])
-    .withMessage('O tipo da interação é inválido.'),
+    .isIn(INTERACTION_TYPES)
+    .withMessage(
+      `O tipo da interação deve ser um dos seguintes valores: ${INTERACTION_TYPES.join(
+        ', ',
+      )}.`,
+    ),
+
+  /**
+   * -------------------------------------------------------
+   * DESCRIPTION
+   * -------------------------------------------------------
+   */
 
   body('description')
     .optional({

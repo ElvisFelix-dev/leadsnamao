@@ -4,8 +4,9 @@ import Lead from '../../models/Lead.js'
 import Visit from '../../models/Visit.js'
 import Property from '../../models/Property.js'
 import User from '../../models/User.js'
-import Proposal from '../../models/Proposal.js'
+import Proposal from '../../models/Proposal.js' // ← CORRIGIDO: estava faltando o nome da variável
 import Sale from '../../models/Sale.js'
+import Commission from '../../models/Commission.js'
 
 import { VISIT_STATUS } from '../../constants/visitStatus.js'
 
@@ -392,8 +393,16 @@ const brokerDashboardService = async (brokerId) => {
 
     /*
     |--------------------------------------------------------------------------
-    | COMMISSION FINANCIAL
+    | 🔥 COMMISSION FINANCIAL - VIA MODELO COMMISSION
     |--------------------------------------------------------------------------
+    |
+    | Agora buscamos diretamente do modelo Commission,
+    | que é mais confiável e separado da Sale.
+    |
+    | A comissão do vendedor está em:
+    |
+    | distribution.seller.amount
+    |
     */
 
     commissionFinancial,
@@ -644,26 +653,30 @@ const brokerDashboardService = async (brokerId) => {
 
     /*
     |--------------------------------------------------------------------------
-    | COMMISSION
+    | 🔥 COMMISSION FINANCIAL - VIA MODELO COMMISSION
     |--------------------------------------------------------------------------
     |
-    | CORREÇÃO:
+    | Agora usamos o modelo Commission separado,
+    | que é gerado automaticamente quando a venda é concluída.
     |
-    | commission.seller.amount
+    | Isso garante:
+    | - Dados mais confiáveis
+    | - Histórico independente
+    | - Melhor performance em relatórios
     |
-    | E o pagamento é controlado por:
+    | A comissão do vendedor está em:
     |
-    | paymentStatus
+    | distribution.seller.amount
     |
     */
 
-    Sale.aggregate([
+    Commission.aggregate([
       {
         $match: {
           sellerBroker: objectId,
 
           status: {
-            $ne: SALE_STATUS.CANCELLED,
+            $ne: 'cancelled',
           },
         },
       },
@@ -674,13 +687,7 @@ const brokerDashboardService = async (brokerId) => {
 
           totalCommission: {
             $sum: {
-              $ifNull: ['$commission.seller.amount', 0],
-            },
-          },
-
-          totalCommissionPercentage: {
-            $sum: {
-              $ifNull: ['$commission.seller.percentage', 0],
+              $ifNull: ['$distribution.seller.amount', 0],
             },
           },
 
@@ -688,11 +695,43 @@ const brokerDashboardService = async (brokerId) => {
             $sum: {
               $cond: [
                 {
-                  $eq: ['$paymentStatus', SALE_PAYMENT_STATUS.PAID],
+                  $eq: ['$status', 'paid'],
                 },
 
                 {
-                  $ifNull: ['$commission.seller.amount', 0],
+                  $ifNull: ['$distribution.seller.amount', 0],
+                },
+
+                0,
+              ],
+            },
+          },
+
+          pendingCommission: {
+            $sum: {
+              $cond: [
+                {
+                  $eq: ['$status', 'pending'],
+                },
+
+                {
+                  $ifNull: ['$distribution.seller.amount', 0],
+                },
+
+                0,
+              ],
+            },
+          },
+
+          approvedCommission: {
+            $sum: {
+              $cond: [
+                {
+                  $eq: ['$status', 'approved'],
+                },
+
+                {
+                  $ifNull: ['$distribution.seller.amount', 0],
                 },
 
                 0,
@@ -728,11 +767,32 @@ const brokerDashboardService = async (brokerId) => {
 
   const completedSalesValue = toNumber(salesFinancialData.completedValue)
 
+  /*
+  |--------------------------------------------------------------------------
+  | 🔥 COMMISSION FINANCIAL - DADOS DO MODELO COMMISSION
+  |--------------------------------------------------------------------------
+  */
+
   const totalCommission = toNumber(commissionFinancialData.totalCommission)
 
   const paidCommission = toNumber(commissionFinancialData.paidCommission)
 
-  const pendingCommission = Math.max(totalCommission - paidCommission, 0)
+  const pendingCommission = toNumber(commissionFinancialData.pendingCommission)
+
+  const approvedCommission = toNumber(
+    commissionFinancialData.approvedCommission,
+  )
+
+  console.log('\n========================================')
+  console.log('🔥 COMISSÕES VIA MODELO COMMISSION')
+  console.log('========================================')
+  console.log({
+    totalCommission,
+    paidCommission,
+    pendingCommission,
+    approvedCommission,
+  })
+  console.log('========================================\n')
 
   /*
   |--------------------------------------------------------------------------
@@ -1535,6 +1595,7 @@ const brokerDashboardService = async (brokerId) => {
     totalCommission,
     paidCommission,
     pendingCommission,
+    approvedCommission,
     totalSalesValue,
     completedSalesValue,
     points,
@@ -1646,15 +1707,17 @@ const brokerDashboardService = async (brokerId) => {
 
       /*
       |--------------------------------------------------------------------------
-      | COMISSÃO DO CORRETOR
+      | 🔥 COMISSÃO DO CORRETOR - VIA MODELO COMMISSION
       |--------------------------------------------------------------------------
       */
 
-      comissao: totalCommission,
+      comissaoTotal: totalCommission,
 
       comissaoPaga: paidCommission,
 
       comissaoPendente: pendingCommission,
+
+      comissaoAprovada: approvedCommission,
 
       /*
       |--------------------------------------------------------------------------

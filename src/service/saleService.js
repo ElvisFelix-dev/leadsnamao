@@ -13,6 +13,7 @@ import Proposal, { PROPOSAL_STATUS } from '../models/Proposal.js'
 import Lead from '../models/Lead.js'
 import Property from '../models/Property.js'
 import User from '../models/User.js'
+import CommissionService from './commissionService.js'
 
 /*
 |--------------------------------------------------------------------------
@@ -929,25 +930,19 @@ export const releaseProperty = async ({ property, session = null }) => {
 const finalizeSale = async ({ sale, user, lead, property, session }) => {
   const performedBy = getUserId(user)
 
-  /*
-   * Garante completedAt.
-   */
+  // Garante completedAt.
   if (!sale.completedAt) {
     sale.completedAt = new Date()
   }
 
-  /*
-   * Imóvel → vendido.
-   */
+  // Imóvel → vendido.
   await markPropertyAsSold({
     property,
     sale,
     session,
   })
 
-  /*
-   * Lead → ganho.
-   */
+  // Lead → ganho.
   await updateLeadStage({
     lead,
     newStage: PIPELINE_STAGES.WON,
@@ -958,9 +953,7 @@ const finalizeSale = async ({ sale, user, lead, property, session }) => {
     session,
   })
 
-  /*
-   * Histórico.
-   */
+  // Histórico.
   await addLeadSaleHistory({
     lead,
     sale,
@@ -971,6 +964,21 @@ const finalizeSale = async ({ sale, user, lead, property, session }) => {
     )}.`,
     session,
   })
+
+  // ==========================================
+  // 🔥 NOVO: GERA COMISSÃO AUTOMATICAMENTE
+  // ==========================================
+  try {
+    await CommissionService.generateFromSale(sale._id, performedBy)
+    console.log(`✅ Comissão gerada para venda ${sale.saleNumber}`)
+  } catch (commissionError) {
+    // Log do erro, mas não interrompe o fluxo
+    console.error(
+      `❌ Erro ao gerar comissão para venda ${sale.saleNumber}:`,
+      commissionError.message,
+    )
+    // Opcional: enviar notificação para admin
+  }
 }
 
 /**

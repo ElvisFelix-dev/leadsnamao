@@ -419,7 +419,8 @@ export const PROPOSAL_POPULATE = [
   },
   {
     path: 'property',
-    select: 'title slug code price status type address proposalCount',
+    select:
+      'title slug code price status type purpose address area totalArea privateArea builtArea bedrooms suites bathrooms parkingSpaces garages images photos gallery proposalCount',
   },
   {
     path: 'broker',

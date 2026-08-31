@@ -113,6 +113,27 @@ const buildPaginationResponse = ({ page, limit, total }) => {
 
 /*
 |--------------------------------------------------------------------------
+| POPULATE DA PROPOSTA
+|--------------------------------------------------------------------------
+|
+| Mantém o PROPOSAL_POPULATE existente e garante que o imóvel
+| seja carregado com o schema atual de Property.js.
+|
+| Isso resolve o problema em que a proposta chegava ao frontend
+| apenas com o ObjectId do imóvel ou com dados incompletos.
+|
+|--------------------------------------------------------------------------
+*/
+
+const populateProposal = (query) => {
+  return query.populate(PROPOSAL_POPULATE).populate({
+    path: 'property',
+    model: Property,
+  })
+}
+
+/*
+|--------------------------------------------------------------------------
 | STATUS
 |--------------------------------------------------------------------------
 */
@@ -198,32 +219,174 @@ const buildLeadSnapshot = (lead) => ({
   stage: lead.stage || '',
 })
 
-const buildPropertySnapshot = (property) => ({
-  code: property.code || '',
-  title: property.title || property.name || '',
-  slug: property.slug || '',
-  type: property.type || '',
-  status: property.status || '',
-  price: normalizeNumber(property.price),
+/*
+|--------------------------------------------------------------------------
+| SNAPSHOT DO IMÓVEL
+|--------------------------------------------------------------------------
+|
+| ATUALIZADO PARA O NOVO PROPERTY.JS
+|
+| O model atual utiliza:
+| - name
+| - prices
+| - location
+| - dimensions
+| - images
+| - coverImage
+| - bedrooms
+| - suites
+| - bathrooms
+| - parkingSpaces
+|
+|--------------------------------------------------------------------------
+*/
 
-  address: {
-    street: property.address?.street || property.address?.logradouro || '',
+const buildPropertySnapshot = (property) => {
+  const prices = property.prices || {}
+  const location = property.location || {}
+  const dimensions = property.dimensions || {}
 
-    number: property.address?.number || property.address?.numero || '',
+  const salePrice = normalizeNumber(prices.salePrice)
+  const rentPrice = normalizeNumber(prices.rentPrice)
 
-    district:
-      property.address?.district ||
-      property.address?.neighborhood ||
-      property.address?.bairro ||
-      '',
+  const mainPrice =
+    property.purpose === 'aluguel'
+      ? rentPrice
+      : property.purpose === 'venda'
+        ? salePrice
+        : salePrice || rentPrice
 
-    city: property.address?.city || property.address?.cidade || '',
+  const images = Array.isArray(property.images)
+    ? property.images.map((image) => ({
+        url: image?.url || '',
+        public_id: image?.public_id || '',
+        isCover: Boolean(image?.isCover),
+        order: normalizeNumber(image?.order),
+      }))
+    : []
 
-    state: property.address?.state || property.address?.uf || '',
+  return {
+    _id: property._id,
 
-    zipCode: property.address?.zipCode || property.address?.cep || '',
-  },
-})
+    code: property.code || '',
+
+    name: property.name || '',
+
+    title: property.name || '',
+
+    description: property.description || '',
+
+    shortDescription: property.shortDescription || '',
+
+    slug: property.slug || '',
+
+    type: property.type || '',
+
+    category: property.category || '',
+
+    purpose: property.purpose || '',
+
+    status: property.status || '',
+
+    constructionStatus: property.constructionStatus || '',
+
+    featured: Boolean(property.featured),
+
+    exclusive: Boolean(property.exclusive),
+
+    published: Boolean(property.published),
+
+    active: Boolean(property.active),
+
+    bedrooms: normalizeNumber(property.bedrooms),
+
+    suites: normalizeNumber(property.suites),
+
+    bathrooms: normalizeNumber(property.bathrooms),
+
+    parkingSpaces: normalizeNumber(property.parkingSpaces),
+
+    floor: normalizeNumber(property.floor),
+
+    furnished: Boolean(property.furnished),
+
+    acceptsPets: Boolean(property.acceptsPets),
+
+    price: mainPrice,
+
+    prices: {
+      salePrice,
+      rentPrice,
+      condominiumFee: normalizeNumber(prices.condominiumFee),
+      iptu: normalizeNumber(prices.iptu),
+      otherFees: normalizeNumber(prices.otherFees),
+    },
+
+    dimensions: {
+      totalArea: normalizeNumber(dimensions.totalArea),
+      builtArea: normalizeNumber(dimensions.builtArea),
+      landArea: normalizeNumber(dimensions.landArea),
+      frontage: normalizeNumber(dimensions.frontage),
+      background: normalizeNumber(dimensions.background),
+    },
+
+    location: {
+      zipCode: location.zipCode || '',
+      street: location.street || '',
+      number: location.number || '',
+      complement: location.complement || '',
+      district: location.district || '',
+      city: location.city || '',
+      state: location.state || '',
+      country: location.country || 'Brasil',
+      region: location.region || '',
+      coordinates: location.coordinates || null,
+    },
+
+    /*
+     * Mantém também o formato "address" para facilitar
+     * compatibilidade com componentes antigos do frontend.
+     */
+    address: {
+      street: location.street || '',
+      number: location.number || '',
+      complement: location.complement || '',
+      district: location.district || '',
+      city: location.city || '',
+      state: location.state || '',
+      zipCode: location.zipCode || '',
+    },
+
+    features: Array.isArray(property.features) ? property.features : [],
+
+    highlights: Array.isArray(property.highlights) ? property.highlights : [],
+
+    coverImage: property.coverImage || '',
+
+    images,
+
+    image: Array.isArray(property.image) ? property.image : [],
+
+    videos: Array.isArray(property.videos) ? property.videos : [],
+
+    virtualTour: property.virtualTour || '',
+
+    floorPlan: property.floorPlan || '',
+
+    acceptsFinancing: Boolean(property.acceptsFinancing),
+
+    acceptsFGTS: Boolean(property.acceptsFGTS),
+
+    condominium: property.condominium || null,
+
+    captation: property.captation
+      ? {
+          broker: property.captation.broker || null,
+          percentage: normalizeNumber(property.captation.percentage),
+        }
+      : null,
+  }
+}
 
 /*
 |--------------------------------------------------------------------------
@@ -540,12 +703,6 @@ export const createProposal = async ({ data, user }) => {
     let createdProposalId = null
 
     await session.withTransaction(async () => {
-      /*
-       * --------------------------------------------------------------
-       * VALIDAÇÃO INICIAL
-       * --------------------------------------------------------------
-       */
-
       if (!data) {
         throw createError('Dados da proposta não informados.')
       }
@@ -554,23 +711,11 @@ export const createProposal = async ({ data, user }) => {
         throw createError('Usuário não autenticado.', 401)
       }
 
-      /*
-       * --------------------------------------------------------------
-       * IDS
-       * --------------------------------------------------------------
-       */
-
       const leadId = getObjectId(data.lead, 'Lead')
 
       const propertyId = getObjectId(data.property, 'Imóvel')
 
       const opportunityId = getObjectId(data.opportunity, 'Oportunidade')
-
-      /*
-       * --------------------------------------------------------------
-       * LEAD
-       * --------------------------------------------------------------
-       */
 
       const lead = await getLeadForProposal(leadId, session)
 
@@ -583,12 +728,6 @@ export const createProposal = async ({ data, user }) => {
         user,
       })
 
-      /*
-       * --------------------------------------------------------------
-       * IMÓVEL
-       * --------------------------------------------------------------
-       */
-
       const property = await getPropertyForProposal(propertyId, session)
 
       if (!property) {
@@ -598,12 +737,6 @@ export const createProposal = async ({ data, user }) => {
       if (property.isDeleted === true) {
         throw createError('Este imóvel não está disponível.')
       }
-
-      /*
-       * --------------------------------------------------------------
-       * OPORTUNIDADE
-       * --------------------------------------------------------------
-       */
 
       const opportunity = await getOpportunityForProposal(
         opportunityId,
@@ -615,36 +748,17 @@ export const createProposal = async ({ data, user }) => {
         lead,
       })
 
-      /*
-       * --------------------------------------------------------------
-       * CORRETOR
-       * --------------------------------------------------------------
-       */
-
       const brokerId = isAdmin(user) ? data.broker || lead.assignedTo : user._id
 
       if (!brokerId) {
         throw createError('O Lead não possui corretor responsável.')
       }
 
-      /*
-       * --------------------------------------------------------------
-       * O CORRETOR DA PROPOSTA PRECISA
-       * SER O CORRETOR RESPONSÁVEL PELO LEAD
-       * --------------------------------------------------------------
-       */
-
       if (lead.assignedTo && String(brokerId) !== String(lead.assignedTo)) {
         throw createError(
           'O corretor da proposta deve ser o corretor responsável pelo Lead.',
         )
       }
-
-      /*
-       * --------------------------------------------------------------
-       * BUSCAR CORRETOR
-       * --------------------------------------------------------------
-       */
 
       const broker = await User.findById(brokerId).session(session)
 
@@ -656,14 +770,17 @@ export const createProposal = async ({ data, user }) => {
         throw createError('O usuário selecionado não é um corretor.')
       }
 
-      /*
-       * --------------------------------------------------------------
-       * VALORES
-       * --------------------------------------------------------------
-       */
+      const propertySalePrice = normalizeNumber(property.prices?.salePrice)
+
+      const propertyRentPrice = normalizeNumber(property.prices?.rentPrice)
+
+      const propertyMainPrice =
+        property.purpose === 'aluguel'
+          ? propertyRentPrice
+          : propertySalePrice || propertyRentPrice
 
       const values = normalizeProposalValues({
-        propertyPrice: data.values?.propertyPrice ?? property.price,
+        propertyPrice: data.values?.propertyPrice ?? propertyMainPrice,
 
         proposalPrice: data.values?.proposalPrice,
 
@@ -674,29 +791,13 @@ export const createProposal = async ({ data, user }) => {
         fgts: data.values?.fgts,
       })
 
-      /*
-       * --------------------------------------------------------------
-       * VALIDADE
-       * --------------------------------------------------------------
-       */
-
       const validityDays = normalizePositiveInteger(data.validityDays, 7)
 
       const expiresAt = new Date()
 
       expiresAt.setDate(expiresAt.getDate() + validityDays)
 
-      /*
-       * --------------------------------------------------------------
-       * CRIAR PROPOSTA
-       * --------------------------------------------------------------
-       */
-
       const proposal = new Proposal({
-        /*
-         * RELACIONAMENTOS
-         */
-
         opportunity: opportunity._id,
 
         lead: lead._id,
@@ -707,21 +808,9 @@ export const createProposal = async ({ data, user }) => {
 
         createdBy: user._id,
 
-        /*
-         * STATUS
-         */
-
         status: PROPOSAL_STATUS.DRAFT,
 
-        /*
-         * VALORES
-         */
-
         values,
-
-        /*
-         * PAGAMENTO
-         */
 
         paymentMethod: data.paymentMethod || 'financing',
 
@@ -729,34 +818,18 @@ export const createProposal = async ({ data, user }) => {
 
         installmentValue: normalizeNumber(data.installmentValue),
 
-        /*
-         * VALIDADE
-         */
-
         validityDays,
 
         expiresAt,
-
-        /*
-         * MENSAGEM
-         */
 
         clientMessage:
           typeof data.clientMessage === 'string'
             ? data.clientMessage.trim()
             : '',
 
-        /*
-         * SNAPSHOTS
-         */
-
         leadSnapshot: buildLeadSnapshot(lead),
 
         propertySnapshot: buildPropertySnapshot(property),
-
-        /*
-         * HISTÓRICO
-         */
 
         history: [
           createProposalHistoryEntry({
@@ -789,23 +862,11 @@ export const createProposal = async ({ data, user }) => {
         ],
       })
 
-      /*
-       * --------------------------------------------------------------
-       * SALVAR PROPOSTA
-       * --------------------------------------------------------------
-       */
-
       await proposal.save({
         session,
       })
 
       createdProposalId = proposal._id
-
-      /*
-       * --------------------------------------------------------------
-       * INCREMENTAR PROPOSAL COUNT
-       * --------------------------------------------------------------
-       */
 
       await Property.findByIdAndUpdate(
         property._id,
@@ -818,12 +879,6 @@ export const createProposal = async ({ data, user }) => {
           session,
         },
       )
-
-      /*
-       * --------------------------------------------------------------
-       * HISTÓRICO DO LEAD
-       * --------------------------------------------------------------
-       */
 
       await addLeadProposalHistory({
         lead,
@@ -842,13 +897,7 @@ export const createProposal = async ({ data, user }) => {
       })
     })
 
-    /*
-     * --------------------------------------------------------------
-     * RETORNO
-     * --------------------------------------------------------------
-     */
-
-    return Proposal.findById(createdProposalId).populate(PROPOSAL_POPULATE)
+    return populateProposal(Proposal.findById(createdProposalId))
   } finally {
     await session.endSession()
   }
@@ -886,10 +935,6 @@ export const updateProposal = async ({ proposalId, data, user }) => {
     throw createError('Nenhum dado informado para atualização.')
   }
 
-  /*
-   * VALORES
-   */
-
   if (data.values) {
     proposal.values = normalizeProposalValues({
       propertyPrice: data.values.propertyPrice ?? proposal.values.propertyPrice,
@@ -904,10 +949,6 @@ export const updateProposal = async ({ proposalId, data, user }) => {
     })
   }
 
-  /*
-   * PAGAMENTO
-   */
-
   if (data.paymentMethod !== undefined) {
     proposal.paymentMethod = data.paymentMethod
   }
@@ -919,10 +960,6 @@ export const updateProposal = async ({ proposalId, data, user }) => {
   if (data.installmentValue !== undefined) {
     proposal.installmentValue = normalizeNumber(data.installmentValue)
   }
-
-  /*
-   * VALIDADE
-   */
 
   if (data.validityDays !== undefined) {
     const validityDays = normalizePositiveInteger(data.validityDays, 7)
@@ -936,18 +973,10 @@ export const updateProposal = async ({ proposalId, data, user }) => {
     proposal.expiresAt = expiresAt
   }
 
-  /*
-   * MENSAGEM
-   */
-
   if (data.clientMessage !== undefined) {
     proposal.clientMessage =
       typeof data.clientMessage === 'string' ? data.clientMessage.trim() : ''
   }
-
-  /*
-   * HISTÓRICO
-   */
 
   proposal.history.push(
     createProposalHistoryEntry({
@@ -967,10 +996,6 @@ export const updateProposal = async ({ proposalId, data, user }) => {
 
   await proposal.save()
 
-  /*
-   * HISTÓRICO DO LEAD
-   */
-
   const lead = await Lead.findById(proposal.lead)
 
   if (lead) {
@@ -987,7 +1012,7 @@ export const updateProposal = async ({ proposalId, data, user }) => {
     })
   }
 
-  return Proposal.findById(proposal._id).populate(PROPOSAL_POPULATE)
+  return populateProposal(Proposal.findById(proposal._id))
 }
 
 /*
@@ -1088,7 +1113,7 @@ export const submitProposal = async ({ proposalId, user }) => {
       updatedProposalId = proposal._id
     })
 
-    return Proposal.findById(updatedProposalId).populate(PROPOSAL_POPULATE)
+    return populateProposal(Proposal.findById(updatedProposalId))
   } finally {
     await session.endSession()
   }
@@ -1194,7 +1219,7 @@ export const approveProposal = async ({ proposalId, user, comment = '' }) => {
       updatedProposalId = proposal._id
     })
 
-    return Proposal.findById(updatedProposalId).populate(PROPOSAL_POPULATE)
+    return populateProposal(Proposal.findById(updatedProposalId))
   } finally {
     await session.endSession()
   }
@@ -1292,7 +1317,7 @@ export const rejectProposal = async ({ proposalId, user, reason }) => {
       updatedProposalId = proposal._id
     })
 
-    return Proposal.findById(updatedProposalId).populate(PROPOSAL_POPULATE)
+    return populateProposal(Proposal.findById(updatedProposalId))
   } finally {
     await session.endSession()
   }
@@ -1388,7 +1413,7 @@ export const cancelProposal = async ({ proposalId, user, reason = '' }) => {
       updatedProposalId = proposal._id
     })
 
-    return Proposal.findById(updatedProposalId).populate(PROPOSAL_POPULATE)
+    return populateProposal(Proposal.findById(updatedProposalId))
   } finally {
     await session.endSession()
   }
@@ -1403,10 +1428,12 @@ export const cancelProposal = async ({ proposalId, user, reason = '' }) => {
 export const getProposalById = async ({ proposalId, user }) => {
   const id = getObjectId(proposalId, 'Proposta')
 
-  const proposal = await Proposal.findOne({
-    _id: id,
-    isDeleted: false,
-  }).populate(PROPOSAL_POPULATE)
+  const proposal = await populateProposal(
+    Proposal.findOne({
+      _id: id,
+      isDeleted: false,
+    }),
+  )
 
   if (!proposal) {
     throw createError('Proposta não encontrada.', 404)
@@ -1453,10 +1480,6 @@ export const getProposals = async ({
     isDeleted: false,
   }
 
-  /*
-   * CORRETOR
-   */
-
   if (isBroker(user)) {
     filter.broker = user._id
   }
@@ -1465,33 +1488,17 @@ export const getProposals = async ({
     filter.broker = getObjectId(broker, 'Corretor')
   }
 
-  /*
-   * LEAD
-   */
-
   if (lead) {
     filter.lead = getObjectId(lead, 'Lead')
   }
-
-  /*
-   * IMÓVEL
-   */
 
   if (property) {
     filter.property = getObjectId(property, 'Imóvel')
   }
 
-  /*
-   * OPORTUNIDADE
-   */
-
   if (opportunity) {
     filter.opportunity = getObjectId(opportunity, 'Oportunidade')
   }
-
-  /*
-   * STATUS
-   */
 
   if (status) {
     if (Array.isArray(status)) {
@@ -1502,10 +1509,6 @@ export const getProposals = async ({
       filter.status = status
     }
   }
-
-  /*
-   * DATA
-   */
 
   if (startDate || endDate) {
     filter.createdAt = {}
@@ -1535,10 +1538,6 @@ export const getProposals = async ({
     }
   }
 
-  /*
-   * BUSCA
-   */
-
   if (search && search.trim()) {
     const searchRegex = new RegExp(
       search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
@@ -1563,13 +1562,19 @@ export const getProposals = async ({
       Property.find({
         $or: [
           {
-            title: searchRegex,
-          },
-          {
             name: searchRegex,
           },
           {
+            description: searchRegex,
+          },
+          {
+            shortDescription: searchRegex,
+          },
+          {
             code: searchRegex,
+          },
+          {
+            slug: searchRegex,
           },
         ],
       }).select('_id'),
@@ -1650,10 +1655,6 @@ export const getProposals = async ({
     }
   }
 
-  /*
-   * SORT
-   */
-
   const allowedSortFields = [
     'createdAt',
     'updatedAt',
@@ -1676,19 +1677,16 @@ export const getProposals = async ({
     }
   }
 
-  /*
-   * CONSULTA
-   */
-
   const [proposals, total] = await Promise.all([
-    Proposal.find(filter)
-      .populate(PROPOSAL_POPULATE)
-      .sort({
-        [sortField]: sortDirection,
-      })
-      .skip(skip)
-      .limit(currentLimit)
-      .lean(),
+    populateProposal(
+      Proposal.find(filter)
+        .sort({
+          [sortField]: sortDirection,
+        })
+        .skip(skip)
+        .limit(currentLimit)
+        .lean(),
+    ),
 
     Proposal.countDocuments(filter),
   ])
@@ -1752,12 +1750,13 @@ export const getProposalsByLead = async ({ leadId, user }) => {
     filter.broker = user._id
   }
 
-  return Proposal.find(filter)
-    .populate(PROPOSAL_POPULATE)
-    .sort({
-      createdAt: -1,
-    })
-    .lean()
+  return populateProposal(
+    Proposal.find(filter)
+      .sort({
+        createdAt: -1,
+      })
+      .lean(),
+  )
 }
 
 /*
@@ -1784,12 +1783,13 @@ export const getProposalsByProperty = async ({ propertyId, user }) => {
     filter.broker = user._id
   }
 
-  return Proposal.find(filter)
-    .populate(PROPOSAL_POPULATE)
-    .sort({
-      createdAt: -1,
-    })
-    .lean()
+  return populateProposal(
+    Proposal.find(filter)
+      .sort({
+        createdAt: -1,
+      })
+      .lean(),
+  )
 }
 
 /*
@@ -1837,12 +1837,13 @@ export const getProposalsByOpportunity = async ({ opportunityId, user }) => {
     filter.broker = user._id
   }
 
-  return Proposal.find(filter)
-    .populate(PROPOSAL_POPULATE)
-    .sort({
-      createdAt: -1,
-    })
-    .lean()
+  return populateProposal(
+    Proposal.find(filter)
+      .sort({
+        createdAt: -1,
+      })
+      .lean(),
+  )
 }
 
 /*
@@ -1861,10 +1862,6 @@ export const getProposalMetrics = async ({
     isDeleted: false,
   }
 
-  /*
-   * CORRETOR
-   */
-
   if (isBroker(user)) {
     match.broker = getObjectId(user._id, 'Usuário')
   }
@@ -1872,10 +1869,6 @@ export const getProposalMetrics = async ({
   if (isAdmin(user) && broker) {
     match.broker = getObjectId(broker, 'Corretor')
   }
-
-  /*
-   * DATA
-   */
 
   if (startDate || endDate) {
     match.createdAt = {}
@@ -1904,10 +1897,6 @@ export const getProposalMetrics = async ({
     propertyMetrics,
     dailyMetrics,
   ] = await Promise.all([
-    /*
-     * STATUS
-     */
-
     Proposal.aggregate([
       {
         $match: match,
@@ -1927,10 +1916,6 @@ export const getProposalMetrics = async ({
         },
       },
     ]),
-
-    /*
-     * VALORES
-     */
 
     Proposal.aggregate([
       {
@@ -2025,10 +2010,6 @@ export const getProposalMetrics = async ({
         },
       },
     ]),
-
-    /*
-     * POR CORRETOR
-     */
 
     Proposal.aggregate([
       {
@@ -2152,10 +2133,6 @@ export const getProposalMetrics = async ({
       },
     ]),
 
-    /*
-     * POR IMÓVEL
-     */
-
     Proposal.aggregate([
       {
         $match: match,
@@ -2213,11 +2190,11 @@ export const getProposalMetrics = async ({
         $project: {
           propertyId: '$_id',
 
-          propertyTitle: '$property.title',
+          propertyTitle: '$property.name',
 
           propertyCode: '$property.code',
 
-          proposalCount: '$property.proposalCount',
+          proposalCount: '$property.statistics.proposals',
 
           total: 1,
 
@@ -2237,10 +2214,6 @@ export const getProposalMetrics = async ({
         $limit: 10,
       },
     ]),
-
-    /*
-     * EVOLUÇÃO DIÁRIA
-     */
 
     Proposal.aggregate([
       {
@@ -2289,10 +2262,6 @@ export const getProposalMetrics = async ({
     ]),
   ])
 
-  /*
-   * STATUS
-   */
-
   const statuses = getProposalStatuses()
 
   const status = {
@@ -2328,10 +2297,6 @@ export const getProposalMetrics = async ({
     status.total += item.count || 0
   })
 
-  /*
-   * VALORES
-   */
-
   const values = valueMetrics[0] || {
     totalProposalValue: 0,
     averageProposalValue: 0,
@@ -2343,23 +2308,10 @@ export const getProposalMetrics = async ({
     draftCount: 0,
   }
 
-  /*
-   * TAXA DE APROVAÇÃO
-   *
-   * accepted /
-   * (accepted + rejected)
-   */
-
   const approvalBase = status.accepted + status.rejected
 
   const approvalRate =
     approvalBase > 0 ? (status.accepted / approvalBase) * 100 : 0
-
-  /*
-   * TAXA DE CONVERSÃO
-   *
-   * accepted / total
-   */
 
   const conversionRate =
     status.total > 0 ? (status.accepted / status.total) * 100 : 0

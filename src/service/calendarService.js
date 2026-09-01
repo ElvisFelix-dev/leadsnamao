@@ -649,17 +649,44 @@ export const createCalendarEvent = async ({ body = {}, user }) => {
     status: normalizedStatus,
 
     location: location?.trim() || '',
-
     address: address?.trim() || '',
-
     meetingUrl: meetingUrl?.trim() || '',
-
     notes: notes?.trim() || '',
-
     reminder: normalizedReminder,
 
     createdBy: user._id,
   })
+
+  // ======================================
+  // ATUALIZAR PIPELINE DO LEAD
+  // ======================================
+
+  if (
+    lead &&
+    type === VISIT_TYPES.VISIT &&
+    [
+      VISIT_STATUS.SCHEDULED,
+      VISIT_STATUS.CONFIRMED,
+      VISIT_STATUS.RESCHEDULED,
+    ].includes(normalizedStatus)
+  ) {
+    if (lead.stage !== 'visita_agendada') {
+      lead.stage = 'visita_agendada'
+      lead.lastContactAt = new Date()
+
+      if (!Array.isArray(lead.stageHistory)) {
+        lead.stageHistory = []
+      }
+
+      lead.stageHistory.push({
+        stage: 'visita_agendada',
+        changedBy: user._id,
+        changedAt: new Date(),
+      })
+
+      await lead.save()
+    }
+  }
 
   // ======================================
   // RETORNO

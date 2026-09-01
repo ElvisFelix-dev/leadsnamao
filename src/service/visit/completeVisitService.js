@@ -59,7 +59,7 @@ export const completeVisitService = async ({ id, body = {}, user }) => {
   // ATUALIZAR VISITA
   // ======================================
 
-  visit.status = 'concluida'
+  visit.status = 'realizada'
 
   visit.finishedAt = new Date()
 

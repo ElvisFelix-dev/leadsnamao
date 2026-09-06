@@ -364,16 +364,16 @@ const leadSchema = new mongoose.Schema(
 
     status: {
       type: String,
-
       enum: [
-        LEAD_STATUS.NEW,
-        LEAD_STATUS.IN_PROGRESS,
-        LEAD_STATUS.CONVERTED,
-        LEAD_STATUS.LOST,
+        LEAD_STATUS.NEW, // 'novo'
+        LEAD_STATUS.IN_PROGRESS, // 'em_andamento'
+        LEAD_STATUS.CONVERTED, // 'convertido'
+        LEAD_STATUS.LOST, // 'perdido'
+        LEAD_STATUS.CONTACTED, // 'contatado' - NOVO
+        LEAD_STATUS.NEGOTIATION, // 'em_negociacao' - NOVO
+        LEAD_STATUS.ARCHIVED, // 'arquivado' - NOVO
       ],
-
       default: LEAD_STATUS.NEW,
-
       index: true,
     },
 

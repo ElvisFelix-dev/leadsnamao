@@ -6,9 +6,10 @@ import Proposal, {
 } from '../models/Proposal.js'
 
 import Lead from '../models/Lead.js'
+import Sale, { SALE_POPULATE } from '../models/Sale.js'
 import Property from '../models/Property.js'
 import User from '../models/User.js'
-import Opportunity from '../models/Opportunity.js'
+import Opportunity, { OPPORTUNITY_STATUS } from '../models/Opportunity.js'
 
 /*
 |--------------------------------------------------------------------------
@@ -1133,7 +1134,7 @@ export const approveProposal = async ({ proposalId, user, comment = '' }) => {
   const session = await mongoose.startSession()
 
   try {
-    let updatedProposalId = null
+    let result = null
 
     await session.withTransaction(async () => {
       const id = getObjectId(proposalId, 'Proposta')
@@ -1160,6 +1161,7 @@ export const approveProposal = async ({ proposalId, user, comment = '' }) => {
         throw createError('Lead não encontrado.', 404)
       }
 
+      // Atualizar proposta
       const previousStatus = proposal.status
 
       proposal.status = PROPOSAL_STATUS.ACCEPTED
@@ -1173,53 +1175,77 @@ export const approveProposal = async ({ proposalId, user, comment = '' }) => {
       proposal.history.push(
         createProposalHistoryEntry({
           action: 'approved',
-
           performedBy: user._id,
-
           previousStatus,
-
           newStatus: PROPOSAL_STATUS.ACCEPTED,
-
           comment: proposal.adminComment,
         }),
       )
 
-      await proposal.save({
-        session,
-      })
+      await proposal.save({ session })
 
+      // Atualizar lead stage
       await updateLeadStage({
         lead,
-
         newStage: PIPELINE_STAGES.NEGOTIATION,
-
         performedBy: user._id,
-
         reason: 'Proposta aprovada pelo administrador.',
-
         session,
       })
 
       await addLeadProposalHistory({
         lead,
-
         proposalId: proposal._id,
-
         action: 'proposal_approved',
-
         performedBy: user._id,
-
         description: `Proposta aprovada pelo administrador no valor de R$ ${formatCurrency(
           proposal.values.proposalPrice,
         )}.`,
-
         session,
       })
 
-      updatedProposalId = proposal._id
+      // ==========================================
+      // 🔥 NOVO: CRIAR VENDA AUTOMATICAMENTE
+      // ==========================================
+      const { createSaleFromProposal } = await import('./saleService.js')
+
+      const sale = await createSaleFromProposal({
+        proposalId: proposal._id,
+        user,
+        data: {
+          // Pode passar dados adicionais se necessário
+          notes: `Venda gerada automaticamente pela aprovação da proposta ${proposal.numero_proposta || proposal._id}`,
+        },
+      })
+
+      // ==========================================
+      // 🔥 NOVO: ATUALIZAR OPORTUNIDADE
+      // ==========================================
+      const Opportunity = mongoose.model('Opportunity')
+      await Opportunity.findByIdAndUpdate(
+        proposal.opportunity,
+        {
+          status: OPPORTUNITY_STATUS.WON,
+          sale: sale._id,
+          wonAt: new Date(),
+        },
+        { session },
+      )
+
+      result = { proposal, sale }
     })
 
-    return populateProposal(Proposal.findById(updatedProposalId))
+    // Buscar resultado completo com populates
+    const finalProposal = await populateProposal(Proposal.findById(proposalId))
+    const finalSale = await Sale.findById(result.sale._id).populate(
+      SALE_POPULATE,
+    )
+
+    return {
+      proposal: finalProposal,
+      sale: finalSale,
+      message: 'Proposta aprovada, venda e comissão geradas automaticamente!',
+    }
   } finally {
     await session.endSession()
   }

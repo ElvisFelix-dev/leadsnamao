@@ -36,16 +36,12 @@ const userSchema = new mongoose.Schema(
 
     phone: {
       type: String,
-
       trim: true,
-
       set: (value) => value?.replace(/\s+/g, ''),
-
       validate: {
         validator(v) {
           return !v || v === '+55' || /^\+55\d{10,11}$/.test(v)
         },
-
         message: (props) =>
           `${props.value} não é um número válido de telefone brasileiro!`,
       },
@@ -115,13 +111,11 @@ const userSchema = new mongoose.Schema(
         enum: ['free', 'starter', 'professional', 'enterprise'],
         default: 'free',
       },
-
       status: {
         type: String,
         enum: ['active', 'pending', 'cancelled', 'expired'],
         default: 'active',
       },
-
       expiresAt: {
         type: Date,
         default: null,
@@ -131,7 +125,6 @@ const userSchema = new mongoose.Schema(
     specialties: [
       {
         type: String,
-
         enum: [
           'Apartamento',
           'Casa',
@@ -162,10 +155,8 @@ const userSchema = new mongoose.Schema(
     languages: [
       {
         name: String,
-
         level: {
           type: String,
-
           enum: ['Básico', 'Intermediário', 'Avançado', 'Fluente'],
         },
       },
@@ -178,9 +169,7 @@ const userSchema = new mongoose.Schema(
 
     availability: {
       type: String,
-
       enum: ['Disponível', 'Em visita', 'Em reunião', 'Offline'],
-
       default: 'Disponível',
     },
 
@@ -192,15 +181,10 @@ const userSchema = new mongoose.Schema(
 
     address: {
       street: String,
-
       number: String,
-
       district: String,
-
       city: String,
-
       state: String,
-
       zipCode: String,
     },
 
@@ -215,27 +199,22 @@ const userSchema = new mongoose.Schema(
         type: String,
         default: '',
       },
-
       facebook: {
         type: String,
         default: '',
       },
-
       linkedin: {
         type: String,
         default: '',
       },
-
       youtube: {
         type: String,
         default: '',
       },
-
       tiktok: {
         type: String,
         default: '',
       },
-
       whatsapp: {
         type: String,
         default: '',
@@ -253,31 +232,49 @@ const userSchema = new mongoose.Schema(
         type: Number,
         default: 10,
       },
-
+      // Mantido para compatibilidade, mas recomendamos usar o campo na raiz
       commissionPercentage: {
         type: Number,
         default: 3,
       },
-
       themeColor: {
         type: String,
         default: '#2563EB',
       },
-
       notifications: {
         type: Boolean,
         default: true,
       },
-
       language: {
         type: String,
         default: 'pt-BR',
       },
-
       showcaseEnabled: {
         type: Boolean,
         default: true,
       },
+    },
+
+    /*
+    =========================================
+    COMISSÕES (NOVO)
+    =========================================
+    */
+
+    commissionPercentage: {
+      type: Number,
+      default: 3,
+      min: 0,
+      max: 100,
+      description: 'Percentual de comissão para vendas (ex: 3 = 3%)',
+    },
+
+    capturerCommissionPercentage: {
+      type: Number,
+      default: 1,
+      min: 0,
+      max: 100,
+      description: 'Percentual de comissão como captador (ex: 1 = 1%)',
     },
 
     /*
@@ -291,18 +288,15 @@ const userSchema = new mongoose.Schema(
         type: Number,
         default: 0,
       },
-
       level: {
         type: Number,
         default: 1,
       },
-
       badges: [
         {
           type: String,
         },
       ],
-
       achievements: [
         {
           type: String,
@@ -358,17 +352,14 @@ const userSchema = new mongoose.Schema(
         type: Number,
         default: 0,
       },
-
       visits: {
         type: Number,
         default: 0,
       },
-
       deals: {
         type: Number,
         default: 0,
       },
-
       revenue: {
         type: Number,
         default: 0,
@@ -405,6 +396,7 @@ const userSchema = new mongoose.Schema(
 userSchema.index({ role: 1 })
 userSchema.index({ availability: 1 })
 userSchema.index({ isOnline: 1 })
+userSchema.index({ commissionPercentage: 1 })
 
 /*
 =========================================
@@ -451,7 +443,6 @@ userSchema.pre('save', async function (next) {
   }
 
   const salt = await bcrypt.genSalt(10)
-
   this.password = await bcrypt.hash(this.password, salt)
 
   next()
@@ -478,5 +469,68 @@ userSchema.pre('save', function (next) {
 
   next()
 })
+
+/*
+=========================================
+MÉTODOS DE COMISSÃO (NOVO)
+=========================================
+*/
+
+/**
+ * Calcula o valor da comissão para uma venda
+ */
+userSchema.methods.calculateCommission = function (
+  saleAmount,
+  type = 'seller',
+) {
+  let percentage
+
+  if (type === 'seller') {
+    percentage = this.commissionPercentage || 3
+  } else if (type === 'capturer') {
+    percentage = this.capturerCommissionPercentage || 1
+  } else {
+    percentage = 0
+  }
+
+  return {
+    percentage,
+    amount: (saleAmount * percentage) / 100,
+  }
+}
+
+/**
+ * Atualiza as estatísticas do corretor após uma venda
+ */
+userSchema.methods.updateStatsAfterSale = async function (saleAmount) {
+  this.stats.deals = (this.stats.deals || 0) + 1
+  this.stats.revenue = (this.stats.revenue || 0) + saleAmount
+
+  // Atualizar pontos de performance (ex: 1 ponto por venda)
+  this.performance.points = (this.performance.points || 0) + 10
+
+  // Atualizar nível (ex: 100 pontos = nível 2)
+  const newLevel = Math.floor((this.performance.points || 0) / 100) + 1
+  if (newLevel > (this.performance.level || 1)) {
+    this.performance.level = newLevel
+  }
+
+  await this.save()
+  return this
+}
+
+/**
+ * Busca percentual de comissão (prioriza raiz, fallback para settings)
+ */
+userSchema.methods.getCommissionPercentage = function () {
+  return this.commissionPercentage || this.settings?.commissionPercentage || 3
+}
+
+/**
+ * Busca percentual de comissão de captador
+ */
+userSchema.methods.getCapturerCommissionPercentage = function () {
+  return this.capturerCommissionPercentage || 1
+}
 
 export default mongoose.model('User', userSchema)

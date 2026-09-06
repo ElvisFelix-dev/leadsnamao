@@ -22,6 +22,14 @@ export const PAYMENT_METHOD = Object.freeze({
 
 export const PAYMENT_METHOD_LIST = Object.freeze(Object.values(PAYMENT_METHOD))
 
+export const OPPORTUNITY_STATUS = {
+  OPEN: 'aberta',
+  WON: 'ganha',
+  LOST: 'perdida',
+}
+
+export const OPPORTUNITY_STATUS_LIST = Object.values(OPPORTUNITY_STATUS)
+
 const proposalHistorySchema = new mongoose.Schema(
   {
     action: {
@@ -407,6 +415,134 @@ proposalSchema.virtual('isExpired').get(function () {
 
   return new Date() > this.expiresAt
 })
+
+/**
+ * Aprova a proposta e dispara criação da venda
+ */
+proposalSchema.methods.approve = async function (userId) {
+  if (this.status !== PROPOSAL_STATUS.PENDING) {
+    throw new Error(`Proposta não pode ser aprovada (status: ${this.status})`)
+  }
+
+  // Atualizar status
+  this.status = PROPOSAL_STATUS.ACCEPTED
+  this.approvedAt = new Date()
+  this.approvedBy = userId
+
+  // Registrar no histórico
+  this.history.push({
+    action: 'Aprovada',
+    performedBy: userId,
+    previousStatus: PROPOSAL_STATUS.PENDING,
+    newStatus: PROPOSAL_STATUS.ACCEPTED,
+    comment: 'Proposta aprovada',
+  })
+
+  await this.save()
+
+  // CRIAR VENDA AUTOMATICAMENTE
+  const Sale = mongoose.model('Sale')
+  const sale = await Sale.createFromProposal(this, userId)
+
+  return { proposal: this, sale }
+}
+
+/**
+ * Rejeita a proposta
+ */
+proposalSchema.methods.reject = async function (userId, reason = '') {
+  if (this.status === PROPOSAL_STATUS.ACCEPTED) {
+    throw new Error('Proposta já aprovada não pode ser rejeitada')
+  }
+
+  this.status = PROPOSAL_STATUS.REJECTED
+  this.rejectedAt = new Date()
+  this.rejectionReason = reason
+
+  this.history.push({
+    action: 'Rejeitada',
+    performedBy: userId,
+    previousStatus: this.status,
+    newStatus: PROPOSAL_STATUS.REJECTED,
+    comment: reason || 'Proposta rejeitada',
+  })
+
+  await this.save()
+
+  // Atualizar oportunidade
+  const Opportunity = mongoose.model('Opportunity')
+  await Opportunity.findByIdAndUpdate(this.opportunity, {
+    status: OPPORTUNITY_STATUS.LOST,
+    lostReason: reason || 'Proposta rejeitada',
+    lostAt: new Date(),
+  })
+
+  return this
+} // Proposal.js - Adicionar após o schema
+
+/**
+ * Aprova a proposta e dispara criação da venda
+ */
+proposalSchema.methods.approve = async function (userId) {
+  if (this.status !== PROPOSAL_STATUS.PENDING) {
+    throw new Error(`Proposta não pode ser aprovada (status: ${this.status})`)
+  }
+
+  // Atualizar status
+  this.status = PROPOSAL_STATUS.ACCEPTED
+  this.approvedAt = new Date()
+  this.approvedBy = userId
+
+  // Registrar no histórico
+  this.history.push({
+    action: 'Aprovada',
+    performedBy: userId,
+    previousStatus: PROPOSAL_STATUS.PENDING,
+    newStatus: PROPOSAL_STATUS.ACCEPTED,
+    comment: 'Proposta aprovada',
+  })
+
+  await this.save()
+
+  // CRIAR VENDA AUTOMATICAMENTE
+  const Sale = mongoose.model('Sale')
+  const sale = await Sale.createFromProposal(this, userId)
+
+  return { proposal: this, sale }
+}
+
+/**
+ * Rejeita a proposta
+ */
+proposalSchema.methods.reject = async function (userId, reason = '') {
+  if (this.status === PROPOSAL_STATUS.ACCEPTED) {
+    throw new Error('Proposta já aprovada não pode ser rejeitada')
+  }
+
+  this.status = PROPOSAL_STATUS.REJECTED
+  this.rejectedAt = new Date()
+  this.rejectionReason = reason
+
+  this.history.push({
+    action: 'Rejeitada',
+    performedBy: userId,
+    previousStatus: this.status,
+    newStatus: PROPOSAL_STATUS.REJECTED,
+    comment: reason || 'Proposta rejeitada',
+  })
+
+  await this.save()
+
+  // Atualizar oportunidade
+  const Opportunity = mongoose.model('Opportunity')
+  await Opportunity.findByIdAndUpdate(this.opportunity, {
+    status: OPPORTUNITY_STATUS.LOST,
+    lostReason: reason || 'Proposta rejeitada',
+    lostAt: new Date(),
+  })
+
+  return this
+}
 
 /**
  * POPULATE PADRÃO

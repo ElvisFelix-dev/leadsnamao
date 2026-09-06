@@ -1037,6 +1037,72 @@ propertySchema.set('toJSON', {
   },
 })
 
+// Adicione no final do arquivo Property.js, antes de exportar
+
+// models/Property.js
+
+// 🔥 MIDDLEWARE PARA SINCRONIZAR CAMPOS APÓS SAVE
+propertySchema.post('save', async function (doc) {
+  try {
+    // Se o statistics foi atualizado, garantir que os campos diretos também estejam
+    if (doc.statistics) {
+      const views = doc.statistics.views || 0
+      const contacts = doc.statistics.contacts || 0
+      const favorites = doc.statistics.favorites || 0
+
+      // Verificar se precisa atualizar
+      if (
+        doc.totalViews !== views ||
+        doc.totalContacts !== contacts ||
+        doc.totalFavorites !== favorites
+      ) {
+        // Usar updateOne para evitar loop infinito
+        await doc.constructor.updateOne(
+          { _id: doc._id },
+          {
+            $set: {
+              totalViews: views,
+              totalContacts: contacts,
+              totalFavorites: favorites,
+            },
+          },
+        )
+        console.log(`✅ Sincronizados campos de estatísticas para ${doc.name}`)
+      }
+    }
+  } catch (error) {
+    console.error('❌ Erro ao sincronizar estatísticas:', error)
+  }
+})
+
+// 🔥 MÉTODO ESTÁTICO PARA SINCRONIZAR TODOS OS IMÓVEIS
+propertySchema.statics.syncAllStatistics = async function () {
+  const properties = await this.find({})
+  let updated = 0
+
+  for (const property of properties) {
+    if (property.statistics) {
+      const views = property.statistics.views || 0
+      const contacts = property.statistics.contacts || 0
+      const favorites = property.statistics.favorites || 0
+
+      if (
+        property.totalViews !== views ||
+        property.totalContacts !== contacts ||
+        property.totalFavorites !== favorites
+      ) {
+        property.totalViews = views
+        property.totalContacts = contacts
+        property.totalFavorites = favorites
+        await property.save()
+        updated++
+      }
+    }
+  }
+
+  return updated
+}
+
 /* ============================================================
    MODEL
 ============================================================ */

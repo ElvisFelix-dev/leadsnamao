@@ -46,6 +46,27 @@ export const COMMISSION_TYPE_LIST = Object.freeze(
   Object.values(COMMISSION_TYPE),
 )
 
+export const OPPORTUNITY_STATUS = {
+  OPEN: 'aberta',
+  WON: 'ganha',
+  LOST: 'perdida',
+}
+
+export const OPPORTUNITY_STATUS_LIST = Object.values(OPPORTUNITY_STATUS)
+
+export const PROPOSAL_STATUS = Object.freeze({
+  DRAFT: 'draft',
+  PENDING: 'pending',
+  ACCEPTED: 'accepted',
+  REJECTED: 'rejected',
+  CANCELLED: 'cancelled',
+  EXPIRED: 'expired',
+})
+
+export const PROPOSAL_STATUS_LIST = Object.freeze(
+  Object.values(PROPOSAL_STATUS),
+)
+
 /*
 |--------------------------------------------------------------------------
 | SNAPSHOT DA COMISSÃO POR CORRETOR
@@ -594,6 +615,126 @@ saleSchema.pre('save', function (next) {
 
   next()
 })
+
+/**
+ * Cria venda a partir de uma proposta aprovada
+ */
+saleSchema.statics.createFromProposal = async function (proposal, userId) {
+  // Verifica se já existe venda para esta proposta
+  const existing = await this.findOne({ proposal: proposal._id })
+  if (existing) {
+    throw new Error('Venda já criada para esta proposta')
+  }
+
+  // Buscar oportunidade
+  const Opportunity = mongoose.model('Opportunity')
+  const opportunity = await Opportunity.findById(proposal.opportunity).populate(
+    'lead property assignedTo',
+  )
+
+  if (!opportunity) {
+    throw new Error('Oportunidade não encontrada')
+  }
+
+  // Calcular comissão
+  const commission = await this.calculateCommission({
+    saleAmount: proposal.values.proposalPrice,
+    sellerBroker: proposal.broker,
+    acquisitionBroker: opportunity.property?.captation?.broker || null,
+  })
+
+  // Criar venda
+  const sale = new this({
+    proposal: proposal._id,
+    lead: proposal.lead,
+    property: proposal.property,
+    sellerBroker: proposal.broker,
+    acquisitionBroker: opportunity.property?.captation?.broker || null,
+    saleAmount: proposal.values.proposalPrice,
+    proposalAmount: proposal.values.proposalPrice,
+    downPayment: proposal.values.downPayment || 0,
+    financing: proposal.values.financing || 0,
+    fgts: proposal.values.fgts || 0,
+    balance: proposal.values.balance || 0,
+    commission,
+    status: SALE_STATUS.PENDING,
+    paymentStatus: SALE_PAYMENT_STATUS.PENDING,
+    saleDate: new Date(),
+    createdBy: userId,
+    notes: `Venda gerada a partir da proposta ${proposal._id}`,
+  })
+
+  await sale.save()
+
+  // ATUALIZAR OPORTUNIDADE
+  await Opportunity.findByIdAndUpdate(opportunity._id, {
+    status: OPPORTUNITY_STATUS.WON,
+    sale: sale._id,
+    wonAt: new Date(),
+  })
+
+  // ATUALIZAR PROPOSTA
+  await mongoose.model('Proposal').findByIdAndUpdate(proposal._id, {
+    status: PROPOSAL_STATUS.ACCEPTED,
+    approvedAt: new Date(),
+    approvedBy: userId,
+  })
+
+  // GERAR COMMISSION
+  const Commission = mongoose.model('Commission')
+  await Commission.generateFromSale(sale, userId)
+
+  return sale
+}
+
+/**
+ * Calcula comissão baseado nas regras
+ */
+saleSchema.statics.calculateCommission = async function (params) {
+  const { saleAmount, sellerBroker, acquisitionBroker } = params
+
+  // Buscar percentuais dos corretores
+  const User = mongoose.model('User')
+
+  const seller = await User.findById(sellerBroker)
+  const sellerPercentage = seller?.commissionPercentage || 5 // 5% padrão
+
+  let acquisitionPercentage = 0
+  let acquisitionBrokerId = null
+
+  if (acquisitionBroker) {
+    const capturer = await User.findById(acquisitionBroker)
+    acquisitionPercentage = capturer?.capturerCommissionPercentage || 1 // 1% padrão para captador
+    acquisitionBrokerId = acquisitionBroker
+  }
+
+  // Comissão da imobiliária (o que sobrar)
+  const companyPercentage = 100 - sellerPercentage - acquisitionPercentage
+
+  // Calcular valores
+  const totalPercentage =
+    sellerPercentage + acquisitionPercentage + companyPercentage
+  const totalAmount = (saleAmount * totalPercentage) / 100
+
+  return {
+    totalPercentage,
+    totalAmount,
+    seller: {
+      broker: sellerBroker,
+      percentage: sellerPercentage,
+      amount: (saleAmount * sellerPercentage) / 100,
+    },
+    acquisition: {
+      broker: acquisitionBrokerId,
+      percentage: acquisitionPercentage,
+      amount: (saleAmount * acquisitionPercentage) / 100,
+    },
+    company: {
+      percentage: companyPercentage,
+      amount: (saleAmount * companyPercentage) / 100,
+    },
+  }
+}
 
 /*
 |--------------------------------------------------------------------------

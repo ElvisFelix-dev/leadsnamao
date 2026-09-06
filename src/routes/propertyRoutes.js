@@ -1,3 +1,5 @@
+// propertyRoutes.js - ADICIONAR AS NOVAS ROTAS
+
 import express from 'express'
 
 import {
@@ -30,6 +32,15 @@ import {
   getPropertiesByType,
   getPropertyStatistics,
   getDashboardData,
+  // 🔥 NOVOS IMPORTS
+  getPropertyMetrics,
+  getBatchPropertyMetrics,
+  getPropertyTimeline,
+  getPopularProperties,
+  getPublicProperties,
+  getMyBrokerProperties,
+  getPropertyAdminSummary,
+  getBrokerPropertiesWithMetrics,
 } from '../controllers/propertyController.js'
 
 import { protect, admin } from '../middleware/authMiddleware.js'
@@ -59,13 +70,57 @@ const router = express.Router()
 
 /*
 ============================================================
-PÚBLICO
+PÚBLICO (NÃO AUTENTICADO)
 ============================================================
 */
+// 🔥 ROTA PARA INCREMENTAR VISUALIZAÇÃO
+router.post(
+  '/:id/increment-view',
+  propertyIdValidator,
+  validateRequest,
+  incrementViews,
+)
+
+// 🔥 ROTA PARA INCREMENTAR CONTATO
+router.post(
+  '/:id/increment-contact',
+  propertyIdValidator,
+  validateRequest,
+  incrementContacts,
+)
+
+// 🔥 ROTA PARA INCREMENTAR FAVORITO
+router.post(
+  '/:id/increment-favorite',
+  propertyIdValidator,
+  validateRequest,
+  incrementFavorites,
+)
 
 /*
 ------------------------------------------------------------
-LISTA DE IMÓVEIS
+LISTA DE IMÓVEIS PARA SITE / HOTSITE
+------------------------------------------------------------
+*/
+
+router.get(
+  '/public',
+  [paginationValidator, sortPropertyValidator],
+  validateRequest,
+  getPublicProperties,
+)
+
+/*
+------------------------------------------------------------
+IMÓVEIS MAIS POPULARES
+------------------------------------------------------------
+*/
+
+router.get('/popular', getPopularProperties)
+
+/*
+------------------------------------------------------------
+LISTA DE IMÓVEIS (EXISTENTE)
 ------------------------------------------------------------
 */
 
@@ -170,7 +225,7 @@ router.get('/type/:type', getPropertiesByType)
 
 /*
 ------------------------------------------------------------
-BUSCA POR CORRETOR
+BUSCA POR CORRETOR (PÚBLICO - IMÓVEIS DISPONÍVEIS)
 ------------------------------------------------------------
 */
 
@@ -184,7 +239,7 @@ ADMIN / CRM
 
 /*
 ------------------------------------------------------------
-DASHBOARD
+DASHBOARD ADMIN
 ------------------------------------------------------------
 */
 
@@ -200,20 +255,15 @@ router.get('/statistics', protect, admin, getPropertyStatistics)
 
 /*
 ------------------------------------------------------------
-DETALHES COMPLETOS — CRM
+RESUMO ADMINISTRATIVO (NOVO)
 ------------------------------------------------------------
+*/
 
-  Essa rota é protegida porque pode retornar informações
-  internas do imóvel, como:
+router.get('/admin/summary', protect, admin, getPropertyAdminSummary)
 
-  - proprietário
-  - telefone do proprietário
-  - e-mail do proprietário
-  - corretor de captação
-  - percentual de captação
-  - informações administrativas
-
-  Não usar no site público ou hotsite.
+/*
+------------------------------------------------------------
+DETALHES COMPLETOS — CRM
 ------------------------------------------------------------
 */
 
@@ -224,6 +274,89 @@ router.get(
   validateRequest,
   getPropertyCRM,
 )
+
+/*
+============================================================
+CORRETOR AUTENTICADO
+============================================================
+*/
+
+/*
+------------------------------------------------------------
+MEUS IMÓVEIS COM MÉTRICAS (NOVO)
+------------------------------------------------------------
+*/
+
+router.get(
+  '/broker/me',
+  protect,
+  [paginationValidator, sortPropertyValidator],
+  validateRequest,
+  getMyBrokerProperties,
+)
+
+/*
+------------------------------------------------------------
+IMÓVEIS DE UM CORRETOR COM MÉTRICAS (ADMIN)
+------------------------------------------------------------
+*/
+
+router.get(
+  '/broker/:brokerId/with-metrics',
+  protect,
+  admin,
+  [paginationValidator, sortPropertyValidator],
+  validateRequest,
+  getBrokerPropertiesWithMetrics,
+)
+
+/*
+============================================================
+MÉTRICAS DO IMÓVEL
+============================================================
+*/
+
+/*
+------------------------------------------------------------
+MÉTRICAS DO IMÓVEL (NOVO)
+------------------------------------------------------------
+*/
+
+router.get(
+  '/:id/metrics',
+  protect,
+  propertyIdValidator,
+  validateRequest,
+  getPropertyMetrics,
+)
+
+/*
+------------------------------------------------------------
+TIMELINE DE ENGAGEMENT (NOVO)
+------------------------------------------------------------
+*/
+
+router.get(
+  '/:id/timeline',
+  protect,
+  propertyIdValidator,
+  validateRequest,
+  getPropertyTimeline,
+)
+
+/*
+============================================================
+MÉTRICAS EM MASSA
+============================================================
+*/
+
+/*
+------------------------------------------------------------
+MÉTRICAS EM MASSA (NOVO)
+------------------------------------------------------------
+*/
+
+router.post('/metrics/batch', protect, validateRequest, getBatchPropertyMetrics)
 
 /*
 ============================================================
@@ -438,7 +571,7 @@ router.post(
 
 /*
 ============================================================
-MÉTRICAS
+MÉTRICAS PÚBLICAS (SEM AUTENTICAÇÃO)
 ============================================================
 */
 

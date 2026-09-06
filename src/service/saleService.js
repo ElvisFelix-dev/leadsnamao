@@ -1090,13 +1090,8 @@ export const createSaleFromProposal = async ({
     let createdSaleId = null
 
     await session.withTransaction(async () => {
-      /*
-       * Proposta.
-       */
-      const proposal = await getProposal({
-        proposalId,
-        session,
-      })
+      // Buscar proposta
+      const proposal = await Proposal.findById(proposalId).session(session)
 
       if (!proposal) {
         throw createError('Proposta não encontrada.', 404)
@@ -1106,9 +1101,28 @@ export const createSaleFromProposal = async ({
         throw createError('Esta proposta foi removida.')
       }
 
-      if (proposal.status !== PROPOSAL_STATUS.ACCEPTED) {
+      // 🔥 NÃO VALIDAR STATUS - confiar que o orchestrator já fez isso
+      // Apenas verificar se não está deletada ou cancelada
+      if (proposal.status === PROPOSAL_STATUS.CANCELLED) {
         throw createError(
-          'Somente propostas aprovadas podem ser convertidas em venda.',
+          'Proposta cancelada não pode ser convertida em venda.',
+        )
+      }
+
+      if (proposal.status === PROPOSAL_STATUS.REJECTED) {
+        throw createError(
+          'Proposta rejeitada não pode ser convertida em venda.',
+        )
+      }
+
+      // DEPOIS:
+      // Aceitar propostas ACCEPTED ou PENDING (quando chamado pelo orchestrator)
+      if (
+        proposal.status !== PROPOSAL_STATUS.ACCEPTED &&
+        proposal.status !== PROPOSAL_STATUS.PENDING
+      ) {
+        throw createError(
+          'Somente propostas aprovadas ou pendentes podem ser convertidas em venda.',
         )
       }
 
@@ -1338,6 +1352,21 @@ export const createSaleFromProposal = async ({
       await sale.save({
         session,
       })
+
+      try {
+        const CommissionService = (await import('./commissionService.js'))
+          .default
+
+        await CommissionService.createFromSale(sale._id, getUserId(user))
+
+        console.log(`✅ Comissão gerada para venda ${sale.saleNumber}`)
+      } catch (commissionError) {
+        // Log do erro mas não interrompe o fluxo
+        console.error(
+          `❌ Erro ao gerar comissão para venda ${sale.saleNumber}:`,
+          commissionError.message,
+        )
+      }
 
       /*
        * Lead → negociação.
@@ -1822,67 +1851,45 @@ export const completeSale = async ({ saleId, user, notes }) => {
         throw createError('Venda não encontrada.', 404)
       }
 
-      /*
-       * Proteção contra duplicidade.
-       */
       if (sale.status === SALE_STATUS.COMPLETED) {
         throw createError('Esta venda já está concluída.', 409)
       }
 
-      /*
-       * Venda cancelada não pode
-       * ser concluída.
-       */
       if (sale.status === SALE_STATUS.CANCELLED) {
         throw createError('Uma venda cancelada não pode ser concluída.', 409)
       }
 
-      /*
-       * Validação da máquina de estados.
-       */
       validateSaleStatusTransition({
         previousStatus: sale.status,
         nextStatus: SALE_STATUS.COMPLETED,
       })
 
-      /*
-       * Atualiza Sale.
-       */
+      // Atualiza Sale
       sale.status = SALE_STATUS.COMPLETED
-
       sale.completedAt = new Date()
-
       sale.updatedBy = getUserId(user)
 
       if (notes !== undefined) {
         sale.notes = notes
       }
 
-      await sale.save({
-        session,
-      })
+      await sale.save({ session })
 
-      /*
-       * Lead.
-       */
+      // Lead
       const lead = await Lead.findById(sale.lead).session(session)
 
       if (!lead) {
         throw createError('Lead da venda não encontrado.', 404)
       }
 
-      /*
-       * Property.
-       */
+      // Property
       const property = await Property.findById(sale.property).session(session)
 
       if (!property) {
         throw createError('Imóvel da venda não encontrado.', 404)
       }
 
-      /*
-       * Finaliza tudo.
-       */
+      // Finaliza tudo
       await finalizeSale({
         sale,
         user,
@@ -1890,6 +1897,21 @@ export const completeSale = async ({ saleId, user, notes }) => {
         property,
         session,
       })
+
+      // ============================================================
+      // 🔥 GERAR COMISSÃO AUTOMATICAMENTE
+      // ============================================================
+      try {
+        await CommissionService.createFromSale(sale._id, getUserId(user))
+        console.log(`✅ Comissão gerada para venda ${sale.saleNumber}`)
+      } catch (commissionError) {
+        console.error(
+          `❌ Erro ao gerar comissão para venda ${sale.saleNumber}:`,
+          commissionError.message,
+        )
+        // Não interrompe o fluxo, mas registra o erro
+        // Opção: criar uma notificação para o admin
+      }
 
       completedSaleId = sale._id
     })
@@ -2414,7 +2436,7 @@ export const getSaleMetrics = async ({ user, startDate, endDate } = {}) => {
 
 export default {
   createSaleFromProposal,
-
+  getProposal,
   getSaleById,
 
   getSales,

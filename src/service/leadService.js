@@ -616,45 +616,169 @@ export const getLeadById = async (leadId) => {
 // ======================================================
 
 export const updateLead = async ({ leadId, userId, isAdmin, data }) => {
-  const lead = await findLeadOrThrow(leadId)
+  try {
+    console.log('🔄 Iniciando atualização do lead:', {
+      leadId,
+      userId,
+      isAdmin,
+      data,
+    })
 
-  if (!isAdmin) {
-    if (!lead.assignedTo || lead.assignedTo.toString() !== userId.toString()) {
-      throw new Error('Sem permissão para atualizar este lead.')
+    // 1. Buscar o lead
+    const lead = await findLeadOrThrow(leadId)
+    console.log('📋 Lead encontrado:', {
+      id: lead._id,
+      name: lead.name,
+      statusAtual: lead.status,
+      stageAtual: lead.stage,
+    })
+
+    // 2. Verificar permissão
+    if (!isAdmin) {
+      if (
+        !lead.assignedTo ||
+        lead.assignedTo.toString() !== userId.toString()
+      ) {
+        throw new Error('Sem permissão para atualizar este lead.')
+      }
+      console.log('✅ Permissão verificada: usuário é o responsável')
+    } else {
+      console.log('✅ Permissão verificada: usuário é admin')
     }
+
+    // 3. Mapear os campos editáveis (incluindo todos os novos)
+    const editableFields = [
+      // Dados básicos
+      'name',
+      'email',
+      'phone',
+      'notes',
+
+      // Status e pipeline
+      'status',
+      'stage',
+      'priority',
+      'region',
+
+      // Associação
+      'property',
+      'assignedTo',
+
+      // Origem
+      'sourceType',
+      'sourceBroker',
+      'sourceSite',
+      'sourceUrl',
+      'landingPage',
+      'referrer',
+      'campaign',
+
+      // Datas
+      'lastContactAt',
+      'visitDate',
+      'proposalDate',
+      'closeDate',
+
+      // Outros
+      'score',
+      'nextAction',
+      'nextActionDate',
+      'proposalValue',
+    ]
+
+    // 4. Aplicar as atualizações
+    let hasChanges = false
+    editableFields.forEach((field) => {
+      if (data[field] !== undefined && data[field] !== null) {
+        // Se for um objeto, faz merge (caso de campaign)
+        if (
+          field === 'campaign' &&
+          typeof data[field] === 'object' &&
+          lead[field]
+        ) {
+          lead[field] = {
+            ...(lead[field].toObject ? lead[field].toObject() : lead[field]),
+            ...data[field],
+          }
+          hasChanges = true
+          console.log(`📝 Atualizado campo '${field}':`, data[field])
+        } else {
+          lead[field] = data[field]
+          hasChanges = true
+          console.log(`📝 Atualizado campo '${field}':`, data[field])
+        }
+      }
+    })
+
+    // 5. Se o status foi alterado, atualizar também o stage (opcional)
+    if (data.status && data.status !== lead.status) {
+      const stageMap = {
+        [LEAD_STATUS.NEW]: LEAD_STAGES.NEW,
+        [LEAD_STATUS.CONTACTED]: LEAD_STAGES.QUALIFIED,
+        [LEAD_STATUS.NEGOTIATION]: LEAD_STAGES.NEGOTIATION,
+        [LEAD_STATUS.CONVERTED]: LEAD_STAGES.WON,
+        [LEAD_STATUS.LOST]: LEAD_STAGES.LOST,
+        [LEAD_STATUS.ARCHIVED]: LEAD_STAGES.LOST,
+        [LEAD_STATUS.IN_PROGRESS]: LEAD_STAGES.QUALIFIED,
+      }
+
+      const newStage = stageMap[data.status]
+      if (newStage && lead.stage !== newStage) {
+        lead.stage = newStage
+        hasChanges = true
+        console.log(
+          `🔄 Stage atualizado automaticamente: ${lead.stage} → ${newStage}`,
+        )
+      }
+
+      // Adicionar ao histórico de estágio
+      if (lead.stageHistory) {
+        lead.stageHistory.push({
+          from: lead.stage,
+          to: lead.stage,
+          stage: lead.stage,
+          changedBy: userId,
+          changedAt: new Date(),
+          reason: `Status alterado para ${data.status}`,
+        })
+        hasChanges = true
+      }
+    }
+
+    // 6. Verificar se houve mudanças
+    if (!hasChanges) {
+      console.log('⚠️ Nenhuma alteração detectada')
+      await populateLead(lead)
+      return normalizeLead(lead)
+    }
+
+    // 7. Atualizar timestamps
+    lead.updatedAt = new Date()
+
+    // 8. Salvar
+    await lead.save()
+    console.log('✅ Lead atualizado com sucesso')
+
+    // 9. Popular e retornar
+    await populateLead(lead)
+    const normalizedLead = normalizeLead(lead)
+
+    console.log('📤 Lead retornado:', {
+      id: normalizedLead._id,
+      name: normalizedLead.name,
+      status: normalizedLead.status,
+      stage: normalizedLead.stage,
+    })
+
+    return normalizedLead
+  } catch (error) {
+    console.error('❌ Erro ao atualizar lead:', {
+      leadId,
+      error: error.message,
+      stack: error.stack,
+    })
+    throw error
   }
-
-  const editableFields = [
-    'name',
-    'email',
-    'phone',
-    'notes',
-    'priority',
-    'region',
-    'property',
-    'assignedTo',
-
-    // origem
-    'sourceType',
-    'sourceBroker',
-    'sourceSite',
-    'sourceUrl',
-    'landingPage',
-    'referrer',
-    'campaign',
-  ]
-
-  editableFields.forEach((field) => {
-    if (data[field] !== undefined) {
-      lead[field] = data[field]
-    }
-  })
-
-  await lead.save()
-
-  await populateLead(lead)
-
-  return normalizeLead(lead)
 }
 
 // ======================================================

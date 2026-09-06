@@ -24,6 +24,7 @@ import calendarRoutes from './routes/calendarRoutes.js'
 import saleRoutes from './routes/saleRoutes.js'
 import conversationRoutes from './routes/conversationRoutes.js'
 import commissonRoutes from './routes/commissionRoutes.js'
+import orchestratorRoutes from './routes/orchestratorRoutes.js'
 import webhookRoutes from './routes/webhookRoutes.js'
 
 // Importação de middlewares
@@ -120,6 +121,7 @@ app.use('/api/sales', saleRoutes)
 app.use('/api/calendar', calendarRoutes)
 app.use('/api/conversations', conversationRoutes)
 app.use('/api/commissions', commissonRoutes)
+app.use('/api/orchestrator', orchestratorRoutes)
 app.use('/webhook', webhookRoutes)
 
 // ============================================

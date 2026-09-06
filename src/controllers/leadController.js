@@ -126,24 +126,79 @@ export const getLeadById = async (req, res) => {
 
 export const updateLead = async (req, res) => {
   try {
+    const { id } = req.params
+    const { body } = req
+    const { _id: userId, isAdmin } = req.user
+
+    console.log('🔄 Iniciando atualização de lead:', {
+      leadId: id,
+      userId,
+      isAdmin,
+      body,
+      timestamp: new Date().toISOString(),
+    })
+
+    // Validação básica dos dados
+    if (!body || Object.keys(body).length === 0) {
+      console.warn('⚠️ Nenhum dado fornecido para atualização')
+      return res.status(400).json({
+        success: false,
+        message: 'Nenhum dado fornecido para atualização.',
+      })
+    }
+
+    // Chama o service para atualizar
     const lead = await leadService.updateLead({
-      leadId: req.params.id,
-      userId: req.user._id,
-      isAdmin: req.user.isAdmin,
-      data: req.body,
+      leadId: id,
+      userId,
+      isAdmin,
+      data: body,
     })
 
-    console.log('UPDATE STAGE:', {
-      leadId: req.params.id,
-      body: req.body,
+    console.log('✅ Lead atualizado com sucesso:', {
+      leadId: lead._id,
+      name: lead.name,
+      status: lead.status,
+      stage: lead.stage,
+      updatedFields: Object.keys(body).join(', '),
+      timestamp: new Date().toISOString(),
     })
 
-    return res.json(lead)
+    // Resposta de sucesso
+    return res.status(200).json({
+      success: true,
+      message: 'Lead atualizado com sucesso.',
+      data: lead,
+    })
   } catch (error) {
-    console.error('❌ Erro ao atualizar lead:', error)
-    console.error('ERRO AO ALTERAR STAGE:', error)
+    console.error('❌ Erro ao atualizar lead:', {
+      leadId: req.params.id,
+      error: error.message,
+      stack: error.stack,
+      body: req.body,
+      timestamp: new Date().toISOString(),
+    })
 
+    // Tratamento de erros específicos
+    if (error.message === 'Lead não encontrado.') {
+      return res.status(404).json({
+        success: false,
+        message: 'Lead não encontrado.',
+        error: error.message,
+      })
+    }
+
+    if (error.message === 'Sem permissão para atualizar este lead.') {
+      return res.status(403).json({
+        success: false,
+        message: 'Sem permissão para atualizar este lead.',
+        error: error.message,
+      })
+    }
+
+    // Erro genérico
     return res.status(500).json({
+      success: false,
       message: 'Erro ao atualizar lead.',
       error: error.message,
     })

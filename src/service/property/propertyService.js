@@ -1461,8 +1461,6 @@ export async function getPopularProperties(options = {}) {
 
   const properties = await Property.aggregate(pipeline)
 
-  console.log(`✅ ${properties.length} imóveis populares encontrados`)
-
   return properties
 }
 

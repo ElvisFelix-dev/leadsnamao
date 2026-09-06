@@ -17,6 +17,10 @@ import {
   importLeadsFromCSV,
   publicCreateLeadFromWebhook,
   createBrokerHotsiteLeadController,
+  autoDistribute,
+  processPendingLeadsController,
+  reassignLeadController,
+  getDistributionStats,
 } from '../controllers/leadController.js'
 
 const router = express.Router()
@@ -26,6 +30,12 @@ const upload = multer({
 })
 
 router.post('/hotsite', createBrokerHotsiteLeadController)
+
+// 🔥 ROTAS DE DISTRIBUIÇÃO AUTOMÁTICA
+router.post('/auto-distribute', protect, autoDistribute)
+router.post('/process-pending', protect, admin, processPendingLeadsController)
+router.post('/:id/reassign', protect, admin, reassignLeadController)
+router.get('/distribution-stats', protect, admin, getDistributionStats)
 
 // ======================================================
 // PUBLIC

@@ -1,8 +1,17 @@
 import fs from 'fs'
 import csv from 'csv-parser'
 import Lead from '../models/Lead.js'
+import User from '../models/User.js'
+import asyncHandler from '../middleware/asyncHandler.js'
+import AppError from '../utils/AppError.js'
 
 import * as leadService from '../service/leadService.js'
+
+import {
+  autoDistributeLead,
+  processPendingLeads,
+  reassignLead,
+} from '../service/leadDistributionService.js'
 
 import { createBrokerHotsiteLead } from '../service/leadService.js'
 
@@ -42,23 +51,45 @@ export const createBrokerHotsiteLeadController = async (req, res) => {
 // CREATE
 // ======================================================
 
-export const createLead = async (req, res) => {
+export const createLead = asyncHandler(async (req, res) => {
+  // 1. Criar o lead
+  const lead = new Lead({
+    ...req.body,
+    // 🔥 CAMPOS OBRIGATÓRIOS PARA DISTRIBUIÇÃO
+    awaitingAssignment: true,
+    isDistributed: false,
+    'distribution.status': 'pending',
+    'distribution.attempts': 0,
+  })
+
+  await lead.save()
+
+  // 2. Distribuir automaticamente
   try {
-    const lead = await leadService.createLead({
-      ...req.body,
-      createdBy: req.user?._id || null,
+    const distribution = await autoDistributeLead({
+      leadId: lead._id,
+      region: lead.region,
+      createdBy: req.user?._id,
     })
 
-    return res.status(201).json(lead)
+    res.status(201).json({
+      success: true,
+      message: 'Lead criado e distribuído automaticamente.',
+      data: {
+        lead,
+        assignedTo: distribution.assignedTo,
+        distributionMethod: distribution.matchMethod,
+      },
+    })
   } catch (error) {
-    console.error('❌ Erro ao criar lead:', error)
-
-    return res.status(500).json({
-      message: 'Erro ao criar lead.',
-      error: error.message,
+    // Se falhar, o lead fica em fila
+    res.status(201).json({
+      success: true,
+      message: 'Lead criado, mas aguardando distribuição automática.',
+      data: { lead },
     })
   }
-}
+})
 
 export const publicCreateLead = async (req, res) => {
   try {
@@ -595,3 +626,176 @@ export const importLeadsFromCSV = async (req, res) => {
     })
   }
 }
+
+/* ============================================================
+   DISTRIBUIÇÃO AUTOMÁTICA
+============================================================ */
+
+/**
+ * POST /api/leads/auto-distribute
+ * Distribui um lead automaticamente
+ */
+export const autoDistribute = asyncHandler(async (req, res) => {
+  const { leadId, propertyId, region, type } = req.body
+
+  if (!leadId) {
+    throw new AppError('ID do lead é obrigatório.', 400)
+  }
+
+  const result = await autoDistributeLead({
+    leadId,
+    propertyId,
+    region,
+    type,
+    createdBy: req.user._id,
+  })
+
+  res.json({
+    success: result.success,
+    message: result.message,
+    data: {
+      lead: result.lead,
+      assignedTo: result.assignedTo,
+      matchMethod: result.matchMethod,
+      inQueue: result.inQueue || false,
+    },
+  })
+})
+
+/**
+ * POST /api/leads/process-pending
+ * Processa leads pendentes (admin apenas)
+ */
+export const processPendingLeadsController = asyncHandler(async (req, res) => {
+  if (!req.user.isAdmin && req.user.role !== 'admin') {
+    throw new AppError('Acesso negado. Apenas administradores.', 403)
+  }
+
+  const result = await processPendingLeads()
+
+  res.json({
+    success: result.success,
+    message: `${result.distributed} leads distribuídos de ${result.totalProcessed}`,
+    data: result,
+  })
+})
+
+/**
+ * POST /api/leads/:id/reassign
+ * Reatribui um lead
+ */
+export const reassignLeadController = asyncHandler(async (req, res) => {
+  const { id } = req.params
+  const { reason } = req.body
+
+  if (!req.user.isAdmin && req.user.role !== 'admin') {
+    throw new AppError('Acesso negado. Apenas administradores.', 403)
+  }
+
+  const result = await reassignLead(
+    id,
+    reason || 'Reatribuição manual',
+    req.user._id,
+  )
+
+  res.json({
+    success: result.success,
+    message: 'Lead reatribuído com sucesso.',
+    data: result,
+  })
+})
+
+/**
+ * GET /api/leads/distribution-stats
+ * Estatísticas de distribuição
+ */
+export const getDistributionStats = asyncHandler(async (req, res) => {
+  if (!req.user.isAdmin && req.user.role !== 'admin') {
+    throw new AppError('Acesso negado. Apenas administradores.', 403)
+  }
+
+  // Estatísticas por corretor
+  const brokers = await User.find({
+    role: 'broker',
+    isDeleted: false,
+  }).select('name email leadCounters brokerSettings')
+
+  // Leads por status de distribuição
+  const [pending, distributed, total] = await Promise.all([
+    Lead.countDocuments({
+      isDistributed: false,
+      assignedTo: { $exists: false },
+      isDeleted: false,
+    }),
+    Lead.countDocuments({
+      isDistributed: true,
+      isDeleted: false,
+    }),
+    Lead.countDocuments({ isDeleted: false }),
+  ])
+
+  // Leads por método de distribuição
+  const distributionMethods = await Lead.aggregate([
+    { $match: { isDeleted: false } },
+    {
+      $group: {
+        _id: '$distribution.method',
+        count: { $sum: 1 },
+      },
+    },
+  ])
+
+  // Média de leads por corretor
+  const totalLeads = await Lead.countDocuments({
+    isDistributed: true,
+    isDeleted: false,
+  })
+
+  const avgLeads =
+    brokers.length > 0 ? Math.round(totalLeads / brokers.length) : 0
+
+  // Leads em fila por região
+  const queueByRegion = await Lead.aggregate([
+    {
+      $match: {
+        isDeleted: false,
+        isDistributed: false,
+        assignedTo: { $exists: false },
+      },
+    },
+    {
+      $group: {
+        _id: '$region',
+        count: { $sum: 1 },
+      },
+    },
+    { $sort: { count: -1 } },
+  ])
+
+  res.json({
+    success: true,
+    data: {
+      summary: {
+        total,
+        pending,
+        distributed,
+        avgLeadsPerBroker: avgLeads,
+        pendingPercentage: total > 0 ? Math.round((pending / total) * 100) : 0,
+      },
+      distributionMethods,
+      queueByRegion,
+      brokers: brokers.map((broker) => ({
+        id: broker._id,
+        name: broker.name,
+        email: broker.email,
+        activeLeads: broker.leadCounters?.activeLeads || 0,
+        totalAssigned: broker.leadCounters?.totalAssigned || 0,
+        queuePosition: broker.leadCounters?.leadQueuePosition || 0,
+        lastLeadReceivedAt: broker.leadCounters?.lastLeadReceivedAt || null,
+        specializedRegions: broker.brokerSettings?.specializedRegions || [],
+        isActive: broker.brokerSettings?.isActive !== false,
+        maxActiveLeads: broker.brokerSettings?.maxActiveLeads || 50,
+      })),
+    },
+  })
+})

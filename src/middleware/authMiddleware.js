@@ -7,17 +7,9 @@ import User from '../models/User.js'
 
 export const protect = async (req, res, next) => {
   try {
-    console.log('\n==========================================')
-    console.log('🔐 AUTH MIDDLEWARE')
-    console.log('==========================================')
-
     const authHeader = req.headers.authorization
 
-    console.log('Authorization:', authHeader ? 'RECEBIDO' : 'NÃO RECEBIDO')
-
     if (!authHeader) {
-      console.log('❌ Authorization não encontrado')
-
       return res.status(401).json({
         success: false,
         message: 'Não autorizado, token não enviado.',
@@ -25,8 +17,6 @@ export const protect = async (req, res, next) => {
     }
 
     if (!authHeader.startsWith('Bearer ')) {
-      console.log('❌ Authorization não começa com Bearer')
-
       return res.status(401).json({
         success: false,
         message: 'Formato de autorização inválido.',
@@ -35,11 +25,7 @@ export const protect = async (req, res, next) => {
 
     const token = authHeader.split(' ')[1]
 
-    console.log('🎫 Token recebido:', token ? 'SIM' : 'NÃO')
-
     if (!token) {
-      console.log('❌ Token vazio')
-
       return res.status(401).json({
         success: false,
         message: 'Não autorizado, sem token.',
@@ -54,14 +40,7 @@ export const protect = async (req, res, next) => {
 
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET)
-
-      console.log('✅ JWT válido')
-      console.log('📦 Decoded:', decoded)
     } catch (jwtError) {
-      console.error('❌ ERRO JWT')
-      console.error('Nome:', jwtError.name)
-      console.error('Mensagem:', jwtError.message)
-
       return res.status(401).json({
         success: false,
         message: 'Token inválido.',

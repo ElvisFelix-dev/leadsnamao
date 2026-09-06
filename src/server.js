@@ -26,6 +26,7 @@ import conversationRoutes from './routes/conversationRoutes.js'
 import commissonRoutes from './routes/commissionRoutes.js'
 import orchestratorRoutes from './routes/orchestratorRoutes.js'
 import webhookRoutes from './routes/webhookRoutes.js'
+import './jobs/processLeadQueue.js'
 
 // Importação de middlewares
 import errorMiddleware from './middleware/errorMiddleware.js'

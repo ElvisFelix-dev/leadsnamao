@@ -1,7 +1,7 @@
 // scripts/syncPropertyStats.js
 import mongoose from 'mongoose'
 import dotenv from 'dotenv'
-import Property from './src/models/Property.js'
+import Property from '../src/models/Property.js'
 
 dotenv.config()
 

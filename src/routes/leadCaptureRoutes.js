@@ -6,6 +6,7 @@ import {
   createSiteLead,
   createBrokerLead,
   createPropertyLead,
+  createPropertyPageLead,
 } from '../controllers/leadCaptureController.js'
 
 const router = Router()
@@ -62,6 +63,8 @@ router.post('/broker/:brokerId', createBrokerLead)
  * Se o imóvel não tiver corretor, tenta distribuir automaticamente.
  */
 router.post('/property/:propertyId', createPropertyLead)
+
+router.post('/property-page/:propertyId', createPropertyPageLead)
 
 /* ============================================================
    EXPORT

@@ -17,6 +17,8 @@ export const LEAD_SOURCE_TYPE = {
 
   BROKER_HOTSITE: 'broker_hotsite',
 
+  PROPERTY_PAGE: 'property_page', // 🔥 NOVO
+
   META: 'meta',
 
   OLX: 'olx',
@@ -44,6 +46,8 @@ export const LEAD_SOURCE_TYPE_LABELS = {
   [LEAD_SOURCE_TYPE.COMPANY_SITE]: 'Site da Imobiliária',
 
   [LEAD_SOURCE_TYPE.BROKER_HOTSITE]: 'Hotsite do Corretor',
+
+  [LEAD_SOURCE_TYPE.PROPERTY_PAGE]: 'Página do Imóvel', // 🔥 NOVO
 
   [LEAD_SOURCE_TYPE.META]: 'Meta Ads',
 
@@ -86,6 +90,8 @@ export const PUBLIC_LEAD_SOURCE_TYPES = [
   LEAD_SOURCE_TYPE.COMPANY_SITE,
 
   LEAD_SOURCE_TYPE.BROKER_HOTSITE,
+
+  LEAD_SOURCE_TYPE.PROPERTY_PAGE, // 🔥 NOVO
 ]
 
 /* ============================================================
@@ -115,6 +121,8 @@ export const LEAD_SOURCE_TYPES_REQUIRING_ASSIGNMENT = [
   LEAD_SOURCE_TYPE.ZAP,
 
   LEAD_SOURCE_TYPE.CSV,
+
+  LEAD_SOURCE_TYPE.PROPERTY_PAGE, // 🔥 NOVO
 ]
 
 /* ============================================================

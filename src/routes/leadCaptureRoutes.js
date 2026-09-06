@@ -1,3 +1,4 @@
+// src/routes/leadCaptureRoutes.js
 import { Router } from 'express'
 
 import {
@@ -14,16 +15,9 @@ const router = Router()
 ============================================================ */
 
 /**
- * POST
- * /api/lead-capture
- *
+ * POST /api/lead-capture
  * Captura genérica de lead.
- *
- * Pode ser utilizada por:
- * - integrações
- * - campanhas
- * - portais
- * - outros canais
+ * Pode ser utilizada por: integrações, campanhas, portais, outros canais
  */
 router.post('/', createLead)
 
@@ -32,20 +26,11 @@ router.post('/', createLead)
 ============================================================ */
 
 /**
- * POST
- * /api/lead-capture/site
- *
+ * POST /api/lead-capture/site
  * Lead vindo do site principal da imobiliária.
  *
  * Fluxo:
- *
- * Site
- *   ↓
- * Lead
- *   ↓
- * assignedTo = null
- *   ↓
- * Admin distribui para corretor
+ * Site → Lead → assignedTo = null → Aguarda distribuição
  */
 router.post('/site', createSiteLead)
 
@@ -54,44 +39,27 @@ router.post('/site', createSiteLead)
 ============================================================ */
 
 /**
- * POST
- * /api/lead-capture/broker/:brokerId
- *
+ * POST /api/lead-capture/broker/:brokerId
  * Lead originado pelo hotsite de um corretor.
  *
  * Fluxo:
- *
- * Hotsite do corretor
- *   ↓
- * Lead
- *   ↓
- * sourceBroker = brokerId
- *   ↓
- * assignedTo = brokerId
- *
+ * Hotsite do corretor → Lead → sourceBroker = brokerId → assignedTo = brokerId
  * O lead já pertence ao corretor.
  */
 router.post('/broker/:brokerId', createBrokerLead)
 
 /* ============================================================
-   LEAD DE UM IMÓVEL
+   LEAD DE UM IMÓVEL 🔥 CORRIGIDO
 ============================================================ */
 
 /**
- * POST
- * /api/lead-capture/property/:propertyId
- *
+ * POST /api/lead-capture/property/:propertyId
  * Lead relacionado diretamente a um imóvel.
  *
- * Pode ser originado por:
+ * Fluxo:
+ * Página do imóvel → Lead → Busca corretor do imóvel → Atribui ao corretor
  *
- * - site da imobiliária
- * - hotsite do corretor
- * - portal
- * - campanha
- *
- * O service decide a atribuição
- * conforme a origem enviada.
+ * Se o imóvel não tiver corretor, tenta distribuir automaticamente.
  */
 router.post('/property/:propertyId', createPropertyLead)
 

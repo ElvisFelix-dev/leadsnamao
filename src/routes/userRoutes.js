@@ -13,6 +13,9 @@ import {
   getBrokerDetails,
   brokerPerformance,
   brokerLeads,
+  adminDeleteUser,
+  adminUpdateUser,
+  adminGetUser,
 } from '../controllers/userController.js'
 
 import { avatarUpload, coverUpload } from '../utils/upload.js'
@@ -41,6 +44,21 @@ router.put('/reset-password/:token', resetPassword)
 
 // Usuário logado
 router.get('/me', protect, getMe)
+
+/*
+====================================================
+ADMIN - GERENCIAR USUÁRIOS
+====================================================
+*/
+
+// Buscar qualquer usuário (admin)
+router.get('/admin/users/:id', protect, admin, adminGetUser)
+
+// Atualizar qualquer usuário (admin)
+router.put('/admin/users/:id', protect, admin, adminUpdateUser)
+
+// Deletar qualquer usuário (admin)
+router.delete('/admin/users/:id', protect, admin, adminDeleteUser)
 
 /*
 ====================================================

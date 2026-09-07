@@ -2,6 +2,8 @@ import asyncHandler from 'express-async-handler'
 import bcrypt from 'bcryptjs'
 import crypto from 'crypto'
 
+import User from '../models/User.js'
+
 import generateToken from '../utils/generateToken.js'
 
 import {
@@ -461,3 +463,117 @@ export async function brokerLeads(req, res) {
     })
   }
 }
+export const adminUpdateUser = asyncHandler(async (req, res) => {
+  const { id } = req.params
+  const updateData = req.body
+
+  console.log('Admin atualizando usuário:', id)
+  console.log('Dados:', updateData)
+
+  const user = await User.findById(id)
+
+  if (!user) {
+    res.status(404)
+    throw new Error('Usuário não encontrado')
+  }
+
+  // Campos permitidos para admin atualizar
+  const allowedFields = [
+    'name',
+    'email',
+    'phone',
+    'creci',
+    'position',
+    'company',
+    'isActive',
+    'role',
+    'bio',
+    'avatar',
+    'coverImage',
+    'specialties',
+    'regions',
+    'experienceYears',
+    'commissionPercentage',
+    'capturerCommissionPercentage',
+    'brokerSettings',
+    'settings',
+  ]
+
+  allowedFields.forEach((field) => {
+    if (updateData[field] !== undefined) {
+      user[field] = updateData[field]
+    }
+  })
+
+  // Atualizar senha se fornecida e tiver pelo menos 6 caracteres
+  if (updateData.password && updateData.password.length >= 6) {
+    user.password = updateData.password
+  }
+
+  await user.save()
+
+  const userData = user.toObject()
+  delete userData.password
+  delete userData.resetPasswordToken
+  delete userData.resetPasswordExpire
+
+  res.status(200).json({
+    success: true,
+    message: 'Usuário atualizado com sucesso',
+    data: userData,
+  })
+})
+
+/*
+====================================================
+ADMIN - BUSCAR USUÁRIO POR ID
+====================================================
+*/
+
+export const adminGetUser = asyncHandler(async (req, res) => {
+  const { id } = req.params
+
+  const user = await User.findById(id).select(
+    '-password -resetPasswordToken -resetPasswordExpire',
+  )
+
+  if (!user) {
+    res.status(404)
+    throw new Error('Usuário não encontrado')
+  }
+
+  res.status(200).json({
+    success: true,
+    data: user,
+  })
+})
+
+/*
+====================================================
+ADMIN - DELETAR USUÁRIO POR ID
+====================================================
+*/
+
+export const adminDeleteUser = asyncHandler(async (req, res) => {
+  const { id } = req.params
+
+  const user = await User.findById(id)
+
+  if (!user) {
+    res.status(404)
+    throw new Error('Usuário não encontrado')
+  }
+
+  // Não permitir deletar o próprio admin
+  if (user._id.toString() === req.user._id.toString()) {
+    res.status(400)
+    throw new Error('Não é possível deletar seu próprio usuário')
+  }
+
+  await user.deleteOne()
+
+  res.status(200).json({
+    success: true,
+    message: 'Usuário deletado com sucesso',
+  })
+})

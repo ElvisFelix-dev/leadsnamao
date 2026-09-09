@@ -3,6 +3,8 @@ import User from '../../models/User.js'
 import Lead from '../../models/Lead.js'
 import Visit from '../../models/Visit.js'
 
+import { addBrokerToChannel } from '../chatService.js'
+
 /*
 ====================================================
 BUSCAR TODOS OS USUÁRIOS
@@ -390,6 +392,34 @@ export async function createUser(userData) {
   })
 
   await user.save()
+
+  /*
+  ==================================================
+  ADICIONAR NOVO CORRETOR AO CANAL DOS CORRETORES
+  ==================================================
+  */
+
+  if (user.role === 'broker' && user.isActive === true) {
+    try {
+      await addBrokerToChannel({
+        brokerId: user._id,
+      })
+    } catch (error) {
+      /*
+      Não falhamos a criação do usuário caso exista
+      algum problema no chat.
+
+      O usuário já foi criado com sucesso.
+      O problema de sincronização do canal pode
+      ser corrigido posteriormente.
+      */
+
+      console.error(
+        'Erro ao adicionar novo corretor ao Canal dos Corretores:',
+        error,
+      )
+    }
+  }
 
   return user
 }

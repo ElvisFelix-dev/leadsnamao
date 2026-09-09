@@ -422,6 +422,72 @@ export const deleteMessage = async ({ messageId, userId }) => {
   return { success: true }
 }
 
+/**
+ * Adiciona um corretor ao canal existente de corretores
+ *
+ * Não cria uma nova conversa.
+ * Apenas adiciona o usuário ao canal caso ainda não seja participante.
+ */
+export const addBrokerToChannel = async ({ brokerId }) => {
+  if (!brokerId) {
+    throw new AppError('ID do corretor é obrigatório.', 400)
+  }
+
+  const broker = await User.findOne({
+    _id: brokerId,
+    role: 'broker',
+    isActive: true,
+  }).select('_id name email role isActive')
+
+  if (!broker) {
+    throw new AppError(
+      'Corretor não encontrado ou usuário não está ativo.',
+      404,
+    )
+  }
+
+  // Busca o canal único dos corretores
+  const channel = await Conversation.findOne({
+    type: 'broker_channel',
+    isBrokerChannel: true,
+    isActive: true,
+  })
+
+  // Se o canal ainda não existir, cria usando a função existente
+  if (!channel) {
+    return createBrokerChannel({
+      name: 'Canal dos Corretores',
+      createdBy: brokerId,
+    })
+  }
+
+  const brokerIdString = brokerId.toString()
+
+  const alreadyParticipant = channel.participants.some(
+    (participantId) =>
+      participantId && participantId.toString() === brokerIdString,
+  )
+
+  // Já está no grupo
+  if (alreadyParticipant) {
+    return channel
+  }
+
+  // Adiciona o novo corretor
+  channel.participants.push(broker._id)
+
+  // Inicializa contador de não lidas
+  if (!channel.unreadCounts) {
+    channel.unreadCounts = new Map()
+  }
+
+  channel.unreadCounts.set(brokerIdString, 0)
+
+  await channel.save()
+
+  return channel
+}
+
 export default {
   createConversation,
   getUserConversations,
@@ -432,4 +498,5 @@ export default {
   createBrokerChannel,
   searchUsers,
   deleteMessage,
+  addBrokerToChannel,
 }

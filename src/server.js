@@ -26,6 +26,8 @@ import conversationRoutes from './routes/conversationRoutes.js'
 import commissonRoutes from './routes/commissionRoutes.js'
 import orchestratorRoutes from './routes/orchestratorRoutes.js'
 import webhookRoutes from './routes/webhookRoutes.js'
+import chatRoutes from './routes/chatRoutes.js' // 🔥 CHAT
+
 import './jobs/processLeadQueue.js'
 
 // Importação de middlewares
@@ -33,6 +35,9 @@ import errorMiddleware from './middleware/errorMiddleware.js'
 
 // Importação do Socket.io
 import { setupSocketIO } from './sockets/index.js'
+
+// 🔥 IMPORTAR SETUP DO CHAT SOCKET
+import { setupChatSocket } from './sockets/chatSocket.js'
 
 // Configuração de ambiente
 dotenv.config()
@@ -64,7 +69,6 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
 
 const corsOptions = {
   origin: function (origin, callback) {
-    // Permitir requisições sem origin (como mobile apps ou curl)
     if (!origin) return callback(null, true)
 
     if (
@@ -86,7 +90,7 @@ app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
 // ============================================
-// ROTAS PÚBLICAS (sem autenticação)
+// ROTAS PÚBLICAS
 // ============================================
 app.get('/health', (req, res) => {
   res.status(200).json({
@@ -120,18 +124,27 @@ app.use('/api/opportunities', opportunityRoutes)
 app.use('/api/proposals', proposalRoutes)
 app.use('/api/sales', saleRoutes)
 app.use('/api/calendar', calendarRoutes)
+
+// 🔥 ROTAS DE CONVERSA (JÁ EXISTENTES)
 app.use('/api/conversations', conversationRoutes)
+
+// 🔥 ROTAS DE CHAT (NOVAS)
+app.use('/api/chat', chatRoutes)
+
+// 🔥 ROTAS DE COMISSÃO E ORCHESTRATOR
 app.use('/api/commissions', commissonRoutes)
 app.use('/api/orchestrator', orchestratorRoutes)
-app.use('/webhook', webhookRoutes)
+
+// 🔥 WEBHOOKS
+app.use('/api/webhooks', webhookRoutes)
 
 // ============================================
-// MIDDLEWARE DE ERRO (DEVE SER O ÚLTIMO!)
+// MIDDLEWARE DE ERRO
 // ============================================
 app.use(errorMiddleware)
 
 // ============================================
-// CONEXÃO COM MONGODB COM RECONEXÃO AUTOMÁTICA
+// CONEXÃO COM MONGODB
 // ============================================
 const connectDB = async (retries = 5, delay = 5000) => {
   try {
@@ -144,7 +157,6 @@ const connectDB = async (retries = 5, delay = 5000) => {
 
     console.log('📊 Conectado ao MongoDB com sucesso!')
 
-    // Configurar eventos de conexão
     mongoose.connection.on('disconnected', () => {
       console.warn('⚠️ MongoDB desconectado. Tentando reconectar...')
       setTimeout(() => connectDB(1, 1000), 1000)
@@ -182,23 +194,24 @@ const connectDB = async (retries = 5, delay = 5000) => {
 // INICIALIZAÇÃO DO SERVIDOR
 // ============================================
 const startServer = async () => {
-  // Primeiro, conecta ao MongoDB
   await connectDB()
 
-  // Cria servidor HTTP
   const httpServer = createServer(app)
 
-  // Configura Socket.io
+  // ============================================
+  // 🔥 CONFIGURAÇÃO DO SOCKET.IO COM CHAT
+  // ============================================
   const io = setupSocketIO(httpServer)
 
-  // Disponibiliza io para as rotas (se necessário)
+  // 🔥 CONFIGURAR SOCKET DO CHAT
+  setupChatSocket(io)
+
+  // Disponibiliza io para as rotas
   app.set('io', io)
 
   // ============================================
   // TAREFAS AGENDADAS (CRON)
   // ============================================
-
-  // Ping no MongoDB a cada 6 horas (mantém conexão ativa)
   cron.schedule('0 */6 * * *', async () => {
     try {
       if (mongoose.connection.readyState === 1) {
@@ -226,6 +239,7 @@ const startServer = async () => {
     console.log(
       `📊 MongoDB: ${mongoose.connection.readyState === 1 ? 'Conectado ✅' : 'Desconectado ❌'}`,
     )
+    console.log(`💬 Chat Socket: ${io ? 'Ativo ✅' : 'Inativo ❌'}`)
   })
 
   // Tratamento de encerramento gracioso
@@ -245,7 +259,6 @@ const startServer = async () => {
       }
     })
 
-    // Forçar encerramento após 10 segundos
     setTimeout(() => {
       console.error(
         '⏰ Tempo limite de encerramento excedido. Forçando saída...',
@@ -258,9 +271,6 @@ const startServer = async () => {
   process.on('SIGINT', gracefulShutdown)
 }
 
-// ============================================
-// INICIALIZA A APLICAÇÃO
-// ============================================
 startServer().catch((err) => {
   console.error('❌ Erro fatal ao iniciar servidor:', err.message)
   process.exit(1)

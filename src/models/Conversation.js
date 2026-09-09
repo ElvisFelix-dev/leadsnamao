@@ -1,22 +1,104 @@
+// src/models/Conversation.js
 import mongoose from 'mongoose'
-
-const messageSchema = new mongoose.Schema(
-  {
-    from: { type: String, required: true }, // "Admin" ou usuário
-    to: { type: String, required: true },
-    body: { type: String, required: true },
-    createdAt: { type: Date, default: Date.now },
-  },
-  { _id: false },
-)
 
 const conversationSchema = new mongoose.Schema(
   {
-    userName: { type: String, required: true }, // quem iniciou a conversa
-    messages: [messageSchema],
+    // Participantes da conversa
+    participants: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: true,
+        validate: {
+          validator: function (v) {
+            return v !== null && v !== undefined
+          },
+          message: 'Participante não pode ser nulo ou indefinido',
+        },
+      },
+    ],
+
+    // Tipo de conversa
+    type: {
+      type: String,
+      enum: ['direct', 'group', 'broker_channel'],
+      default: 'direct',
+    },
+
+    // Nome do grupo (se for group)
+    name: {
+      type: String,
+      default: '',
+    },
+
+    // Avatar do grupo
+    avatar: {
+      type: String,
+      default: '',
+    },
+
+    // Última mensagem
+    lastMessage: {
+      type: String,
+      default: '',
+    },
+
+    lastMessageAt: {
+      type: Date,
+      default: Date.now,
+    },
+
+    lastMessageFrom: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+
+    // Contagem de mensagens não lidas por participante
+    unreadCounts: {
+      type: Map,
+      of: Number,
+      default: {},
+    },
+
+    // Status da conversa
+    isActive: {
+      type: Boolean,
+      default: true,
+    },
+
+    // Para canais de corretores (todos os corretores podem ver)
+    isBrokerChannel: {
+      type: Boolean,
+      default: false,
+    },
+
+    // Criado por
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+    },
+
+    // Metadados
+    metadata: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
   },
-  { timestamps: true },
+  {
+    timestamps: true,
+  },
 )
 
-const Conversation = mongoose.model('Conversation', conversationSchema)
-export default Conversation
+// Índices
+conversationSchema.index({ participants: 1 })
+conversationSchema.index({ participants: 1, updatedAt: -1 })
+conversationSchema.index({ isBrokerChannel: 1 })
+conversationSchema.index({ type: 1 })
+
+// Virtual para ID da conversa
+conversationSchema.virtual('conversationId').get(function () {
+  return `conv_${this._id.toString().slice(-8)}`
+})
+
+export default mongoose.model('Conversation', conversationSchema)

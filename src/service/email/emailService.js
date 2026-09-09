@@ -13,7 +13,11 @@ if (!process.env.BREVO_API_KEY) {
     process.env.BREVO_API_KEY,
   )
 
-  console.log('📧 Brevo Email Service conectado com sucesso.')
+  console.log('BREVO_API_KEY existe:', !!process.env.BREVO_API_KEY)
+  console.log(
+    'BREVO_API_KEY começa com:',
+    process.env.BREVO_API_KEY?.substring(0, 10),
+  )
 }
 
 export { Brevo }

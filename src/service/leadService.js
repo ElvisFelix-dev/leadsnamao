@@ -6,6 +6,143 @@ import { LEAD_STAGES, LEAD_STAGE_LIST } from '../constants/leadStages.js'
 import { LEAD_STATUS } from '../constants/leadStatus.js'
 import { LEAD_PRIORITY } from '../constants/leadPriority.js'
 
+// =========================================================
+// NORMALIZAÇÃO DE REGIÃO
+// =========================================================
+
+// Valores EXATOS do enum do schema (todos minúsculos)
+const VALID_REGIONS = [
+  'central',
+  'zona_oeste',
+  'zona_leste',
+  'zona_sul',
+  'zona_norte',
+  'abc',
+  'grande_sp',
+  'interior',
+  'litoral',
+]
+
+// Apelidos comuns que o usuário pode digitar
+const REGION_ALIASES = {
+  // Centro
+  CENTRO: 'central',
+  CENTRAL: 'central',
+  CENTRO_SP: 'central',
+
+  // Zona Sul
+  ZONA_SUL: 'zona_sul',
+  SUL: 'zona_sul',
+  ZS: 'zona_sul',
+
+  // Zona Norte
+  ZONA_NORTE: 'zona_norte',
+  NORTE: 'zona_norte',
+  ZN: 'zona_norte',
+
+  // Zona Leste
+  ZONA_LESTE: 'zona_leste',
+  LESTE: 'zona_leste',
+  ZL: 'zona_leste',
+
+  // Zona Oeste
+  ZONA_OESTE: 'zona_oeste',
+  OESTE: 'zona_oeste',
+  ZO: 'zona_oeste',
+
+  // ABC
+  ABC_PAULISTA: 'abc',
+  ABCD: 'abc',
+  SANTO_ANDRE: 'abc',
+  SAO_BERNARDO: 'abc',
+  SAO_CAETANO: 'abc',
+
+  // Grande SP
+  GRANDE_SAO_PAULO: 'grande_sp',
+  GRANDE_SP: 'grande_sp',
+  GUARULHOS: 'grande_sp',
+  OSASCO: 'grande_sp',
+
+  // Interior
+  INTERIOR_SP: 'interior',
+  CAMPINAS: 'interior',
+  SOROCABA: 'interior',
+  RIBEIRAO: 'interior',
+
+  // Litoral
+  LITORAL_SP: 'litoral',
+  BAIXADA_SANTISTA: 'litoral',
+  SANTOS: 'litoral',
+  PRAIA_GRANDE: 'litoral',
+}
+
+/**
+ * Normaliza uma região para o formato do enum do Mongoose.
+ *
+ * Aceita:
+ *   - "zona sul"     → "zona_sul"
+ *   - "Zona Sul"     → "zona_sul"
+ *   - "ZONA SUL"     → "zona_sul"
+ *   - "zona-sul"     → "zona_sul"
+ *   - "ZonaSul"      → "zona_sul"
+ *   - "Sul"          → "zona_sul"
+ *   - "Centro"       → "central"
+ *   - "abc"          → "abc"
+ *
+ * Retorna null se não for possível normalizar.
+ */
+export const normalizeRegion = (region) => {
+  if (!region) return null
+
+  // Remove espaços, converte para minúsculo, remove acentos
+  const cleaned = String(region)
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // Remove acentos
+    .replace(/[\s\-./]+/g, '_') // Espaços, hífens, pontos → underscore
+    .replace(/[^a-zA-Z0-9_]/g, '') // Remove caracteres inválidos
+    .toUpperCase()
+
+  // 1. Verifica se é um valor direto do enum
+  const directMatch = cleaned.toLowerCase()
+  if (VALID_REGIONS.includes(directMatch)) {
+    return directMatch
+  }
+
+  // 2. Verifica no mapa de apelidos
+  if (REGION_ALIASES[cleaned]) {
+    return REGION_ALIASES[cleaned]
+  }
+
+  // 3. Tenta match parcial (ex: "ZONA_SUL_SP" → "zona_sul")
+  for (const validRegion of VALID_REGIONS) {
+    const validUpper = validRegion.toUpperCase()
+    if (cleaned.includes(validUpper) || validUpper.includes(cleaned)) {
+      return validRegion
+    }
+  }
+
+  return null
+}
+
+/**
+ * Normaliza a região ou lança erro se inválida
+ */
+const requireValidRegion = (region) => {
+  if (!region) return null
+
+  const normalized = normalizeRegion(region)
+
+  if (!normalized) {
+    throw new Error(
+      `Região inválida: "${region}". ` +
+        `Valores permitidos: ${VALID_REGIONS.join(', ')}`,
+    )
+  }
+
+  return normalized
+}
+
 // ======================================================
 // CONSTANTS
 // ======================================================
@@ -855,6 +992,7 @@ export const importLeadsFromCSV = async (rows) => {
 // ======================================================
 
 export const createBrokerHotsiteLead = async (data) => {
+  const normalizedRegion = requireValidRegion(data.region)
   const {
     name,
     email,
@@ -946,7 +1084,7 @@ export const createBrokerHotsiteLead = async (data) => {
 
     property: property._id,
 
-    region,
+    region: normalizedRegion,
 
     // --------------------------------------------------
     // ORIGIN

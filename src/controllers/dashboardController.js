@@ -123,6 +123,18 @@ export const getAdminDashboard = async (req, res) => {
       status: 'perdido',
     })
 
+    // ✅ ADICIONAR: Leads distribuídos (com corretor atribuído)
+    const leadsDistribuidos = await Lead.countDocuments({
+      assignedTo: { $exists: true, $ne: null },
+      isDeleted: { $ne: true },
+    })
+
+    // ✅ ADICIONAR: Leads pendentes (sem corretor atribuído)
+    const leadsPendentes = await Lead.countDocuments({
+      $or: [{ assignedTo: { $exists: false } }, { assignedTo: null }],
+      isDeleted: { $ne: true },
+    })
+
     /*
     ====================================================
     USUÁRIOS
@@ -363,6 +375,8 @@ export const getAdminDashboard = async (req, res) => {
         fechados,
 
         perdidos,
+        leadsDistribuidos,
+        leadsPendentes,
       },
 
       users,

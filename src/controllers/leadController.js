@@ -603,24 +603,39 @@ export const publicCreateLeadFromWebhook = async (req, res) => {
 
 export const importLeadsFromCSV = async (req, res) => {
   try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'Nenhum arquivo enviado.',
+      })
+    }
+
     const rows = []
 
-    fs.createReadStream(req.file.path)
-      .pipe(csv())
-      .on('data', (row) => rows.push(row))
-      .on('end', async () => {
-        const result = await leadService.importLeadsFromCSV(rows)
+    await new Promise((resolve, reject) => {
+      fs.createReadStream(req.file.path)
+        .pipe(csv())
+        .on('data', (row) => rows.push(row))
+        .on('end', resolve)
+        .on('error', reject)
+    })
 
-        return res.json({
-          success: true,
-          message: 'Leads importados com sucesso.',
-          total: result.total,
-        })
-      })
+    // Remove o arquivo temporário
+    fs.unlink(req.file.path, () => {})
+
+    const result = await leadService.importLeadsFromCSV(rows)
+
+    return res.json({
+      success: true,
+      message: `${result.success} leads importados com sucesso.`,
+      total: result.total,
+      failed: result.failed,
+      errors: result.errors.slice(0, 20), // Limita a 20 erros
+    })
   } catch (error) {
     console.error('❌ Erro CSV:', error)
-
     return res.status(500).json({
+      success: false,
       message: 'Erro ao importar CSV.',
       error: error.message,
     })

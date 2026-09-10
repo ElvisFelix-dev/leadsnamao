@@ -76,6 +76,91 @@ const REGION_ALIASES = {
   PRAIA_GRANDE: 'litoral',
 }
 
+// =========================================================
+// MAPEAMENTO DE CABEÇALHOS CSV → CAMPOS DO SCHEMA
+// =========================================================
+
+const CSV_FIELD_MAP = {
+  // Nome
+  nome: 'name',
+  name: 'name',
+  Nome: 'name',
+  Name: 'name',
+
+  // Email
+  email: 'email',
+  Email: 'email',
+  'e-mail': 'email',
+  'E-mail': 'email',
+
+  // Telefone
+  telefone: 'phone',
+  phone: 'phone',
+  Telefone: 'phone',
+  Phone: 'phone',
+  celular: 'phone',
+  Celular: 'phone',
+
+  // Região
+  regiao: 'region',
+  região: 'region',
+  region: 'region',
+  Região: 'region',
+  Regiao: 'region',
+  Region: 'region',
+
+  // Origem
+  origem: 'source',
+  source: 'source',
+  Origem: 'source',
+  Source: 'source',
+
+  // Status
+  status: 'status',
+  Status: 'status',
+
+  // Etapa
+  stage: 'stage',
+  etapa: 'stage',
+  Stage: 'stage',
+  Etapa: 'stage',
+
+  // Prioridade
+  priority: 'priority',
+  prioridade: 'priority',
+  Priority: 'priority',
+  Prioridade: 'priority',
+
+  // Observações
+  observacoes: 'notes',
+  observações: 'notes',
+  notes: 'notes',
+  Observações: 'notes',
+  Notes: 'notes',
+}
+
+/**
+ * Normaliza uma linha do CSV, mapeando cabeçalhos em PT/EN
+ * para os campos do schema do Mongoose.
+ */
+const normalizeCSVRow = (row) => {
+  const normalized = {}
+
+  for (const [key, value] of Object.entries(row)) {
+    const trimmedKey = String(key).trim()
+    const mappedField = CSV_FIELD_MAP[trimmedKey] || trimmedKey
+
+    if (value === undefined || value === null) continue
+
+    const stringValue = String(value).trim()
+    if (stringValue === '') continue
+
+    normalized[mappedField] = stringValue
+  }
+
+  return normalized
+}
+
 /**
  * Normaliza uma região para o formato do enum do Mongoose.
  *
@@ -403,65 +488,74 @@ const buildLeadData = ({
   sessionId = '',
 
   visitorId = '',
-}) => ({
-  name,
+}) => {
+  // ✅ CORRIGIDO: Define um autor válido para o stageHistory
+  // Prioridade: createdBy → assignedTo
+  // Se nenhum existir, o stageHistory fica vazio (evita ValidationError)
+  const historyAuthor = createdBy || assignedTo || null
 
-  email,
+  return {
+    name,
 
-  phone,
+    email,
 
-  property: property || null,
+    phone,
 
-  region: region || 'central',
+    property: property || null,
 
-  notes: notes || '',
+    region: region || 'central',
 
-  createdBy: createdBy || null,
+    notes: notes || '',
 
-  assignedTo: assignedTo || null,
+    createdBy: createdBy || null,
 
-  source,
+    assignedTo: assignedTo || null,
 
-  sourceType,
+    source,
 
-  sourceBroker: sourceBroker || null,
+    sourceType,
 
-  sourceSite: sourceSite || '',
+    sourceBroker: sourceBroker || null,
 
-  sourceUrl: sourceUrl || '',
+    sourceSite: sourceSite || '',
 
-  landingPage: landingPage || '',
+    sourceUrl: sourceUrl || '',
 
-  referrer: referrer || '',
+    landingPage: landingPage || '',
 
-  campaign: {
-    utmSource: campaign?.utmSource || '',
-    utmMedium: campaign?.utmMedium || '',
-    utmCampaign: campaign?.utmCampaign || '',
-    utmTerm: campaign?.utmTerm || '',
-    utmContent: campaign?.utmContent || '',
-  },
+    referrer: referrer || '',
 
-  sessionId: sessionId || '',
-
-  visitorId: visitorId || '',
-
-  stage: LEAD_STAGES.NEW,
-
-  status: LEAD_STATUS.NEW,
-
-  priority: LEAD_PRIORITY.MEDIUM,
-
-  stageHistory: [
-    {
-      stage: LEAD_STAGES.NEW,
-
-      changedBy: createdBy || null,
-
-      changedAt: new Date(),
+    campaign: {
+      utmSource: campaign?.utmSource || '',
+      utmMedium: campaign?.utmMedium || '',
+      utmCampaign: campaign?.utmCampaign || '',
+      utmTerm: campaign?.utmTerm || '',
+      utmContent: campaign?.utmContent || '',
     },
-  ],
-})
+
+    sessionId: sessionId || '',
+
+    visitorId: visitorId || '',
+
+    stage: LEAD_STAGES.NEW,
+
+    status: LEAD_STATUS.NEW,
+
+    priority: LEAD_PRIORITY.MEDIUM,
+
+    // ✅ CORRIGIDO: Só cria stageHistory se tiver autor válido
+    // Se não tiver, deixa vazio (aceito pelo schema quando o campo não é obrigatório em arrays vazios)
+    stageHistory: historyAuthor
+      ? [
+          {
+            stage: LEAD_STAGES.NEW,
+            changedBy: historyAuthor,
+            changedAt: new Date(),
+          },
+        ]
+      : [],
+  }
+}
 
 // ======================================================
 // CREATE
@@ -973,19 +1067,62 @@ export const createLeadFromWebhook = async ({ data, source }) => {
 // ======================================================
 
 export const importLeadsFromCSV = async (rows) => {
-  const createdLeads = []
-
-  for (const row of rows) {
-    const lead = await createLeadFromSource(row, 'csv')
-
-    createdLeads.push(lead)
+  const results = {
+    total: rows.length,
+    success: 0,
+    failed: 0,
+    errors: [],
+    leads: [],
   }
 
-  return {
-    total: createdLeads.length,
+  for (const [index, rawRow] of rows.entries()) {
+    const rowNumber = index + 2 // +2 porque linha 1 é o cabeçalho
 
-    leads: createdLeads,
+    try {
+      // 1. Normaliza cabeçalhos (nome → name, etc)
+      const normalized = normalizeCSVRow(rawRow)
+
+      // 2. Valida campos obrigatórios
+      if (!normalized.name || normalized.name.trim() === '') {
+        throw new Error('Campo "name" é obrigatório')
+      }
+
+      // 3. Normaliza a região
+      const normalizedRegion = normalizeRegion(normalized.region)
+
+      // 4. Cria o lead usando o buildLeadData
+      const lead = await createLeadFromSource(
+        {
+          name: normalized.name.trim(),
+          email: normalized.email?.toLowerCase().trim() || '',
+          phone: normalized.phone?.trim() || '',
+          region: normalizedRegion || 'central',
+          notes: normalized.notes?.trim() || '',
+          source: 'csv',
+          sourceType: 'csv',
+        },
+        'csv',
+      )
+
+      results.success++
+      results.leads.push(lead)
+    } catch (error) {
+      results.failed++
+      results.errors.push({
+        row: rowNumber,
+        data: rawRow,
+        error: error.message,
+      })
+
+      console.error(`❌ Erro na linha ${rowNumber}:`, error.message)
+    }
   }
+
+  console.log(
+    `📊 Importação CSV: ${results.success}/${results.total} importados (${results.failed} falhas)`,
+  )
+
+  return results
 }
 // ======================================================
 // CREATE BROKER HOTSITE LEAD

@@ -8,15 +8,23 @@ export const setupChatSocket = (io) => {
     // IDENTIFICAR USUÁRIO
     // =========================================================
 
-    const userId = socket.handshake.auth?.userId
+    const rawUserId = socket.handshake.auth?.userId
+    console.log(`🔍 RAW userId:`, rawUserId, '| typeof:', typeof rawUserId)
 
-    if (!userId) {
+    // ✅ Corrige caso venha como objeto { $oid: "..." }
+    if (rawUserId && typeof rawUserId === 'object') {
+      rawUserId = rawUserId.$oid || rawUserId._id || rawUserId.toString()
+    }
+
+    if (!rawUserId) {
       console.warn('⚠️ Socket conectado sem userId. Desconectando...')
       socket.disconnect(true)
       return
     }
 
-    const userIdString = userId.toString()
+    const userIdString = String(rawUserId)
+
+    console.log(`🔍 userId normalizado: ${userIdString}`)
 
     // =========================================================
     // MODEL

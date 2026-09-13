@@ -1858,4 +1858,157 @@ const brokerDashboardService = async (brokerId) => {
   }
 }
 
+// ======================================================
+// STATS PÚBLICOS DO HOTSITE
+// ======================================================
+
+export const getBrokerHotsiteStats = async (brokerId) => {
+  const objectId = toObjectId(brokerId)
+
+  if (!objectId) {
+    throw new Error('ID do corretor inválido')
+  }
+
+  const broker = await User.findOne({
+    _id: objectId,
+    isBroker: true,
+    isActive: true,
+  })
+    .select('_id')
+    .lean()
+
+  if (!broker) {
+    throw new Error('Corretor não encontrado')
+  }
+
+  const [totalLeads, totalVisits, totalSales, salesFinancial, totalProperties] =
+    await Promise.all([
+      Lead.countDocuments({
+        assignedTo: objectId,
+      }),
+
+      Visit.countDocuments({
+        broker: objectId,
+        status: {
+          $ne: VISIT_STATUS.CANCELLED,
+        },
+      }),
+
+      Sale.countDocuments({
+        sellerBroker: objectId,
+        status: {
+          $ne: SALE_STATUS.CANCELLED,
+        },
+      }),
+
+      Sale.aggregate([
+        {
+          $match: {
+            sellerBroker: objectId,
+            status: {
+              $ne: SALE_STATUS.CANCELLED,
+            },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            totalValue: {
+              $sum: {
+                $ifNull: ['$saleAmount', 0],
+              },
+            },
+          },
+        },
+      ]),
+
+      Property.countDocuments({
+        brokerId: objectId,
+      }),
+    ])
+
+  const totalSalesValue = toNumber(salesFinancial?.[0]?.totalValue)
+
+  // Conversão de leads em vendas
+  const conversion = percentage(totalSales, totalLeads)
+
+  // Mesma regra de pontuação utilizada
+  // no dashboard privado
+  const points =
+    totalLeads * 10 + totalVisits * 20 + totalSales * 100 + totalProperties * 15
+
+  // ======================================================
+  // RANKING
+  // ======================================================
+
+  const brokers = await User.find({
+    role: 'broker',
+    isActive: true,
+  })
+    .select('_id')
+    .lean()
+
+  const ranking = await Promise.all(
+    brokers.map(async (brokerItem) => {
+      const brokerItemId = brokerItem._id
+
+      const [leads, visits, sales, properties] = await Promise.all([
+        Lead.countDocuments({
+          assignedTo: brokerItemId,
+        }),
+
+        Visit.countDocuments({
+          broker: brokerItemId,
+          status: {
+            $ne: VISIT_STATUS.CANCELLED,
+          },
+        }),
+
+        Sale.countDocuments({
+          sellerBroker: brokerItemId,
+          status: {
+            $ne: SALE_STATUS.CANCELLED,
+          },
+        }),
+
+        Property.countDocuments({
+          brokerId: brokerItemId,
+        }),
+      ])
+
+      const brokerPoints =
+        leads * 10 + visits * 20 + sales * 100 + properties * 15
+
+      return {
+        brokerId: String(brokerItemId),
+        points: brokerPoints,
+      }
+    }),
+  )
+
+  ranking.sort((a, b) => b.points - a.points)
+
+  const rankIndex = ranking.findIndex(
+    (item) => item.brokerId === String(objectId),
+  )
+
+  const rank = rankIndex >= 0 ? rankIndex + 1 : 0
+
+  return {
+    stats: {
+      leads: totalLeads,
+      visits: totalVisits,
+      deals: totalSales,
+      revenue: totalSalesValue,
+      conversion,
+    },
+
+    performance: {
+      points,
+      level: rank,
+      rank,
+    },
+  }
+}
+
 export default brokerDashboardService

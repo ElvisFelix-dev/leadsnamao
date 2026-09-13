@@ -2,7 +2,35 @@ import asyncHandler from '../middleware/asyncHandler.js'
 
 import brokerService from '../service/users/brokerService.js'
 
+import { getBrokerHotsiteStats } from '../service/dashboard/brokerDashboardService.js'
+
 import ApiResponse from '../utils/ApiResponse.js'
+
+// ======================================================
+// STATS PÚBLICOS DO HOTSITE
+// ======================================================
+
+export const getBrokerHotsiteStatsController = asyncHandler(
+  async (req, res) => {
+    const { slug } = req.params
+
+    if (!slug) {
+      return res.status(400).json({
+        success: false,
+        message: 'Slug do corretor é obrigatório.',
+      })
+    }
+
+    const broker = await brokerService.getBrokerBySlug(slug)
+
+    const stats = await getBrokerHotsiteStats(broker._id)
+
+    return res.status(200).json({
+      success: true,
+      data: stats,
+    })
+  },
+)
 
 // ==========================================
 // Hotsite do corretor

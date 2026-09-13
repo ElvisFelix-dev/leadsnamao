@@ -7,6 +7,7 @@ import {
   getPublicBrokerById,
   getPublicBrokers,
   getBrokerHotsite,
+  getBrokerHotsiteStatsController,
 } from '../controllers/brokerController.js'
 
 import { protect } from '../middleware/authMiddleware.js'
@@ -18,6 +19,9 @@ const router = express.Router()
 // ==========================================
 
 router.get('/hotsite/:slug', getBrokerHotsite)
+
+// Stats públicos do Hotsite
+router.get('/hotsite/:slug/stats', getBrokerHotsiteStatsController)
 
 // ======================================
 // ADMIN

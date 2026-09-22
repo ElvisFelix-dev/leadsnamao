@@ -219,17 +219,15 @@ export const getAdminDashboard = async (req, res) => {
       select: 'name avatar position',
     })
 
-    const formattedLeadsByBroker = populatedBrokers.map((broker) => ({
-      id: broker._id._id,
-
-      name: broker._id.name,
-
-      avatar: broker._id.avatar,
-
-      position: broker._id.position,
-
-      total: broker.total,
-    }))
+    const formattedLeadsByBroker = populatedBrokers
+      .filter((broker) => broker?._id)
+      .map((broker) => ({
+        id: broker._id._id,
+        name: broker._id.name || 'Corretor',
+        avatar: broker._id.avatar || '',
+        position: broker._id.position || 'Corretor de Imóveis',
+        total: broker.total || 0,
+      }))
 
     /*
     ====================================================

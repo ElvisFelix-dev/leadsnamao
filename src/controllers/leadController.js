@@ -1,8 +1,13 @@
 import fs from 'fs'
+
 import csv from 'csv-parser'
+
 import Lead from '../models/Lead.js'
+
 import User from '../models/User.js'
+
 import asyncHandler from '../middleware/asyncHandler.js'
+
 import AppError from '../utils/AppError.js'
 
 import * as leadService from '../service/leadService.js'
@@ -22,6 +27,57 @@ import { sendEmail } from '../service/email/sendEmails.js'
 import { leadAssignedTemplate } from '../utils/emailTemplates.js'
 
 // ======================================================
+// HELPER — ENVIA E-MAIL DE NOVO LEAD
+// ======================================================
+
+const sendLeadAssignedEmail = async ({ lead, assignedTo }) => {
+  if (!assignedTo?.email) {
+    console.warn(
+      '⚠️ E-mail não enviado: corretor não possui endereço de e-mail.',
+    )
+
+    return false
+  }
+
+  try {
+    console.log('============================================')
+    console.log('📧 ENVIANDO NOTIFICAÇÃO DE NOVO LEAD')
+    console.log('Corretor:', assignedTo.name)
+    console.log('E-mail:', assignedTo.email)
+    console.log('Lead:', lead?._id)
+    console.log('============================================')
+
+    await sendEmail({
+      to: assignedTo.email,
+      subject: 'Novo lead atribuído - Leads Na Mão',
+      htmlContent: leadAssignedTemplate({
+        brokerName: assignedTo.name,
+        brokerPosition: assignedTo.position || 'Corretor de imóveis',
+        leadName: lead?.name || '',
+        leadEmail: lead?.email || '',
+        leadPhone: lead?.phone || '',
+        leadRegion: lead?.region || '',
+        leadSource: lead?.source || '',
+        leadId: lead?._id,
+      }),
+    })
+
+    console.log(`✅ E-mail de novo lead enviado para ${assignedTo.email}`)
+
+    return true
+  } catch (error) {
+    console.error('============================================')
+    console.error('❌ ERRO AO ENVIAR E-MAIL DO NOVO LEAD')
+    console.error('Destinatário:', assignedTo.email)
+    console.error('Mensagem:', error.message)
+    console.error('Stack:', error.stack)
+    console.error('============================================')
+
+    return false
+  }
+}
+
+// ======================================================
 // CREATE BROKER HOTSITE LEAD
 // ======================================================
 
@@ -31,9 +87,7 @@ export const createBrokerHotsiteLeadController = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-
       message: 'Seu interesse foi enviado com sucesso.',
-
       data: lead,
     })
   } catch (error) {
@@ -41,7 +95,6 @@ export const createBrokerHotsiteLeadController = async (req, res) => {
 
     return res.status(400).json({
       success: false,
-
       message: error?.message || 'Não foi possível enviar seu interesse.',
     })
   }
@@ -52,10 +105,14 @@ export const createBrokerHotsiteLeadController = async (req, res) => {
 // ======================================================
 
 export const createLead = asyncHandler(async (req, res) => {
-  // 1. Criar o lead
+  // ====================================================
+  // 1. CRIAR O LEAD
+  // ====================================================
+
   const lead = new Lead({
     ...req.body,
-    // 🔥 CAMPOS OBRIGATÓRIOS PARA DISTRIBUIÇÃO
+
+    // Campos necessários para distribuição
     awaitingAssignment: true,
     isDistributed: false,
     'distribution.status': 'pending',
@@ -64,7 +121,10 @@ export const createLead = asyncHandler(async (req, res) => {
 
   await lead.save()
 
-  // 2. Distribuir automaticamente
+  // ====================================================
+  // 2. DISTRIBUIR AUTOMATICAMENTE
+  // ====================================================
+
   try {
     const distribution = await autoDistributeLead({
       leadId: lead._id,
@@ -72,24 +132,61 @@ export const createLead = asyncHandler(async (req, res) => {
       createdBy: req.user?._id,
     })
 
-    res.status(201).json({
+    console.log('============================================')
+    console.log('📌 DISTRIBUIÇÃO AUTOMÁTICA CONCLUÍDA')
+    console.log('Lead:', distribution.lead?._id || lead._id)
+    console.log('Corretor:', distribution.assignedTo?.name)
+    console.log('E-mail:', distribution.assignedTo?.email)
+    console.log('Método:', distribution.matchMethod)
+    console.log('============================================')
+
+    // ==================================================
+    // 3. ENVIAR E-MAIL PARA O CORRETOR
+    // ==================================================
+
+    const emailSent = await sendLeadAssignedEmail({
+      lead: distribution.lead || lead,
+      assignedTo: distribution.assignedTo,
+    })
+
+    // ==================================================
+    // 4. RESPOSTA
+    // ==================================================
+
+    return res.status(201).json({
       success: true,
-      message: 'Lead criado e distribuído automaticamente.',
+
+      message: emailSent
+        ? 'Lead criado, distribuído e notificado por e-mail.'
+        : 'Lead criado e distribuído, mas o e-mail não pôde ser enviado.',
+
       data: {
-        lead,
-        assignedTo: distribution.assignedTo,
-        distributionMethod: distribution.matchMethod,
+        lead: distribution.lead || lead,
+        assignedTo: distribution.assignedTo || null,
+        distributionMethod: distribution.matchMethod || null,
+        emailSent,
       },
     })
   } catch (error) {
-    // Se falhar, o lead fica em fila
-    res.status(201).json({
+    console.error('⚠️ Erro na distribuição automática do lead:', error.message)
+
+    // O lead continua criado e poderá ser processado posteriormente
+    return res.status(201).json({
       success: true,
+
       message: 'Lead criado, mas aguardando distribuição automática.',
-      data: { lead },
+
+      data: {
+        lead,
+        emailSent: false,
+      },
     })
   }
 })
+
+// ======================================================
+// PUBLIC CREATE LEAD
+// ======================================================
 
 export const publicCreateLead = async (req, res) => {
   try {
@@ -169,16 +266,15 @@ export const updateLead = async (req, res) => {
       timestamp: new Date().toISOString(),
     })
 
-    // Validação básica dos dados
     if (!body || Object.keys(body).length === 0) {
       console.warn('⚠️ Nenhum dado fornecido para atualização')
+
       return res.status(400).json({
         success: false,
         message: 'Nenhum dado fornecido para atualização.',
       })
     }
 
-    // Chama o service para atualizar
     const lead = await leadService.updateLead({
       leadId: id,
       userId,
@@ -195,7 +291,6 @@ export const updateLead = async (req, res) => {
       timestamp: new Date().toISOString(),
     })
 
-    // Resposta de sucesso
     return res.status(200).json({
       success: true,
       message: 'Lead atualizado com sucesso.',
@@ -210,7 +305,6 @@ export const updateLead = async (req, res) => {
       timestamp: new Date().toISOString(),
     })
 
-    // Tratamento de erros específicos
     if (error.message === 'Lead não encontrado.') {
       return res.status(404).json({
         success: false,
@@ -227,7 +321,6 @@ export const updateLead = async (req, res) => {
       })
     }
 
-    // Erro genérico
     return res.status(500).json({
       success: false,
       message: 'Erro ao atualizar lead.',
@@ -236,25 +329,25 @@ export const updateLead = async (req, res) => {
   }
 }
 
+// ======================================================
+// ASSIGN LEADS
+// ======================================================
+
 export const assignLeads = async (req, res) => {
   try {
     let { leadIds, leadId, userId } = req.body
 
-    /*
-    ======================================
-    NORMALIZA LEAD ÚNICO
-    ======================================
-    */
+    // ======================================
+    // NORMALIZA LEAD ÚNICO
+    // ======================================
 
     if (leadId) {
       leadIds = [leadId]
     }
 
-    /*
-    ======================================
-    VALIDAÇÃO
-    ======================================
-    */
+    // ======================================
+    // VALIDAÇÃO
+    // ======================================
 
     if (!Array.isArray(leadIds) || leadIds.length === 0) {
       return res.status(400).json({
@@ -268,11 +361,9 @@ export const assignLeads = async (req, res) => {
       })
     }
 
-    /*
-    ======================================
-    BUSCA CORRETOR
-    ======================================
-    */
+    // ======================================
+    // BUSCA CORRETOR
+    // ======================================
 
     const broker = await getUserById(userId)
 
@@ -282,11 +373,9 @@ export const assignLeads = async (req, res) => {
       })
     }
 
-    /*
-    ======================================
-    BUSCA LEADS ANTES DA ALTERAÇÃO
-    ======================================
-    */
+    // ======================================
+    // BUSCA LEADS ANTES DA ALTERAÇÃO
+    // ======================================
 
     const leads = await Lead.find({
       _id: {
@@ -300,22 +389,18 @@ export const assignLeads = async (req, res) => {
       })
     }
 
-    /*
-    ======================================
-    ATRIBUI LEADS
-    ======================================
-    */
+    // ======================================
+    // ATRIBUI LEADS
+    // ======================================
 
     const result = await leadService.assignLeads({
       leadIds,
       userId,
     })
 
-    /*
-    ======================================
-    ENVIO DE EMAIL
-    ======================================
-    */
+    // ======================================
+    // ENVIO DE EMAIL
+    // ======================================
 
     let emailSent = false
 
@@ -328,19 +413,12 @@ export const assignLeads = async (req, res) => {
 
           htmlContent: leadAssignedTemplate({
             brokerName: broker.name,
-
             brokerPosition: broker.position || 'Corretor de imóveis',
-
             leadName: lead.name,
-
             leadEmail: lead.email,
-
             leadPhone: lead.phone,
-
             leadRegion: lead.region,
-
             leadSource: lead.source,
-
             leadId: lead._id,
           }),
         })
@@ -354,29 +432,22 @@ export const assignLeads = async (req, res) => {
       )
     }
 
-    /*
-    ======================================
-    RESPOSTA
-    ======================================
-    */
+    // ======================================
+    // RESPOSTA
+    // ======================================
 
     return res.json({
       success: true,
-
       message: 'Leads atribuídos com sucesso.',
 
       broker: {
         id: broker._id,
-
         name: broker.name,
-
         email: broker.email,
-
         position: broker.position || null,
       },
 
       totalLeads: leads.length,
-
       emailSent,
 
       ...result,
@@ -386,11 +457,11 @@ export const assignLeads = async (req, res) => {
 
     return res.status(500).json({
       message: 'Erro ao atribuir leads.',
-
       error: error.message,
     })
   }
 }
+
 // ======================================================
 // DELETE
 // ======================================================
@@ -528,13 +599,10 @@ export const publicCreateLeadFromWebhook = async (req, res) => {
     }
 
     // Recebimento dos leads
-
     const body = req.body
-
     const leads = []
 
     // Meta Lead Ads
-
     if (body.entry) {
       body.entry.forEach((entry) => {
         entry.changes.forEach((change) => {
@@ -559,7 +627,6 @@ export const publicCreateLeadFromWebhook = async (req, res) => {
     }
 
     // Payload customizado
-
     if (body.custom_data) {
       leads.push({
         ...body.custom_data,
@@ -630,10 +697,11 @@ export const importLeadsFromCSV = async (req, res) => {
       message: `${result.success} leads importados com sucesso.`,
       total: result.total,
       failed: result.failed,
-      errors: result.errors.slice(0, 20), // Limita a 20 erros
+      errors: result.errors.slice(0, 20),
     })
   } catch (error) {
     console.error('❌ Erro CSV:', error)
+
     return res.status(500).json({
       success: false,
       message: 'Erro ao importar CSV.',
@@ -642,20 +710,25 @@ export const importLeadsFromCSV = async (req, res) => {
   }
 }
 
-/* ============================================================
-   DISTRIBUIÇÃO AUTOMÁTICA
-============================================================ */
+// ======================================================
+// DISTRIBUIÇÃO AUTOMÁTICA
+// ======================================================
 
 /**
  * POST /api/leads/auto-distribute
  * Distribui um lead automaticamente
  */
+
 export const autoDistribute = asyncHandler(async (req, res) => {
   const { leadId, propertyId, region, type } = req.body
 
   if (!leadId) {
     throw new AppError('ID do lead é obrigatório.', 400)
   }
+
+  // ============================================
+  // 1. DISTRIBUIÇÃO AUTOMÁTICA
+  // ============================================
 
   const result = await autoDistributeLead({
     leadId,
@@ -665,14 +738,38 @@ export const autoDistribute = asyncHandler(async (req, res) => {
     createdBy: req.user._id,
   })
 
-  res.json({
+  console.log('============================================')
+  console.log('📌 RESULTADO DA DISTRIBUIÇÃO AUTOMÁTICA')
+  console.log('success:', result.success)
+  console.log('message:', result.message)
+  console.log('lead:', result.lead?._id)
+  console.log('assignedTo:', result.assignedTo)
+  console.log('assignedTo.email:', result.assignedTo?.email)
+  console.log('============================================')
+
+  // ============================================
+  // 2. NOTIFICAÇÃO POR E-MAIL
+  // ============================================
+
+  const emailSent = await sendLeadAssignedEmail({
+    lead: result.lead,
+    assignedTo: result.assignedTo,
+  })
+
+  // ============================================
+  // 3. RESPOSTA
+  // ============================================
+
+  return res.json({
     success: result.success,
     message: result.message,
+
     data: {
       lead: result.lead,
-      assignedTo: result.assignedTo,
-      matchMethod: result.matchMethod,
-      inQueue: result.inQueue || false,
+      assignedTo: result.assignedTo || null,
+      matchMethod: result.matchMethod || null,
+      inQueue: Boolean(result.inQueue),
+      emailSent,
     },
   })
 })
@@ -681,6 +778,7 @@ export const autoDistribute = asyncHandler(async (req, res) => {
  * POST /api/leads/process-pending
  * Processa leads pendentes (admin apenas)
  */
+
 export const processPendingLeadsController = asyncHandler(async (req, res) => {
   if (!req.user.isAdmin && req.user.role !== 'admin') {
     throw new AppError('Acesso negado. Apenas administradores.', 403)
@@ -690,7 +788,9 @@ export const processPendingLeadsController = asyncHandler(async (req, res) => {
 
   res.json({
     success: result.success,
+
     message: `${result.distributed} leads distribuídos de ${result.totalProcessed}`,
+
     data: result,
   })
 })
@@ -699,6 +799,7 @@ export const processPendingLeadsController = asyncHandler(async (req, res) => {
  * POST /api/leads/:id/reassign
  * Reatribui um lead
  */
+
 export const reassignLeadController = asyncHandler(async (req, res) => {
   const { id } = req.params
   const { reason } = req.body
@@ -724,6 +825,7 @@ export const reassignLeadController = asyncHandler(async (req, res) => {
  * GET /api/leads/distribution-stats
  * Estatísticas de distribuição
  */
+
 export const getDistributionStats = asyncHandler(async (req, res) => {
   if (!req.user.isAdmin && req.user.role !== 'admin') {
     throw new AppError('Acesso negado. Apenas administradores.', 403)
@@ -742,16 +844,25 @@ export const getDistributionStats = asyncHandler(async (req, res) => {
       assignedTo: { $exists: false },
       isDeleted: false,
     }),
+
     Lead.countDocuments({
       isDistributed: true,
       isDeleted: false,
     }),
-    Lead.countDocuments({ isDeleted: false }),
+
+    Lead.countDocuments({
+      isDeleted: false,
+    }),
   ])
 
   // Leads por método de distribuição
   const distributionMethods = await Lead.aggregate([
-    { $match: { isDeleted: false } },
+    {
+      $match: {
+        isDeleted: false,
+      },
+    },
+
     {
       $group: {
         _id: '$distribution.method',
@@ -778,37 +889,55 @@ export const getDistributionStats = asyncHandler(async (req, res) => {
         assignedTo: { $exists: false },
       },
     },
+
     {
       $group: {
         _id: '$region',
         count: { $sum: 1 },
       },
     },
-    { $sort: { count: -1 } },
+
+    {
+      $sort: {
+        count: -1,
+      },
+    },
   ])
 
   res.json({
     success: true,
+
     data: {
       summary: {
         total,
         pending,
         distributed,
         avgLeadsPerBroker: avgLeads,
+
         pendingPercentage: total > 0 ? Math.round((pending / total) * 100) : 0,
       },
+
       distributionMethods,
+
       queueByRegion,
+
       brokers: brokers.map((broker) => ({
         id: broker._id,
         name: broker.name,
         email: broker.email,
+
         activeLeads: broker.leadCounters?.activeLeads || 0,
+
         totalAssigned: broker.leadCounters?.totalAssigned || 0,
+
         queuePosition: broker.leadCounters?.leadQueuePosition || 0,
+
         lastLeadReceivedAt: broker.leadCounters?.lastLeadReceivedAt || null,
+
         specializedRegions: broker.brokerSettings?.specializedRegions || [],
+
         isActive: broker.brokerSettings?.isActive !== false,
+
         maxActiveLeads: broker.brokerSettings?.maxActiveLeads || 50,
       })),
     },

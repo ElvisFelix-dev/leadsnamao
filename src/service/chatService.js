@@ -60,7 +60,7 @@ export const getUserConversations = async (userId) => {
     participants: userId,
     isActive: true,
   })
-    .populate('participants', 'name email avatar role')
+    .populate('participants', 'name email avatar role position')
     .populate('lastMessageFrom', 'name email avatar')
     .populate('createdBy', 'name email')
     .sort({ lastMessageAt: -1 })
@@ -101,7 +101,7 @@ export const getConversationMessages = async ({
   }
 
   const messages = await Message.find(query)
-    .populate('sender', 'name email avatar role')
+    .populate('sender', 'name email avatar role position')
     .populate({
       path: 'replyTo',
       select: 'content sender',

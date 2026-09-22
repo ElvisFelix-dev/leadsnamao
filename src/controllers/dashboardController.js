@@ -85,9 +85,13 @@ export const getAdminDashboard = async (req, res) => {
     ====================================================
     */
 
-    const leads = await Lead.countDocuments()
+    const leads = await Lead.countDocuments({
+      isDeleted: { $ne: true },
+    })
 
-    const imoveis = await Property.countDocuments()
+    const imoveis = await Property.countDocuments({
+      isDeleted: { $ne: true },
+    })
 
     const usuarios = await User.countDocuments()
 
@@ -102,37 +106,68 @@ export const getAdminDashboard = async (req, res) => {
     */
 
     const pipelineCount = await Lead.countDocuments({
-      status: {
-        $ne: 'perdido',
-      },
+      isDeleted: { $ne: true },
+      status: { $ne: 'perdido' },
     })
 
     const visitas = await Lead.countDocuments({
+      isDeleted: { $ne: true },
       stage: 'visita_agendada',
     })
 
     const propostas = await Lead.countDocuments({
+      isDeleted: { $ne: true },
       stage: 'proposta_enviada',
     })
 
     const fechados = await Lead.countDocuments({
+      isDeleted: { $ne: true },
       stage: 'fechado',
     })
 
     const perdidos = await Lead.countDocuments({
+      isDeleted: { $ne: true },
       status: 'perdido',
     })
 
-    // ✅ ADICIONAR: Leads distribuídos (com corretor atribuído)
-    const leadsDistribuidos = await Lead.countDocuments({
-      assignedTo: { $exists: true, $ne: null },
+    const pendingLeadsDebug = await Lead.find({
       isDeleted: { $ne: true },
     })
+      .select('_id name assignedTo stage status createdAt')
+      .sort({ createdAt: -1 })
+      .limit(20)
 
-    // ✅ ADICIONAR: Leads pendentes (sem corretor atribuído)
-    const leadsPendentes = await Lead.countDocuments({
-      $or: [{ assignedTo: { $exists: false } }, { assignedTo: null }],
+    console.log(
+      '🔎 LEADS DEBUG:',
+      pendingLeadsDebug.map((lead) => ({
+        id: lead._id,
+        name: lead.name,
+        assignedTo: lead.assignedTo,
+        stage: lead.stage,
+        status: lead.status,
+      })),
+    )
+
+    const leadsDistribuidos = await Lead.countDocuments({
       isDeleted: { $ne: true },
+      assignedTo: {
+        $exists: true,
+        $ne: null,
+      },
+    })
+
+    const leadsPendentes = await Lead.countDocuments({
+      isDeleted: { $ne: true },
+      $or: [
+        {
+          assignedTo: {
+            $exists: false,
+          },
+        },
+        {
+          assignedTo: null,
+        },
+      ],
     })
 
     /*
@@ -162,14 +197,14 @@ export const getAdminDashboard = async (req, res) => {
     ====================================================
     */
 
-    const latestLeads = await Lead.find()
+    const latestLeads = await Lead.find({
+      isDeleted: { $ne: true },
+    })
       .sort({
         createdAt: -1,
       })
       .limit(8)
-      .populate('assignedTo', 'name avatar position')
-      .select(
-        `
+      .populate('assignedTo', 'name avatar position').select(`
         name
         email
         phone
@@ -179,8 +214,7 @@ export const getAdminDashboard = async (req, res) => {
         stage
         createdAt
         assignedTo
-      `,
-      )
+      `)
 
     /*
     ====================================================
@@ -191,7 +225,9 @@ export const getAdminDashboard = async (req, res) => {
     const leadsByBroker = await Lead.aggregate([
       {
         $match: {
+          isDeleted: { $ne: true },
           assignedTo: {
+            $exists: true,
             $ne: null,
           },
         },
@@ -200,7 +236,6 @@ export const getAdminDashboard = async (req, res) => {
       {
         $group: {
           _id: '$assignedTo',
-
           total: {
             $sum: 1,
           },
@@ -238,6 +273,7 @@ export const getAdminDashboard = async (req, res) => {
     const pipeline = await Lead.aggregate([
       {
         $match: {
+          isDeleted: { $ne: true },
           stage: {
             $exists: true,
             $ne: null,
@@ -248,7 +284,6 @@ export const getAdminDashboard = async (req, res) => {
       {
         $group: {
           _id: '$stage',
-
           total: {
             $sum: 1,
           },
@@ -268,22 +303,21 @@ export const getAdminDashboard = async (req, res) => {
     ====================================================
     */
 
-    const activities = await Lead.find()
+    const activities = await Lead.find({
+      isDeleted: { $ne: true },
+    })
       .sort({
         updatedAt: -1,
       })
       .limit(10)
-      .populate('assignedTo', 'name avatar position')
-      .select(
-        `
+      .populate('assignedTo', 'name avatar position').select(`
         name
         stage
         status
         updatedAt
         createdAt
         assignedTo
-      `,
-      )
+      `)
 
     /*
     ====================================================
@@ -292,6 +326,16 @@ export const getAdminDashboard = async (req, res) => {
     */
 
     const leadsDaily = await Lead.aggregate([
+      {
+        $match: {
+          isDeleted: { $ne: true },
+          createdAt: {
+            $exists: true,
+            $ne: null,
+          },
+        },
+      },
+
       {
         $group: {
           _id: {
@@ -321,6 +365,16 @@ export const getAdminDashboard = async (req, res) => {
     */
 
     const imoveisDaily = await Property.aggregate([
+      {
+        $match: {
+          isDeleted: { $ne: true },
+          createdAt: {
+            $exists: true,
+            $ne: null,
+          },
+        },
+      },
+
       {
         $group: {
           _id: {
@@ -363,15 +417,10 @@ export const getAdminDashboard = async (req, res) => {
         imoveis,
         usuarios,
         corretores,
-
         pipeline: pipelineCount,
-
         visitas,
-
         propostas,
-
         fechados,
-
         perdidos,
         leadsDistribuidos,
         leadsPendentes,
@@ -398,9 +447,7 @@ export const getAdminDashboard = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-
       message: 'Erro ao buscar dashboard administrativo.',
-
       error: error.message,
     })
   }

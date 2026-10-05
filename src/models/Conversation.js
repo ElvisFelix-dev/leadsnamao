@@ -1,9 +1,7 @@
-// src/models/Conversation.js
 import mongoose from 'mongoose'
 
 const conversationSchema = new mongoose.Schema(
   {
-    // Participantes da conversa
     participants: [
       {
         type: mongoose.Schema.Types.ObjectId,
@@ -18,26 +16,44 @@ const conversationSchema = new mongoose.Schema(
       },
     ],
 
-    // Tipo de conversa
+    // ==========================================================
+    // CANAL DA CONVERSA
+    // ==========================================================
+
+    channel: {
+      type: String,
+      enum: ['internal', 'whatsapp'],
+      default: 'internal',
+      index: true,
+    },
+
+    // ==========================================================
+    // CONTATO EXTERNO DO WHATSAPP
+    // ==========================================================
+
+    whatsappContact: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'WhatsAppContact',
+      default: null,
+      index: true,
+    },
+
     type: {
       type: String,
       enum: ['direct', 'group', 'broker_channel'],
       default: 'direct',
     },
 
-    // Nome do grupo (se for group)
     name: {
       type: String,
       default: '',
     },
 
-    // Avatar do grupo
     avatar: {
       type: String,
       default: '',
     },
 
-    // Última mensagem
     lastMessage: {
       type: String,
       default: '',
@@ -54,32 +70,27 @@ const conversationSchema = new mongoose.Schema(
       default: null,
     },
 
-    // Contagem de mensagens não lidas por participante
     unreadCounts: {
       type: Map,
       of: Number,
       default: {},
     },
 
-    // Status da conversa
     isActive: {
       type: Boolean,
       default: true,
     },
 
-    // Para canais de corretores (todos os corretores podem ver)
     isBrokerChannel: {
       type: Boolean,
       default: false,
     },
 
-    // Criado por
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
     },
 
-    // Metadados
     metadata: {
       type: mongoose.Schema.Types.Mixed,
       default: {},
@@ -90,13 +101,17 @@ const conversationSchema = new mongoose.Schema(
   },
 )
 
-// Índices
 conversationSchema.index({ participants: 1 })
 conversationSchema.index({ participants: 1, updatedAt: -1 })
 conversationSchema.index({ isBrokerChannel: 1 })
 conversationSchema.index({ type: 1 })
 
-// Virtual para ID da conversa
+// Índice para localizar rapidamente conversas WhatsApp
+conversationSchema.index({
+  channel: 1,
+  whatsappContact: 1,
+})
+
 conversationSchema.virtual('conversationId').get(function () {
   return `conv_${this._id.toString().slice(-8)}`
 })

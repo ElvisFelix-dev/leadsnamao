@@ -27,6 +27,7 @@ import commissonRoutes from './routes/commissionRoutes.js'
 import orchestratorRoutes from './routes/orchestratorRoutes.js'
 import webhookRoutes from './routes/webhookRoutes.js'
 import chatRoutes from './routes/chatRoutes.js' // 🔥 CHAT
+import whatsappRoutes from './routes/whatsappRoutes.js'
 
 import './jobs/processLeadQueue.js'
 
@@ -86,7 +87,13 @@ const corsOptions = {
 }
 
 app.use(cors(corsOptions))
-app.use(express.json({ limit: '10mb' }))
+app.use(
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = Buffer.from(buf)
+    },
+  }),
+)
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
 // ============================================
@@ -124,6 +131,7 @@ app.use('/api/opportunities', opportunityRoutes)
 app.use('/api/proposals', proposalRoutes)
 app.use('/api/sales', saleRoutes)
 app.use('/api/calendar', calendarRoutes)
+app.use('/api/whatsapp', whatsappRoutes)
 
 // 🔥 ROTAS DE CONVERSA (JÁ EXISTENTES)
 app.use('/api/conversations', conversationRoutes)

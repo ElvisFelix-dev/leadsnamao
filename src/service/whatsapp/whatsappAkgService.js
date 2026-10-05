@@ -2,6 +2,7 @@ import axios from 'axios'
 import crypto from 'crypto'
 import WhatsAppIntegration from '../../models/WhatsAppIntegration.js'
 import WhatsAppContact from '../../models/WhatsAppContact.js'
+import Conversation from '../../models/Conversation.js'
 import AppError from '../../utils/AppError.js'
 
 const upsertWhatsAppContact = async ({
@@ -44,6 +45,46 @@ const upsertWhatsAppContact = async ({
   )
 
   return contact
+}
+
+const upsertWhatsAppConversation = async ({
+  whatsappContactId,
+  contactName = '',
+}) => {
+  if (!whatsappContactId) {
+    throw new Error('WhatsApp Contact ID é obrigatório para criar a conversa.')
+  }
+
+  let conversation = await Conversation.findOne({
+    channel: 'whatsapp',
+    whatsappContact: whatsappContactId,
+    isActive: true,
+  })
+
+  if (conversation) {
+    return conversation
+  }
+
+  conversation = await Conversation.create({
+    participants: [],
+    channel: 'whatsapp',
+    type: 'direct',
+    name: contactName?.trim() || 'Novo contato WhatsApp',
+    avatar: '',
+    lastMessage: '',
+    lastMessageAt: new Date(),
+    lastMessageFrom: null,
+    unreadCounts: new Map(),
+    isActive: true,
+    isBrokerChannel: false,
+    createdBy: null,
+    whatsappContact: whatsappContactId,
+    metadata: {
+      provider: 'wa-akg',
+    },
+  })
+
+  return conversation
 }
 
 const normalizeBaseUrl = (value) => String(value || '').replace(/\/+$/, '')
@@ -137,7 +178,12 @@ export const sendTextMessage = async ({
 
   const integration = await getIntegrationWithSecrets(integrationId)
   const jid = toJid(phone)
-  const url = `${normalizeBaseUrl(integration.baseUrl)}/api/messages/${encodeURIComponent(integration.sessionId)}/${encodeURIComponent(jid)}/send`
+
+  const url = `${normalizeBaseUrl(
+    integration.baseUrl,
+  )}/api/messages/${encodeURIComponent(
+    integration.sessionId,
+  )}/${encodeURIComponent(jid)}/send`
 
   try {
     const response = await axios.post(
@@ -177,6 +223,7 @@ export const sendTextMessage = async ({
     }
   } catch (error) {
     const status = error.response?.status || null
+
     const providerMessage =
       error.response?.data?.message ||
       error.response?.data?.error ||
@@ -202,7 +249,9 @@ export const sendTextMessage = async ({
     })
 
     throw new AppError(
-      `WA-AKG não conseguiu enviar a mensagem${status ? ` (HTTP ${status})` : ''}: ${providerMessage}`,
+      `WA-AKG não conseguiu enviar a mensagem${
+        status ? ` (HTTP ${status})` : ''
+      }: ${providerMessage}`,
       status && status >= 400 && status < 500 ? status : 502,
     )
   }
@@ -369,6 +418,7 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
   console.log('==========================================')
 
   let contact = null
+  let conversation = null
 
   // ==========================================================
   // MESSAGE RECEIVED
@@ -416,6 +466,27 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
       console.log('Remote JID:', contact.remoteJid)
       console.log('Grupo:', contact.isGroup)
       console.log('==========================================')
+
+      // ======================================================
+      // CONVERSATION WHATSAPP
+      // ======================================================
+
+      conversation = await upsertWhatsAppConversation({
+        whatsappContactId: contact._id,
+        contactName: contact.name,
+      })
+
+      console.log('')
+      console.log('💬 CONVERSA WHATSAPP')
+      console.log('==========================================')
+      console.log('Conversation ID:', conversation._id.toString())
+      console.log('Channel:', conversation.channel)
+      console.log(
+        'Contact ID:',
+        conversation.whatsappContact?.toString() || null,
+      )
+      console.log('Participantes:', conversation.participants.length)
+      console.log('==========================================')
     }
   }
 
@@ -443,6 +514,7 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
     event: payload.event,
     sessionId,
     integrationId: integration._id,
+
     contact: contact
       ? {
           id: contact._id,
@@ -450,6 +522,16 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
           phone: contact.phone,
           remoteJid: contact.remoteJid,
           isGroup: contact.isGroup,
+        }
+      : null,
+
+    conversation: conversation
+      ? {
+          id: conversation._id,
+          channel: conversation.channel,
+          type: conversation.type,
+          whatsappContact: conversation.whatsappContact,
+          participants: conversation.participants,
         }
       : null,
   }

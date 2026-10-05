@@ -68,7 +68,4 @@ const whatsappIntegrationSchema = new mongoose.Schema(
 whatsappIntegrationSchema.index({ provider: 1, sessionId: 1 }, { unique: true })
 whatsappIntegrationSchema.index({ enabled: 1 })
 
-export default mongoose.model(
-  'WhatsAppIntegration',
-  whatsappIntegrationSchema,
-)
+export default mongoose.model('WhatsAppIntegration', whatsappIntegrationSchema)

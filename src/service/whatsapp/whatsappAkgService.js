@@ -1,7 +1,50 @@
 import axios from 'axios'
 import crypto from 'crypto'
 import WhatsAppIntegration from '../../models/WhatsAppIntegration.js'
+import WhatsAppContact from '../../models/WhatsAppContact.js'
 import AppError from '../../utils/AppError.js'
+
+const upsertWhatsAppContact = async ({
+  integrationId,
+  remoteJid,
+  name = '',
+  isGroup = false,
+  metadata = {},
+}) => {
+  if (!integrationId) {
+    throw new Error('Integration ID é obrigatório para criar contato WhatsApp.')
+  }
+
+  if (!remoteJid) {
+    throw new Error('remoteJid é obrigatório para criar contato WhatsApp.')
+  }
+
+  const phone = remoteJid.split('@')[0].replace(/\D/g, '')
+
+  const contact = await WhatsAppContact.findOneAndUpdate(
+    {
+      integration: integrationId,
+      remoteJid,
+    },
+    {
+      $set: {
+        phone,
+        name: name?.trim() || '',
+        isGroup: Boolean(isGroup),
+        lastMessageAt: new Date(),
+        isActive: true,
+        metadata,
+      },
+    },
+    {
+      new: true,
+      upsert: true,
+      setDefaultsOnInsert: true,
+    },
+  )
+
+  return contact
+}
 
 const normalizeBaseUrl = (value) => String(value || '').replace(/\/+$/, '')
 
@@ -305,6 +348,10 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
     )
   }
 
+  // ==========================================================
+  // HMAC
+  // ==========================================================
+
   verifyWebhookSignature({
     rawBody,
     signature,
@@ -321,29 +368,68 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
   console.log('Timestamp:', payload.timestamp)
   console.log('==========================================')
 
-  /*
-   * Neste primeiro estágio NÃO vamos salvar
-   * Conversation ou Message.
-   *
-   * Apenas confirmamos que o webhook chegou
-   * corretamente e foi autenticado.
-   */
+  let contact = null
+
+  // ==========================================================
+  // MESSAGE RECEIVED
+  // ==========================================================
 
   if (payload.event === 'message.received') {
     const data = payload.data || {}
 
+    const remoteJid = data.key?.remoteJid || data.remoteJid || data.from || ''
+
     console.log('📱 Mensagem recebida')
     console.log('From:', data.from)
-    console.log('Remote JID:', data.key?.remoteJid)
+    console.log('Remote JID:', remoteJid)
     console.log('Nome:', data.pushName)
     console.log('Tipo:', data.type)
     console.log('Mensagem:', data.content)
     console.log('Grupo:', data.isGroup)
+
+    // ========================================================
+    // CONTATO WHATSAPP
+    // ========================================================
+
+    if (!remoteJid) {
+      console.warn(
+        '⚠️ Mensagem recebida sem remoteJid. Contato não será persistido.',
+      )
+    } else {
+      contact = await upsertWhatsAppContact({
+        integrationId: integration._id,
+        remoteJid,
+        name: data.pushName || '',
+        isGroup: Boolean(data.isGroup),
+        metadata: {
+          provider: 'wa-akg',
+          chatType: data.chatType || '',
+        },
+      })
+
+      console.log('')
+      console.log('👤 CONTATO WHATSAPP PERSISTIDO')
+      console.log('==========================================')
+      console.log('Contato ID:', contact._id.toString())
+      console.log('Nome:', contact.name)
+      console.log('Telefone:', contact.phone)
+      console.log('Remote JID:', contact.remoteJid)
+      console.log('Grupo:', contact.isGroup)
+      console.log('==========================================')
+    }
   }
+
+  // ==========================================================
+  // MESSAGE SENT
+  // ==========================================================
 
   if (payload.event === 'message.sent') {
     console.log('📤 Mensagem enviada')
   }
+
+  // ==========================================================
+  // CONNECTION UPDATE
+  // ==========================================================
 
   if (payload.event === 'connection.update') {
     console.log('🔌 Atualização da conexão')
@@ -357,6 +443,15 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
     event: payload.event,
     sessionId,
     integrationId: integration._id,
+    contact: contact
+      ? {
+          id: contact._id,
+          name: contact.name,
+          phone: contact.phone,
+          remoteJid: contact.remoteJid,
+          isGroup: contact.isGroup,
+        }
+      : null,
   }
 }
 

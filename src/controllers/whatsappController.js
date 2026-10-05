@@ -85,7 +85,8 @@ export const receiveWebhook = asyncHandler(async (req, res) => {
 })
 
 export const updateWebhookSecret = asyncHandler(async (req, res) => {
-  const { integrationId, webhookSecret } = req.body
+  const { integrationId } = req.params
+  const { webhookSecret } = req.body
 
   const result = await whatsappService.updateWebhookSecret({
     integrationId,

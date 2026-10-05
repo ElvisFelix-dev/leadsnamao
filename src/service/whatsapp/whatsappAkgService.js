@@ -359,3 +359,33 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
     integrationId: integration._id,
   }
 }
+
+export const updateWebhookSecret = async ({ integrationId, webhookSecret }) => {
+  if (!integrationId) {
+    throw new AppError('ID da integração é obrigatório.', 400)
+  }
+
+  if (!webhookSecret?.trim()) {
+    throw new AppError('Webhook secret é obrigatório.', 400)
+  }
+
+  const integration = await WhatsAppIntegration.findById(integrationId)
+
+  if (!integration) {
+    throw new AppError('Integração WhatsApp não encontrada.', 404)
+  }
+
+  integration.webhookSecret = webhookSecret.trim()
+  await integration.save()
+
+  console.log('🔐 Webhook secret atualizado:', {
+    integrationId: integration._id.toString(),
+    sessionId: integration.sessionId,
+  })
+
+  return {
+    integrationId: integration._id,
+    sessionId: integration.sessionId,
+    updated: true,
+  }
+}

@@ -83,3 +83,18 @@ export const receiveWebhook = asyncHandler(async (req, res) => {
     data: result,
   })
 })
+
+export const updateWebhookSecret = asyncHandler(async (req, res) => {
+  const { integrationId, webhookSecret } = req.body
+
+  const result = await whatsappService.updateWebhookSecret({
+    integrationId,
+    webhookSecret,
+  })
+
+  res.status(200).json({
+    success: true,
+    message: 'Webhook secret atualizado com sucesso.',
+    data: result,
+  })
+})

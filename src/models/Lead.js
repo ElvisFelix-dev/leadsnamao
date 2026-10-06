@@ -1,32 +1,16 @@
 import mongoose from 'mongoose'
 
 import { LEAD_STAGE_LIST, LEAD_STAGES } from '../constants/leadStages.js'
-
 import { LEAD_STATUS } from '../constants/leadStatus.js'
-
 import { LEAD_PRIORITY, LEAD_PRIORITY_LIST } from '../constants/leadPriority.js'
-
 import { LEAD_SOURCE_TYPE_LIST } from '../constants/leadSourceType.js'
+
+import { normalizePhone } from '../utils/phone.js'
 
 /*
 |--------------------------------------------------------------------------
-| STAGE HISTORY
+| STAGE TIMELINE
 |--------------------------------------------------------------------------
-|
-| Histórico das movimentações do Pipeline.
-|
-| Mantemos:
-|
-| from
-| to
-| stage
-| changedBy
-| reason
-| changedAt
-|
-| Também mantemos timeline para eventos relacionados
-| àquela etapa.
-|
 */
 
 const stageTimelineSchema = new mongoose.Schema(
@@ -59,15 +43,17 @@ const stageTimelineSchema = new mongoose.Schema(
   },
 )
 
+/*
+|--------------------------------------------------------------------------
+| STAGE HISTORY
+|--------------------------------------------------------------------------
+*/
+
 const stageHistorySchema = new mongoose.Schema(
   {
     /*
      * Etapa anterior.
-     *
-     * Mantemos nullable porque a primeira
-     * movimentação pode não possuir etapa anterior.
      */
-
     from: {
       type: String,
       enum: LEAD_STAGE_LIST,
@@ -77,7 +63,6 @@ const stageHistorySchema = new mongoose.Schema(
     /*
      * Nova etapa.
      */
-
     to: {
       type: String,
       enum: LEAD_STAGE_LIST,
@@ -88,9 +73,8 @@ const stageHistorySchema = new mongoose.Schema(
      * Etapa atual registrada no histórico.
      *
      * Mantida para compatibilidade com
-     * históricos antigos e componentes existentes.
+     * históricos existentes.
      */
-
     stage: {
       type: String,
       enum: LEAD_STAGE_LIST,
@@ -101,7 +85,6 @@ const stageHistorySchema = new mongoose.Schema(
     /*
      * Usuário responsável pela alteração.
      */
-
     changedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -111,7 +94,6 @@ const stageHistorySchema = new mongoose.Schema(
     /*
      * Motivo da alteração.
      */
-
     reason: {
       type: String,
       default: '',
@@ -121,7 +103,6 @@ const stageHistorySchema = new mongoose.Schema(
     /*
      * Eventos ocorridos dentro da etapa.
      */
-
     timeline: {
       type: [stageTimelineSchema],
       default: [],
@@ -137,104 +118,67 @@ const stageHistorySchema = new mongoose.Schema(
   },
 )
 
-/* ============================================================
-   DISTRIBUIÇÃO SCHEMA
-============================================================ */
+/*
+|--------------------------------------------------------------------------
+| DISTRIBUTION
+|--------------------------------------------------------------------------
+|
+| Guarda informações da distribuição automática/manual do Lead.
+|
+*/
 
-/**
- * Schema para rastrear a distribuição automática de leads
- */
 const distributionSchema = new mongoose.Schema(
   {
-    // Método de distribuição utilizado
-    method: {
-      type: String,
-      enum: [
-        'admin',
-        'automatic',
-        'broker',
-        'manual',
-        'round_robin',
-        'specialized',
-      ],
-      default: 'manual',
-    },
-
-    // Região do lead para distribuição especializada
-    region: {
-      type: String,
-      default: '',
-    },
-
-    // Tipo de imóvel do lead
-    propertyType: {
-      type: String,
-      default: '',
-    },
-
-    // Status da distribuição
-    status: {
-      type: String,
-      enum: ['pending', 'processing', 'success', 'failed', 'queue'],
-      default: 'pending',
-    },
-
-    // Número de tentativas de distribuição
+    /*
+     * Quantidade de tentativas de distribuição.
+     */
     attempts: {
       type: Number,
       default: 0,
       min: 0,
     },
 
-    // Última tentativa de distribuição
+    /*
+     * Última tentativa de distribuição.
+     */
     lastAttemptAt: {
       type: Date,
       default: null,
     },
 
-    // Mensagem de erro da última tentativa
-    errorMessage: {
-      type: String,
-      default: '',
-    },
-
-    // Se foi distribuído automaticamente
-    isAutoDistributed: {
-      type: Boolean,
-      default: false,
-    },
-
-    // Data da distribuição
-    distributedAt: {
-      type: Date,
-      default: null,
-    },
-
-    // Prioridade na fila de distribuição
-    queuePriority: {
-      type: Number,
-      default: 0,
-    },
-
-    // Score de match com o corretor
-    matchScore: {
-      type: Number,
-      default: 0,
-      min: 0,
-      max: 100,
-    },
-
-    // Motivo da distribuição
-    reason: {
+    /*
+     * Motivo pelo qual o Lead foi colocado na fila.
+     */
+    queueReason: {
       type: String,
       default: '',
       trim: true,
     },
 
-    // Metadados adicionais
-    metadata: {
-      type: mongoose.Schema.Types.Mixed,
-      default: {},
+    /*
+     * Região utilizada para distribuição.
+     */
+    region: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+
+    /*
+     * Prioridade calculada para distribuição.
+     */
+    priority: {
+      type: Number,
+      default: 0,
+    },
+
+    /*
+     * Último resultado da tentativa.
+     */
+    lastResult: {
+      type: String,
+      default: '',
+      trim: true,
     },
   },
   {
@@ -242,9 +186,11 @@ const distributionSchema = new mongoose.Schema(
   },
 )
 
-/* ============================================================
-   ASSIGNMENT HISTORY SCHEMA (ATUALIZADO)
-============================================================ */
+/*
+|--------------------------------------------------------------------------
+| ASSIGNMENT HISTORY
+|--------------------------------------------------------------------------
+*/
 
 const assignmentHistorySchema = new mongoose.Schema(
   {
@@ -262,14 +208,7 @@ const assignmentHistorySchema = new mongoose.Schema(
 
     type: {
       type: String,
-      enum: [
-        'admin',
-        'automatic',
-        'broker',
-        'manual',
-        'round_robin',
-        'specialized',
-      ],
+      enum: ['admin', 'automatic', 'broker', 'manual'],
       default: 'admin',
     },
 
@@ -279,53 +218,10 @@ const assignmentHistorySchema = new mongoose.Schema(
       default: null,
     },
 
-    // 🔥 NOVOS CAMPOS PARA HISTÓRICO DE DISTRIBUIÇÃO
-    distributionMethod: {
-      type: String,
-      enum: [
-        'admin',
-        'automatic',
-        'broker',
-        'manual',
-        'round_robin',
-        'specialized',
-      ],
-      default: 'manual',
-    },
-
-    region: {
-      type: String,
-      default: '',
-    },
-
-    propertyType: {
-      type: String,
-      default: '',
-    },
-
-    matchScore: {
-      type: Number,
-      default: 0,
-      min: 0,
-      max: 100,
-    },
-
     reason: {
       type: String,
       default: '',
       trim: true,
-    },
-
-    // Se foi distribuído automaticamente
-    isAuto: {
-      type: Boolean,
-      default: false,
-    },
-
-    // Metadados da distribuição
-    metadata: {
-      type: mongoose.Schema.Types.Mixed,
-      default: {},
     },
 
     createdAt: {
@@ -356,6 +252,7 @@ const leadSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
+      maxlength: 120,
     },
 
     email: {
@@ -363,12 +260,48 @@ const leadSchema = new mongoose.Schema(
       required: true,
       lowercase: true,
       trim: true,
+      maxlength: 160,
     },
 
     phone: {
       type: String,
       required: true,
       trim: true,
+      maxlength: 30,
+    },
+
+    /*
+     * Telefone normalizado.
+     *
+     * Exemplo:
+     *
+     * phone:
+     * "(11) 99999-9999"
+     *
+     * phoneNormalized:
+     * "5511999999999"
+     *
+     * Será utilizado principalmente para:
+     *
+     * WhatsApp -> Lead
+     */
+    phoneNormalized: {
+      type: String,
+      default: '',
+      trim: true,
+      index: true,
+    },
+
+    /*
+     * Soft delete.
+     *
+     * Importante porque vários serviços do CRM
+     * já utilizam isDeleted nas consultas.
+     */
+    isDeleted: {
+      type: Boolean,
+      default: false,
+      index: true,
     },
 
     /*
@@ -379,7 +312,6 @@ const leadSchema = new mongoose.Schema(
 
     source: {
       type: String,
-
       enum: [
         'manual',
         'public',
@@ -392,107 +324,51 @@ const leadSchema = new mongoose.Schema(
         'portal',
         'referral',
       ],
-
       default: 'manual',
-
       index: true,
     },
-
-    /*
-    |--------------------------------------------------------------------------
-    | TIPO DA ORIGEM
-    |--------------------------------------------------------------------------
-    */
 
     sourceType: {
       type: String,
-
       enum: LEAD_SOURCE_TYPE_LIST,
-
       default: 'manual',
-
       required: true,
-
       index: true,
     },
 
     /*
-    |--------------------------------------------------------------------------
-    | CORRETOR DA ORIGEM
-    |--------------------------------------------------------------------------
-    |
-    | Não necessariamente é o corretor responsável atual.
-    |
-    | Ex:
-    |
-    | sourceBroker = Joe
-    | assignedTo   = Maria
-    |
-    */
-
+     * Corretor relacionado à origem do Lead.
+     *
+     * Não necessariamente é o corretor responsável atual.
+     */
     sourceBroker: {
       type: mongoose.Schema.Types.ObjectId,
-
       ref: 'User',
-
       default: null,
-
       index: true,
     },
-
-    /*
-    |--------------------------------------------------------------------------
-    | SITE DE ORIGEM
-    |--------------------------------------------------------------------------
-    */
 
     sourceSite: {
       type: String,
-
       default: '',
-
       trim: true,
     },
-
-    /*
-    |--------------------------------------------------------------------------
-    | URL DE ORIGEM
-    |--------------------------------------------------------------------------
-    */
 
     sourceUrl: {
       type: String,
-
       default: '',
-
       trim: true,
     },
-
-    /*
-    |--------------------------------------------------------------------------
-    | LANDING PAGE
-    |--------------------------------------------------------------------------
-    */
 
     landingPage: {
       type: String,
-
       default: '',
-
       trim: true,
     },
 
-    /*
-    |--------------------------------------------------------------------------
-    | REFERRER
-    |--------------------------------------------------------------------------
-    */
-
     referrer: {
       type: String,
-
       default: '',
-
       trim: true,
     },
 
@@ -536,46 +412,40 @@ const leadSchema = new mongoose.Schema(
 
     /*
     |--------------------------------------------------------------------------
-    | REGIÃO 🔥 ATUALIZADO
+    | REGIÃO
     |--------------------------------------------------------------------------
     */
 
     region: {
       type: String,
-
       enum: [
         'central',
-        'zona_oeste',
-        'zona_leste',
-        'zona_sul',
-        'zona_norte',
+        'zona oeste',
+        'zona leste',
+        'zona sul',
+        'zona norte',
         'abc',
         'grande_sp',
         'interior',
         'litoral',
       ],
-
-      default: 'central',
-
+      required: true,
       index: true,
     },
 
     /*
     |--------------------------------------------------------------------------
-    | STATUS GERAL
+    | STATUS
     |--------------------------------------------------------------------------
     */
 
     status: {
       type: String,
       enum: [
-        LEAD_STATUS.NEW, // 'novo'
-        LEAD_STATUS.IN_PROGRESS, // 'em_andamento'
-        LEAD_STATUS.CONVERTED, // 'convertido'
-        LEAD_STATUS.LOST, // 'perdido'
-        LEAD_STATUS.CONTACTED, // 'contatado'
-        LEAD_STATUS.NEGOTIATION, // 'em_negociacao'
-        LEAD_STATUS.ARCHIVED, // 'arquivado'
+        LEAD_STATUS.NEW,
+        LEAD_STATUS.IN_PROGRESS,
+        LEAD_STATUS.CONVERTED,
+        LEAD_STATUS.LOST,
       ],
       default: LEAD_STATUS.NEW,
       index: true,
@@ -589,17 +459,13 @@ const leadSchema = new mongoose.Schema(
 
     stage: {
       type: String,
-
       enum: LEAD_STAGE_LIST,
-
       default: LEAD_STAGES.NEW,
-
       index: true,
     },
 
     stageHistory: {
       type: [stageHistorySchema],
-
       default: [],
     },
 
@@ -611,11 +477,8 @@ const leadSchema = new mongoose.Schema(
 
     priority: {
       type: String,
-
       enum: LEAD_PRIORITY_LIST,
-
       default: LEAD_PRIORITY.MEDIUM,
-
       index: true,
     },
 
@@ -627,9 +490,7 @@ const leadSchema = new mongoose.Schema(
 
     score: {
       type: Number,
-
       default: 0,
-
       min: 0,
     },
 
@@ -641,7 +502,6 @@ const leadSchema = new mongoose.Schema(
 
     lastContactAt: {
       type: Date,
-
       default: null,
     },
 
@@ -653,29 +513,20 @@ const leadSchema = new mongoose.Schema(
 
     notes: {
       type: String,
-
       default: '',
-
       trim: true,
     },
 
     /*
     |--------------------------------------------------------------------------
-    | HISTÓRICO DE CONTATOS / ATIVIDADES
+    | HISTÓRICO DE CONTATOS
     |--------------------------------------------------------------------------
-    |
-    | Incluímos "proposal".
-    |
-    | Isso é importante porque o proposalService
-    | registra as propostas dentro do histórico do Lead.
-    |
     */
 
     contactHistory: [
       {
         type: {
           type: String,
-
           enum: [
             'call',
             'whatsapp',
@@ -685,92 +536,46 @@ const leadSchema = new mongoose.Schema(
             'note',
             'proposal',
           ],
-
           required: true,
         },
-
-        /*
-         * Ação específica.
-         *
-         * Exemplos:
-         *
-         * created
-         * submitted
-         * approved
-         * rejected
-         * cancelled
-         * updated
-         */
 
         action: {
           type: String,
-
           default: '',
-
           trim: true,
         },
-
-        /*
-         * Descrição exibida na timeline.
-         */
 
         description: {
           type: String,
-
           required: true,
-
           trim: true,
         },
 
-        /*
-         * Referência da proposta.
-         */
-
         proposal: {
           type: mongoose.Schema.Types.ObjectId,
-
           ref: 'Proposal',
-
           default: null,
         },
-
-        /*
-         * Referência opcional ao imóvel.
-         */
 
         property: {
           type: mongoose.Schema.Types.ObjectId,
-
           ref: 'Property',
-
           default: null,
         },
 
-        /*
-         * Dados adicionais do evento.
-         */
-
         metadata: {
           type: mongoose.Schema.Types.Mixed,
-
           default: {},
         },
 
-        /*
-         * Usuário que criou o evento.
-         */
-
         createdBy: {
           type: mongoose.Schema.Types.ObjectId,
-
           ref: 'User',
-
           default: null,
         },
 
         createdAt: {
           type: Date,
-
           default: Date.now,
         },
       },
@@ -778,17 +583,14 @@ const leadSchema = new mongoose.Schema(
 
     /*
     |--------------------------------------------------------------------------
-    | IMÓVEL PRINCIPAL DO LEAD
+    | IMÓVEL
     |--------------------------------------------------------------------------
     */
 
     property: {
       type: mongoose.Schema.Types.ObjectId,
-
       ref: 'Property',
-
       default: null,
-
       index: true,
     },
 
@@ -800,11 +602,8 @@ const leadSchema = new mongoose.Schema(
 
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
-
       ref: 'User',
-
       default: null,
-
       index: true,
     },
 
@@ -816,73 +615,39 @@ const leadSchema = new mongoose.Schema(
 
     assignedTo: {
       type: mongoose.Schema.Types.ObjectId,
-
       ref: 'User',
-
       default: null,
-
       index: true,
     },
 
     /*
     |--------------------------------------------------------------------------
-    | DISTRIBUIÇÃO 🔥 NOVO
-    |--------------------------------------------------------------------------
-    */
-
-    distribution: {
-      type: distributionSchema,
-      default: () => ({}),
-    },
-
-    /*
-    |--------------------------------------------------------------------------
-    | CAMPOS DE DISTRIBUIÇÃO (LEGADO - MANTIDOS PARA COMPATIBILIDADE)
+    | DISTRIBUIÇÃO
     |--------------------------------------------------------------------------
     */
 
     awaitingAssignment: {
       type: Boolean,
-
       default: false,
-
       index: true,
     },
 
     assignmentType: {
       type: String,
-
-      enum: [
-        'admin',
-        'automatic',
-        'broker',
-        'manual',
-        'round_robin',
-        'specialized',
-      ],
-
+      enum: ['admin', 'automatic', 'broker', 'manual'],
       default: 'manual',
     },
 
     assignedAt: {
       type: Date,
-
       default: null,
     },
 
     assignedBy: {
       type: mongoose.Schema.Types.ObjectId,
-
       ref: 'User',
-
       default: null,
     },
-
-    /*
-    |--------------------------------------------------------------------------
-    | HISTÓRICO DE DISTRIBUIÇÃO 🔥 ATUALIZADO
-    |--------------------------------------------------------------------------
-    */
 
     assignmentHistory: {
       type: [assignmentHistorySchema],
@@ -890,127 +655,8 @@ const leadSchema = new mongoose.Schema(
     },
 
     /*
-    |--------------------------------------------------------------------------
-    | DADOS DE CAPTAÇÃO
-    |--------------------------------------------------------------------------
-    */
-
-    sessionId: {
-      type: String,
-
-      default: '',
-
-      trim: true,
-
-      index: true,
-    },
-
-    visitorId: {
-      type: String,
-
-      default: '',
-
-      trim: true,
-
-      index: true,
-    },
-
-    /*
-    |--------------------------------------------------------------------------
-    | DATAS COMERCIAIS
-    |--------------------------------------------------------------------------
-    */
-
-    visitDate: {
-      type: Date,
-
-      default: null,
-    },
-
-    proposalDate: {
-      type: Date,
-
-      default: null,
-    },
-
-    closeDate: {
-      type: Date,
-
-      default: null,
-    },
-
-    /*
-    |--------------------------------------------------------------------------
-    | PROPOSTA
-    |--------------------------------------------------------------------------
-    |
-    | Mantemos esses campos no Lead como resumo da negociação.
-    |
-    */
-
-    proposalValue: {
-      type: Number,
-
-      default: 0,
-
-      min: 0,
-    },
-
-    /*
-    |--------------------------------------------------------------------------
-    | PERDA
-    |--------------------------------------------------------------------------
-    */
-
-    lostReason: {
-      type: String,
-
-      enum: [
-        'preco',
-        'desistiu',
-        'sem_financiamento',
-        'comprou_com_concorrente',
-        'sem_retorno',
-        'outro',
-      ],
-
-      default: undefined,
-    },
-
-    lostReasonDescription: {
-      type: String,
-
-      default: '',
-
-      trim: true,
-    },
-
-    /*
-    |--------------------------------------------------------------------------
-    | PRÓXIMA AÇÃO
-    |--------------------------------------------------------------------------
-    */
-
-    nextAction: {
-      type: String,
-
-      default: '',
-
-      trim: true,
-    },
-
-    nextActionDate: {
-      type: Date,
-
-      default: null,
-    },
-
-    /*
-    |--------------------------------------------------------------------------
-    | INDICADOR DE DISTRIBUIÇÃO 🔥 NOVO
-    |--------------------------------------------------------------------------
-    */
-
+     * Controle geral da distribuição.
+     */
     isDistributed: {
       type: Boolean,
       default: false,
@@ -1022,19 +668,115 @@ const leadSchema = new mongoose.Schema(
       default: null,
     },
 
-    /*
-    |--------------------------------------------------------------------------
-    | INDICADOR DE DISTRIBUIÇÃO AUTOMÁTICA 🔥 NOVO
-    |--------------------------------------------------------------------------
-    */
-
     isAutoDistributed: {
       type: Boolean,
       default: false,
       index: true,
     },
-  },
 
+    /*
+     * Dados auxiliares da distribuição automática.
+     */
+    distribution: {
+      type: distributionSchema,
+      default: () => ({}),
+    },
+
+    /*
+    |--------------------------------------------------------------------------
+    | CAPTAÇÃO
+    |--------------------------------------------------------------------------
+    */
+
+    sessionId: {
+      type: String,
+      default: '',
+      trim: true,
+      index: true,
+    },
+
+    visitorId: {
+      type: String,
+      default: '',
+      trim: true,
+      index: true,
+    },
+
+    /*
+    |--------------------------------------------------------------------------
+    | DATAS COMERCIAIS
+    |--------------------------------------------------------------------------
+    */
+
+    visitDate: {
+      type: Date,
+      default: null,
+    },
+
+    proposalDate: {
+      type: Date,
+      default: null,
+    },
+
+    closeDate: {
+      type: Date,
+      default: null,
+    },
+
+    /*
+    |--------------------------------------------------------------------------
+    | PROPOSTA
+    |--------------------------------------------------------------------------
+    */
+
+    proposalValue: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    /*
+    |--------------------------------------------------------------------------
+    | PERDA
+    |--------------------------------------------------------------------------
+    */
+
+    lostReason: {
+      type: String,
+      enum: [
+        'preco',
+        'desistiu',
+        'sem_financiamento',
+        'comprou_com_concorrente',
+        'sem_retorno',
+        'outro',
+      ],
+      default: undefined,
+    },
+
+    lostReasonDescription: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+
+    /*
+    |--------------------------------------------------------------------------
+    | PRÓXIMA AÇÃO
+    |--------------------------------------------------------------------------
+    */
+
+    nextAction: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+
+    nextActionDate: {
+      type: Date,
+      default: null,
+    },
+  },
   {
     timestamps: true,
   },
@@ -1042,9 +784,23 @@ const leadSchema = new mongoose.Schema(
 
 /*
 |--------------------------------------------------------------------------
-| ÍNDICES 🔥 ATUALIZADOS
+| ÍNDICES
 |--------------------------------------------------------------------------
 */
+
+/*
+ * Telefone normalizado.
+ *
+ * Esse é o índice mais importante para a integração
+ * WhatsApp -> Lead.
+ */
+leadSchema.index({
+  phoneNormalized: 1,
+})
+
+leadSchema.index({
+  isDeleted: 1,
+})
 
 leadSchema.index({
   assignedTo: 1,
@@ -1129,7 +885,35 @@ leadSchema.index({
 
 /*
 |--------------------------------------------------------------------------
-| ÍNDICES ÚTEIS PARA O HISTÓRICO
+| ÍNDICES DE DISTRIBUIÇÃO
+|--------------------------------------------------------------------------
+*/
+
+leadSchema.index({
+  isDistributed: 1,
+  assignedTo: 1,
+  isDeleted: 1,
+})
+
+leadSchema.index({
+  assignedTo: 1,
+  isDistributed: 1,
+  status: 1,
+})
+
+leadSchema.index({
+  awaitingAssignment: 1,
+  region: 1,
+})
+
+leadSchema.index({
+  awaitingAssignment: 1,
+  isAutoDistributed: 1,
+})
+
+/*
+|--------------------------------------------------------------------------
+| ÍNDICES DE HISTÓRICO
 |--------------------------------------------------------------------------
 */
 
@@ -1147,223 +931,184 @@ leadSchema.index({
 
 /*
 |--------------------------------------------------------------------------
-| ÍNDICES PARA DISTRIBUIÇÃO 🔥 NOVOS
+| VIRTUALS
 |--------------------------------------------------------------------------
 */
-
-// Índice para buscar leads não distribuídos
-leadSchema.index({
-  isDistributed: 1,
-  assignedTo: 1,
-  isDeleted: 1,
-})
-
-// Índice para fila de distribuição
-leadSchema.index({
-  'distribution.status': 1,
-  'distribution.attempts': 1,
-  createdAt: 1,
-})
-
-// Índice para distribuição por região
-leadSchema.index({
-  region: 1,
-  isDistributed: 1,
-  'distribution.status': 1,
-})
-
-// Índice para distribuição automática
-leadSchema.index({
-  isAutoDistributed: 1,
-  isDistributed: 1,
-  'distribution.attempts': 1,
-})
-
-// Índice composto para estatísticas
-leadSchema.index({
-  assignedTo: 1,
-  isDistributed: 1,
-  status: 1,
-})
-
-/*
-|--------------------------------------------------------------------------
-| VIRTUALS 🔥 CORRIGIDOS - REMOVIDO O DUPLICADO
-|--------------------------------------------------------------------------
-*/
-
-/*
- * Lead possui corretor responsável?
- */
 
 leadSchema.virtual('isAssigned').get(function () {
   return !!this.assignedTo
 })
 
-/*
- * Lead aguarda distribuição?
- */
-
 leadSchema.virtual('isAwaitingAssignment').get(function () {
-  return (
-    this.awaitingAssignment === true || this.distribution?.status === 'pending'
-  )
+  return this.awaitingAssignment === true
 })
-
-/*
- * 🔥 VIRTUAL RENOMEADO PARA EVITAR CONFLITO
- * Lead foi distribuído automaticamente?
- */
 
 leadSchema.virtual('wasAutoDistributed').get(function () {
-  return (
-    this.isAutoDistributed === true ||
-    this.distribution?.isAutoDistributed === true
-  )
+  return this.isAutoDistributed === true
 })
-
-/*
- * Lead veio do hotsite de corretor?
- */
 
 leadSchema.virtual('isBrokerLead').get(function () {
   return this.sourceType === 'broker_hotsite'
 })
 
-/*
- * Lead veio do site da imobiliária?
- */
-
 leadSchema.virtual('isCompanyLead').get(function () {
   return this.sourceType === 'site'
 })
-
-/*
- * Lead veio de página de imóvel?
- */
 
 leadSchema.virtual('isPropertyLead').get(function () {
   return this.sourceType === 'property_page'
 })
 
-/*
- * Método de distribuição do lead
- */
-
 leadSchema.virtual('distributionMethod').get(function () {
-  return this.distribution?.method || this.assignmentType || 'manual'
+  if (this.isAutoDistributed) {
+    return 'automatic'
+  }
+
+  if (this.assignedTo && this.assignmentType === 'admin') {
+    return 'admin'
+  }
+
+  if (this.assignedTo && this.assignmentType === 'broker') {
+    return 'broker'
+  }
+
+  if (this.assignedTo) {
+    return 'manual'
+  }
+
+  return null
 })
 
-/*
- * Score de match do lead
- */
-
 leadSchema.virtual('matchScore').get(function () {
-  return this.distribution?.matchScore || 0
+  return this.distribution?.priority || 0
 })
 
 /*
 |--------------------------------------------------------------------------
-| MÉTODOS 🔥 NOVOS
+| METHODS
 |--------------------------------------------------------------------------
 */
 
-/**
- * Marca o lead como distribuído
+/*
+ * Marca Lead como distribuído.
+ *
+ * IMPORTANTE:
+ * Capturamos o corretor anterior ANTES de alterar
+ * assignedTo para preservar corretamente o histórico.
  */
-leadSchema.methods.markAsDistributed = function (brokerId, method, userId) {
-  const now = new Date()
+leadSchema.methods.markAsDistributed = function ({
+  brokerId,
+  type = 'automatic',
+  changedBy = null,
+  reason = '',
+} = {}) {
+  if (!brokerId) {
+    throw new Error('Broker é obrigatório para distribuir o Lead.')
+  }
 
-  // Atualizar campos principais
+  const previousBrokerId = this.assignedTo || null
+
   this.assignedTo = brokerId
-  this.assignedAt = now
-  this.assignedBy = userId || null
-  this.isDistributed = true
-  this.distributedAt = now
+
+  this.assignedAt = new Date()
+
+  this.assignmentType = type
+
+  this.assignedBy = changedBy || null
+
   this.awaitingAssignment = false
 
-  // Atualizar objeto distribution
-  if (!this.distribution) {
-    this.distribution = {}
-  }
-  this.distribution.method = method || 'manual'
-  this.distribution.status = 'success'
-  this.distribution.isAutoDistributed =
-    method === 'automatic' ||
-    method === 'round_robin' ||
-    method === 'specialized'
-  this.distribution.distributedAt = now
+  this.isDistributed = true
 
-  // Adicionar ao histórico de distribuição
+  this.distributedAt = new Date()
+
+  this.isAutoDistributed = type === 'automatic'
+
   this.assignmentHistory.push({
-    from: this.assignedTo,
+    from: previousBrokerId,
     to: brokerId,
-    type: method || 'manual',
-    changedBy: userId || null,
-    distributionMethod: method || 'manual',
-    isAuto:
-      method === 'automatic' ||
-      method === 'round_robin' ||
-      method === 'specialized',
-    region: this.region,
-    propertyType: this.property?.type || '',
-    matchScore: this.distribution?.matchScore || 0,
-    createdAt: now,
+    type,
+    changedBy: changedBy || null,
+    reason,
+    createdAt: new Date(),
   })
 
   return this
 }
 
-/**
- * Marca o lead como em fila de espera
+/*
+ * Coloca Lead na fila de distribuição.
  */
-leadSchema.methods.markAsQueued = function (reason) {
-  if (!this.distribution) {
-    this.distribution = {}
-  }
+leadSchema.methods.markAsQueued = function ({
+  reason = '',
+  region = '',
+  priority = 0,
+} = {}) {
+  this.assignedTo = null
+
+  this.assignedAt = null
+
+  this.assignedBy = null
+
+  this.assignmentType = 'manual'
 
   this.awaitingAssignment = true
+
   this.isDistributed = false
-  this.distribution.status = 'queue'
-  this.distribution.reason = reason || 'Aguardando distribuição'
-  this.distribution.attempts = (this.distribution.attempts || 0) + 1
-  this.distribution.lastAttemptAt = new Date()
+
+  this.distributedAt = null
+
+  this.isAutoDistributed = false
+
+  this.distribution = {
+    ...(this.distribution?.toObject?.() || this.distribution || {}),
+    queueReason: reason,
+    region,
+    priority,
+    lastResult: 'queued',
+  }
 
   return this
 }
 
-/**
- * Registra uma tentativa de distribuição
+/*
+ * Registra uma tentativa de distribuição.
  */
-leadSchema.methods.recordDistributionAttempt = function () {
+leadSchema.methods.recordDistributionAttempt = function ({
+  result = '',
+  reason = '',
+} = {}) {
   if (!this.distribution) {
     this.distribution = {}
   }
 
   this.distribution.attempts = (this.distribution.attempts || 0) + 1
+
   this.distribution.lastAttemptAt = new Date()
+
+  this.distribution.lastResult = result
+
+  if (reason) {
+    this.distribution.queueReason = reason
+  }
 
   return this
 }
 
-/**
- * Verifica se o lead pode ser distribuído
+/*
+ * Verifica se o Lead pode ser distribuído.
  */
 leadSchema.methods.canBeDistributed = function () {
-  // Já distribuído
-  if (this.isDistributed && this.assignedTo) {
+  if (this.isDeleted) {
     return false
   }
 
-  // Limite de tentativas
-  const maxAttempts = 5
-  if ((this.distribution?.attempts || 0) >= maxAttempts) {
+  if (this.assignedTo) {
     return false
   }
 
-  // Lead vendido/perdido não deve ser distribuído
-  if (this.status === 'convertido' || this.status === 'perdido') {
-    return false
+  if (this.awaitingAssignment === false) {
+    return true
   }
 
   return true
@@ -1371,92 +1116,203 @@ leadSchema.methods.canBeDistributed = function () {
 
 /*
 |--------------------------------------------------------------------------
-| STATIC METHODS 🔥 NOVOS
+| STATICS
 |--------------------------------------------------------------------------
 */
 
-/**
- * Busca leads pendentes de distribuição
+/*
+ * Busca Lead pelo telefone normalizado.
+ *
+ * Essa função será usada pelo webhook do WhatsApp.
+ *
+ * Exemplo:
+ *
+ * 5511999999999
+ *
+ * IMPORTANTE:
+ * Leads excluídos não entram nessa busca.
  */
-leadSchema.statics.findPendingDistribution = function (options = {}) {
-  const { limit = 50, region, priority } = options
+leadSchema.statics.findByNormalizedPhone = function (phone) {
+  const normalizedPhone = normalizePhone(phone)
 
+  if (!normalizedPhone) {
+    return null
+  }
+
+  return this.findOne({
+    phoneNormalized: normalizedPhone,
+    isDeleted: {
+      $ne: true,
+    },
+  })
+}
+
+/*
+ * Busca Leads pendentes de distribuição.
+ */
+leadSchema.statics.findPendingDistribution = function ({
+  region = null,
+  limit = 50,
+} = {}) {
   const query = {
-    isDistributed: false,
-    assignedTo: { $exists: false },
-    isDeleted: { $ne: true },
-    status: { $nin: ['convertido', 'perdido', 'arquivado'] },
+    isDeleted: {
+      $ne: true,
+    },
+
+    awaitingAssignment: true,
+
+    $or: [
+      {
+        assignedTo: {
+          $exists: false,
+        },
+      },
+      {
+        assignedTo: null,
+      },
+    ],
   }
 
   if (region) {
     query.region = region
   }
 
-  if (priority) {
-    query.priority = priority
+  return this.find(query)
+    .sort({
+      priority: -1,
+      createdAt: 1,
+    })
+    .limit(limit)
+}
+
+/*
+ * Busca Leads que podem ser redistribuídos.
+ */
+leadSchema.statics.findForReassignment = function ({ limit = 50 } = {}) {
+  return this.find({
+    isDeleted: {
+      $ne: true,
+    },
+
+    $or: [
+      {
+        assignedTo: null,
+      },
+      {
+        assignedTo: {
+          $exists: false,
+        },
+      },
+    ],
+  })
+    .sort({
+      priority: -1,
+      createdAt: 1,
+    })
+    .limit(limit)
+}
+
+/*
+ * Estatísticas da distribuição.
+ */
+leadSchema.statics.getDistributionStats = async function () {
+  const [total, distributed, pending, automatic, manual] = await Promise.all([
+    this.countDocuments({
+      isDeleted: {
+        $ne: true,
+      },
+    }),
+
+    this.countDocuments({
+      isDeleted: {
+        $ne: true,
+      },
+
+      isDistributed: true,
+    }),
+
+    this.countDocuments({
+      isDeleted: {
+        $ne: true,
+      },
+
+      awaitingAssignment: true,
+    }),
+
+    this.countDocuments({
+      isDeleted: {
+        $ne: true,
+      },
+
+      isAutoDistributed: true,
+    }),
+
+    this.countDocuments({
+      isDeleted: {
+        $ne: true,
+      },
+
+      isDistributed: true,
+
+      isAutoDistributed: false,
+    }),
+  ])
+
+  return {
+    total,
+    distributed,
+    pending,
+    automatic,
+    manual,
+  }
+}
+
+/*
+|--------------------------------------------------------------------------
+| MIDDLEWARE
+|--------------------------------------------------------------------------
+*/
+
+/*
+ * Normaliza o telefone antes de salvar.
+ *
+ * Isso garante que:
+ *
+ * phone:
+ * "(11) 99999-9999"
+ *
+ * vire:
+ *
+ * phoneNormalized:
+ * "5511999999999"
+ *
+ * O campo phone original continua preservado
+ * para exibição no CRM.
+ */
+leadSchema.pre('save', function (next) {
+  if (this.isModified('phone') || !this.phoneNormalized) {
+    this.phoneNormalized = normalizePhone(this.phone)
   }
 
-  return this.find(query).sort({ priority: -1, createdAt: 1 }).limit(limit)
-}
+  /*
+   * Mantém os flags de distribuição coerentes.
+   */
+  if (this.assignedTo) {
+    this.isDistributed = true
 
-/**
- * Busca leads para reatribuição (antigos)
- */
-leadSchema.statics.findForReassignment = function (hours = 24) {
-  const cutoff = new Date()
-  cutoff.setHours(cutoff.getHours() - hours)
+    if (!this.distributedAt) {
+      this.distributedAt = new Date()
+    }
 
-  return this.find({
-    isDistributed: false,
-    assignedTo: { $exists: false },
-    isDeleted: { $ne: true },
-    createdAt: { $lt: cutoff },
-    'distribution.attempts': { $lt: 5 },
-  }).sort({ createdAt: 1 })
-}
+    this.awaitingAssignment = false
+  }
 
-/**
- * Estatísticas de distribuição por corretor
- */
-leadSchema.statics.getDistributionStats = async function (brokerId) {
-  const pipeline = [
-    {
-      $match: {
-        assignedTo: brokerId,
-        isDeleted: { $ne: true },
-      },
-    },
-    {
-      $group: {
-        _id: null,
-        total: { $sum: 1 },
-        converted: {
-          $sum: { $cond: [{ $eq: ['$status', 'convertido'] }, 1, 0] },
-        },
-        lost: {
-          $sum: { $cond: [{ $eq: ['$status', 'perdido'] }, 1, 0] },
-        },
-        active: {
-          $sum: {
-            $cond: [
-              {
-                $in: [
-                  '$status',
-                  ['novo', 'em_andamento', 'contatado', 'em_negociacao'],
-                ],
-              },
-              1,
-              0,
-            ],
-          },
-        },
-      },
-    },
-  ]
+  if (!this.assignedTo && this.awaitingAssignment) {
+    this.isDistributed = false
+  }
 
-  const result = await this.aggregate(pipeline)
-  return result[0] || { total: 0, converted: 0, lost: 0, active: 0 }
-}
+  next()
+})
 
 /*
 |--------------------------------------------------------------------------
@@ -1466,55 +1322,12 @@ leadSchema.statics.getDistributionStats = async function (brokerId) {
 
 leadSchema.set('toJSON', {
   virtuals: true,
-
   versionKey: false,
-
-  transform(doc, ret) {
-    // 🔥 INCLUIR CAMPOS DE DISTRIBUIÇÃO NO RETORNO
-    ret.isAssigned = doc.isAssigned
-    ret.isAwaitingAssignment = doc.isAwaitingAssignment
-    ret.wasAutoDistributed = doc.wasAutoDistributed // 🔥 NOME CORRIGIDO
-    ret.distributionMethod = doc.distributionMethod
-    ret.matchScore = doc.matchScore
-
-    return ret
-  },
 })
 
 /*
 |--------------------------------------------------------------------------
-| PRE-SAVE HOOK 🔥 NOVO
-|--------------------------------------------------------------------------
-*/
-
-leadSchema.pre('save', function (next) {
-  // 🔥 ATUALIZAR IS_DISTRIBUTED BASEADO NO ASSIGNEDTO
-  if (this.assignedTo) {
-    this.isDistributed = true
-    if (!this.distributedAt) {
-      this.distributedAt = new Date()
-    }
-    this.awaitingAssignment = false
-  } else {
-    this.isDistributed = false
-  }
-
-  // 🔥 ATUALIZAR STATUS DA DISTRIBUIÇÃO
-  if (this.distribution) {
-    if (this.assignedTo) {
-      this.distribution.status = 'success'
-      this.distribution.distributedAt = this.distributedAt || new Date()
-    } else if (this.awaitingAssignment) {
-      this.distribution.status = 'queue'
-    }
-  }
-
-  next()
-})
-
-/*
-|--------------------------------------------------------------------------
-| EXPORT
+| MODEL
 |--------------------------------------------------------------------------
 */
 

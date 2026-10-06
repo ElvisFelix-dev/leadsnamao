@@ -28,7 +28,10 @@ const sameId = (valueA, valueB) => {
     return false
   }
 
-  return valueA.toString() === valueB.toString()
+  const idA = valueA?._id ?? valueA
+  const idB = valueB?._id ?? valueB
+
+  return idA.toString() === idB.toString()
 }
 
 /**

@@ -67,7 +67,7 @@ const messageSchema = new mongoose.Schema(
 
     externalMessageId: {
       type: String,
-      default: '',
+      default: null,
       trim: true,
       index: true,
     },

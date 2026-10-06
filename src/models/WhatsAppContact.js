@@ -8,6 +8,12 @@ const whatsappContactSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    lead: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Lead',
+      default: null,
+      index: true,
+    },
 
     remoteJid: {
       type: String,
@@ -61,11 +67,23 @@ const whatsappContactSchema = new mongoose.Schema(
   },
 )
 
-whatsappContactSchema.index({ integration: 1, remoteJid: 1 }, { unique: true })
+whatsappContactSchema.index(
+  {
+    integration: 1,
+    remoteJid: 1,
+  },
+  {
+    unique: true,
+  },
+)
 
 whatsappContactSchema.index({
   integration: 1,
   phone: 1,
+})
+
+whatsappContactSchema.index({
+  lead: 1,
 })
 
 export default mongoose.model('WhatsAppContact', whatsappContactSchema)

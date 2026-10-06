@@ -6,35 +6,13 @@ const conversationSchema = new mongoose.Schema(
       {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
-        required: true,
-        validate: {
-          validator: function (v) {
-            return v !== null && v !== undefined
-          },
-          message: 'Participante não pode ser nulo ou indefinido',
-        },
       },
     ],
-
-    // ==========================================================
-    // CANAL DA CONVERSA
-    // ==========================================================
 
     channel: {
       type: String,
       enum: ['internal', 'whatsapp'],
       default: 'internal',
-      index: true,
-    },
-
-    // ==========================================================
-    // CONTATO EXTERNO DO WHATSAPP
-    // ==========================================================
-
-    whatsappContact: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'WhatsAppContact',
-      default: null,
       index: true,
     },
 
@@ -47,11 +25,13 @@ const conversationSchema = new mongoose.Schema(
     name: {
       type: String,
       default: '',
+      trim: true,
     },
 
     avatar: {
       type: String,
       default: '',
+      trim: true,
     },
 
     lastMessage: {
@@ -61,7 +41,7 @@ const conversationSchema = new mongoose.Schema(
 
     lastMessageAt: {
       type: Date,
-      default: Date.now,
+      default: null,
     },
 
     lastMessageFrom: {
@@ -89,6 +69,39 @@ const conversationSchema = new mongoose.Schema(
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
+      default: null,
+    },
+
+    // ========================================================
+    // WHATSAPP
+    // ========================================================
+
+    whatsappContact: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'WhatsAppContact',
+      default: null,
+      index: true,
+    },
+
+    whatsappIntegration: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'WhatsAppIntegration',
+      default: null,
+      index: true,
+    },
+
+    lead: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Lead',
+      default: null,
+      index: true,
+    },
+
+    assignedTo: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true,
     },
 
     metadata: {

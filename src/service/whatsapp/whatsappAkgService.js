@@ -36,6 +36,7 @@ const toJid = (phone) => {
 const upsertWhatsAppContact = async ({
   integrationId,
   remoteJid,
+  leadId,
   name = '',
   isGroup = false,
   metadata = {},
@@ -48,7 +49,15 @@ const upsertWhatsAppContact = async ({
     throw new Error('remoteJid é obrigatório para criar contato WhatsApp.')
   }
 
-  const phone = remoteJid.split('@')[0].replace(/\D/g, '')
+  if (!leadId) {
+    throw new Error('Lead ID é obrigatório para criar contato WhatsApp.')
+  }
+
+  const phone = normalizePhone(remoteJid.split('@')[0])
+
+  if (!phone) {
+    throw new Error('Não foi possível normalizar o telefone do WhatsApp.')
+  }
 
   const contact = await WhatsAppContact.findOneAndUpdate(
     {
@@ -57,11 +66,21 @@ const upsertWhatsAppContact = async ({
     },
     {
       $set: {
+        lead: leadId,
+
         phone,
+
+        // O Lead continua sendo a fonte principal de identidade.
+        // O pushName do WhatsApp serve apenas como informação
+        // complementar do contato.
         name: name?.trim() || '',
+
         isGroup: Boolean(isGroup),
+
         lastMessageAt: new Date(),
+
         isActive: true,
+
         metadata,
       },
     },
@@ -81,10 +100,23 @@ const upsertWhatsAppContact = async ({
 
 const upsertWhatsAppConversation = async ({
   whatsappContactId,
+  integrationId,
+  leadId,
+  assignedTo = null,
   contactName = '',
 }) => {
   if (!whatsappContactId) {
     throw new Error('WhatsApp Contact ID é obrigatório para criar a conversa.')
+  }
+
+  if (!integrationId) {
+    throw new Error(
+      'Integration ID é obrigatório para criar a conversa WhatsApp.',
+    )
+  }
+
+  if (!leadId) {
+    throw new Error('Lead ID é obrigatório para criar a conversa WhatsApp.')
   }
 
   let conversation = await Conversation.findOne({
@@ -93,20 +125,69 @@ const upsertWhatsAppConversation = async ({
     isActive: true,
   })
 
+  // ==========================================================
+  // CONVERSATION EXISTENTE
+  // ==========================================================
+
   if (conversation) {
+    let changed = false
+
+    if (
+      !conversation.whatsappIntegration ||
+      conversation.whatsappIntegration.toString() !== integrationId.toString()
+    ) {
+      conversation.whatsappIntegration = integrationId
+      changed = true
+    }
+
+    if (
+      !conversation.lead ||
+      conversation.lead.toString() !== leadId.toString()
+    ) {
+      conversation.lead = leadId
+      changed = true
+    }
+
+    if (
+      assignedTo &&
+      (!conversation.assignedTo ||
+        conversation.assignedTo.toString() !== assignedTo.toString())
+    ) {
+      conversation.assignedTo = assignedTo
+      changed = true
+    }
+
+    if (!conversation.name && contactName?.trim()) {
+      conversation.name = contactName.trim()
+      changed = true
+    }
+
+    if (changed) {
+      await conversation.save()
+    }
+
     return conversation
   }
 
+  // ==========================================================
+  // NOVA CONVERSATION
+  // ==========================================================
+
   conversation = await Conversation.create({
-    // Conversas WhatsApp ainda não possuem corretor atribuído.
-    // A distribuição será tratada posteriormente.
+    // IMPORTANTE:
+    // Conversas WhatsApp NÃO usam participants para definir
+    // quem é o responsável pela conversa.
+    //
+    // A responsabilidade vem de:
+    // Conversation.assignedTo
+    // e principalmente Lead.assignedTo.
     participants: [],
 
     channel: 'whatsapp',
 
     type: 'direct',
 
-    name: contactName?.trim() || 'Novo contato WhatsApp',
+    name: contactName?.trim() || 'Lead WhatsApp',
 
     avatar: '',
 
@@ -125,6 +206,12 @@ const upsertWhatsAppConversation = async ({
     createdBy: null,
 
     whatsappContact: whatsappContactId,
+
+    whatsappIntegration: integrationId,
+
+    lead: leadId,
+
+    assignedTo: assignedTo || null,
 
     metadata: {
       provider: 'wa-akg',
@@ -192,9 +279,13 @@ export const createIntegration = async ({
 
   const integration = await WhatsAppIntegration.create({
     name: name.trim(),
+
     baseUrl: normalizeBaseUrl(baseUrl),
+
     apiKey: apiKey.trim(),
+
     sessionId: sessionId.trim(),
+
     webhookSecret: webhookSecret?.trim() || '',
   })
 
@@ -413,24 +504,20 @@ const verifyWebhookSignature = ({ rawBody, signature, secret }) => {
     throw new AppError('Assinatura do webhook não informada.', 401)
   }
 
-  const receivedSignature = String(signature).replace(/^sha256=/, '')
+  const receivedSignature = String(signature)
+    .replace(/^sha256=/, '')
+    .trim()
+    .toLowerCase()
 
   const expectedSignature = crypto
     .createHmac('sha256', secret)
     .update(rawBody)
     .digest('hex')
 
-  console.log('🔐 WEBHOOK SIGNATURE DEBUG')
-
-  console.log('Received:', receivedSignature)
-
-  console.log('Expected:', expectedSignature)
-
-  console.log('Raw body:', rawBody.toString('utf8'))
-
-  console.log('Raw body length:', rawBody.length)
-
-  console.log('================================')
+  // Evita problemas de tamanho antes do timingSafeEqual.
+  if (receivedSignature.length !== expectedSignature.length) {
+    throw new AppError('Assinatura do webhook inválida.', 401)
+  }
 
   const receivedBuffer = Buffer.from(receivedSignature, 'hex')
 
@@ -503,6 +590,8 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
 
   console.log('Integração:', integration.name)
 
+  console.log('Integration ID:', integration._id.toString())
+
   console.log('Session ID:', sessionId)
 
   console.log('Evento:', payload.event)
@@ -512,8 +601,12 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
   console.log('==========================================')
 
   let contact = null
+
   let conversation = null
+
   let message = null
+
+  let lead = null
 
   // ==========================================================
   // MESSAGE RECEIVED
@@ -548,227 +641,326 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
 
     if (!remoteJid) {
       console.warn('⚠️ Mensagem recebida sem remoteJid. Evento será ignorado.')
-    } else {
-      // ======================================================
-      // NORMALIZAR TELEFONE
-      // ======================================================
 
-      const phone = normalizePhone(remoteJid.split('@')[0])
+      return {
+        received: true,
 
+        event: payload.event,
+
+        sessionId,
+
+        integrationId: integration._id,
+
+        ignored: true,
+
+        reason: 'missing_remote_jid',
+
+        contact: null,
+
+        conversation: null,
+
+        message: null,
+      }
+    }
+
+    // ========================================================
+    // IGNORAR GRUPOS
+    // ========================================================
+
+    if (data.isGroup || remoteJid.endsWith('@g.us')) {
       console.log('')
 
-      console.log('🔎 BUSCA DE LEAD')
+      console.log('👥 WHATSAPP GRUPO IGNORADO')
 
       console.log('==========================================')
 
       console.log('Remote JID:', remoteJid)
 
-      console.log('Telefone normalizado:', phone)
+      console.log('Nome:', data.pushName || '')
+
+      console.log('Motivo: mensagens de grupos não são processadas pelo CRM.')
+
+      console.log('Nenhum WhatsAppContact foi criado.')
+
+      console.log('Nenhuma Conversation foi criada.')
+
+      console.log('Nenhuma Message foi criada.')
 
       console.log('==========================================')
 
-      // ======================================================
-      // BUSCAR LEAD
-      // ======================================================
+      return {
+        received: true,
 
-      const lead = phone ? await Lead.findByNormalizedPhone(phone) : null
+        event: payload.event,
 
-      // ======================================================
-      // PRIVACIDADE
-      // ======================================================
+        sessionId,
 
-      if (!lead) {
-        console.log('')
+        integrationId: integration._id,
 
-        console.log('🔒 WHATSAPP IGNORADO')
+        ignored: true,
 
-        console.log('==========================================')
+        reason: 'whatsapp_group',
 
-        console.log('Motivo: número não está vinculado a nenhum Lead.')
+        contact: null,
 
-        console.log('Telefone:', phone || 'inválido')
+        conversation: null,
 
-        console.log('Remote JID:', remoteJid)
-
-        console.log('Nome:', data.pushName || '')
-
-        console.log('Nenhum WhatsAppContact foi criado.')
-
-        console.log('Nenhuma Conversation foi criada.')
-
-        console.log('Nenhuma Message foi criada.')
-
-        console.log('==========================================')
-
-        // IMPORTANTE:
-        // O webhook retorna sucesso para o WA-AKG.
-        // Assim o provedor não fica tentando reenviar
-        // mensagens pessoais que o CRM decidiu ignorar.
-      } else {
-        // ====================================================
-        // LEAD ENCONTRADO
-        // ====================================================
-
-        console.log('')
-
-        console.log('✅ LEAD ENCONTRADO')
-
-        console.log('==========================================')
-
-        console.log('Lead ID:', lead._id.toString())
-
-        console.log('Nome:', lead.name)
-
-        console.log('Telefone:', lead.phone)
-
-        console.log('Telefone normalizado:', lead.phoneNormalized)
-
-        console.log('Assigned To:', lead.assignedTo || null)
-
-        console.log('==========================================')
-
-        // ====================================================
-        // CONTATO
-        // ====================================================
-
-        contact = await upsertWhatsAppContact({
-          integrationId: integration._id,
-
-          remoteJid,
-
-          name: data.pushName || lead.name || '',
-
-          isGroup: Boolean(data.isGroup),
-
-          metadata: {
-            provider: 'wa-akg',
-
-            chatType: data.chatType || '',
-
-            leadId: lead._id.toString(),
-          },
-        })
-
-        console.log('')
-
-        console.log('👤 CONTATO WHATSAPP PERSISTIDO')
-
-        console.log('==========================================')
-
-        console.log('Contato ID:', contact._id.toString())
-
-        console.log('Nome:', contact.name)
-
-        console.log('Telefone:', contact.phone)
-
-        console.log('Remote JID:', contact.remoteJid)
-
-        console.log('Grupo:', contact.isGroup)
-
-        console.log('Lead ID:', lead._id.toString())
-
-        console.log('==========================================')
-
-        // ====================================================
-        // CONVERSATION
-        // ====================================================
-
-        conversation = await upsertWhatsAppConversation({
-          whatsappContactId: contact._id,
-
-          contactName: contact.name || lead.name || 'Lead WhatsApp',
-        })
-
-        console.log('')
-
-        console.log('💬 CONVERSA WHATSAPP')
-
-        console.log('==========================================')
-
-        console.log('Conversation ID:', conversation._id.toString())
-
-        console.log('Channel:', conversation.channel)
-
-        console.log(
-          'Contact ID:',
-          conversation.whatsappContact?.toString() || null,
-        )
-
-        console.log('Participantes:', conversation.participants.length)
-
-        console.log('Lead ID:', lead._id.toString())
-
-        console.log('==========================================')
-
-        // ====================================================
-        // MESSAGE
-        // ====================================================
-
-        message = await chatService.receiveWhatsAppMessage({
-          conversationId: conversation._id,
-
-          whatsappContactId: contact._id,
-
-          externalMessageId: data.key?.id || null,
-
-          content: data.content || '',
-
-          type:
-            data.type === 'TEXT'
-              ? 'text'
-              : data.type === 'IMAGE'
-                ? 'image'
-                : data.type === 'FILE'
-                  ? 'file'
-                  : 'text',
-
-          attachment: data.fileUrl
-            ? {
-                url: data.fileUrl,
-
-                name: '',
-
-                size: 0,
-
-                mimeType: '',
-              }
-            : null,
-        })
-
-        // ====================================================
-        // MESSAGE LOG
-        // ====================================================
-
-        console.log('')
-
-        console.log('📝 MESSAGE WHATSAPP PERSISTIDA')
-
-        console.log('==========================================')
-
-        console.log('Message ID:', message._id.toString())
-
-        console.log('Content:', message.content)
-
-        console.log('Direction:', message.direction)
-
-        console.log('Sender Type:', message.senderType)
-
-        console.log(
-          'WhatsApp Contact:',
-          message.whatsappContact?._id?.toString?.() ||
-            message.whatsappContact?.toString?.() ||
-            null,
-        )
-
-        console.log('External ID:', message.externalMessageId)
-
-        console.log('Status:', message.status)
-
-        console.log('Lead ID:', lead._id.toString())
-
-        console.log('==========================================')
+        message: null,
       }
     }
+
+    // ========================================================
+    // NORMALIZAR TELEFONE
+    // ========================================================
+
+    const phone = normalizePhone(remoteJid.split('@')[0])
+
+    console.log('')
+
+    console.log('🔎 BUSCA DE LEAD')
+
+    console.log('==========================================')
+
+    console.log('Remote JID:', remoteJid)
+
+    console.log('Telefone normalizado:', phone)
+
+    console.log('==========================================')
+
+    // ========================================================
+    // BUSCAR LEAD
+    // ========================================================
+
+    lead = phone ? await Lead.findByNormalizedPhone(phone) : null
+
+    // ========================================================
+    // PRIVACIDADE
+    // ========================================================
+
+    if (!lead) {
+      console.log('')
+
+      console.log('🔒 WHATSAPP IGNORADO')
+
+      console.log('==========================================')
+
+      console.log('Motivo: número não está vinculado a nenhum Lead.')
+
+      console.log('Telefone:', phone || 'inválido')
+
+      console.log('Remote JID:', remoteJid)
+
+      console.log('Nome:', data.pushName || '')
+
+      console.log('Nenhum WhatsAppContact foi criado.')
+
+      console.log('Nenhuma Conversation foi criada.')
+
+      console.log('Nenhuma Message foi criada.')
+
+      console.log('==========================================')
+
+      return {
+        received: true,
+
+        event: payload.event,
+
+        sessionId,
+
+        integrationId: integration._id,
+
+        ignored: true,
+
+        reason: 'lead_not_found',
+
+        contact: null,
+
+        conversation: null,
+
+        message: null,
+      }
+    }
+
+    // ========================================================
+    // LEAD ENCONTRADO
+    // ========================================================
+
+    console.log('')
+
+    console.log('✅ LEAD ENCONTRADO')
+
+    console.log('==========================================')
+
+    console.log('Lead ID:', lead._id.toString())
+
+    console.log('Nome:', lead.name)
+
+    console.log('Telefone:', lead.phone)
+
+    console.log('Telefone normalizado:', lead.phoneNormalized)
+
+    console.log('Assigned To:', lead.assignedTo || null)
+
+    console.log('==========================================')
+
+    // ========================================================
+    // CONTATO WHATSAPP
+    // ========================================================
+
+    contact = await upsertWhatsAppContact({
+      integrationId: integration._id,
+
+      remoteJid,
+
+      leadId: lead._id,
+
+      // O nome do Lead é priorizado.
+      // O pushName entra apenas como fallback.
+      name: lead.name || data.pushName || '',
+
+      isGroup: false,
+
+      metadata: {
+        provider: 'wa-akg',
+
+        chatType: data.chatType || '',
+
+        leadId: lead._id.toString(),
+
+        integrationId: integration._id.toString(),
+      },
+    })
+
+    console.log('')
+
+    console.log('👤 CONTATO WHATSAPP PERSISTIDO')
+
+    console.log('==========================================')
+
+    console.log('Contato ID:', contact._id.toString())
+
+    console.log('Nome:', contact.name)
+
+    console.log('Telefone:', contact.phone)
+
+    console.log('Remote JID:', contact.remoteJid)
+
+    console.log('Grupo:', contact.isGroup)
+
+    console.log('Lead ID:', lead._id.toString())
+
+    console.log('==========================================')
+
+    // ========================================================
+    // CONVERSATION WHATSAPP
+    // ========================================================
+
+    conversation = await upsertWhatsAppConversation({
+      whatsappContactId: contact._id,
+
+      integrationId: integration._id,
+
+      leadId: lead._id,
+
+      assignedTo: lead.assignedTo || null,
+
+      contactName: lead.name || contact.name || 'Lead WhatsApp',
+    })
+
+    console.log('')
+
+    console.log('💬 CONVERSA WHATSAPP')
+
+    console.log('==========================================')
+
+    console.log('Conversation ID:', conversation._id.toString())
+
+    console.log('Channel:', conversation.channel)
+
+    console.log('Contact ID:', conversation.whatsappContact?.toString() || null)
+
+    console.log(
+      'Integration ID:',
+      conversation.whatsappIntegration?.toString() || null,
+    )
+
+    console.log('Lead ID:', conversation.lead?.toString() || null)
+
+    console.log('Assigned To:', conversation.assignedTo?.toString() || null)
+
+    console.log('Participantes:', conversation.participants.length)
+
+    console.log('==========================================')
+
+    // ========================================================
+    // MESSAGE WHATSAPP
+    // ========================================================
+
+    message = await chatService.receiveWhatsAppMessage({
+      conversationId: conversation._id,
+
+      whatsappContactId: contact._id,
+
+      externalMessageId: data.key?.id || null,
+
+      content: data.content || '',
+
+      type:
+        data.type === 'TEXT'
+          ? 'text'
+          : data.type === 'IMAGE'
+            ? 'image'
+            : data.type === 'FILE'
+              ? 'file'
+              : 'text',
+
+      attachment: data.fileUrl
+        ? {
+            url: data.fileUrl,
+
+            name: '',
+
+            size: 0,
+
+            mimeType: '',
+          }
+        : null,
+    })
+
+    // ========================================================
+    // MESSAGE LOG
+    // ========================================================
+
+    console.log('')
+
+    console.log('📝 MESSAGE WHATSAPP PERSISTIDA')
+
+    console.log('==========================================')
+
+    console.log('Message ID:', message._id.toString())
+
+    console.log('Content:', message.content)
+
+    console.log('Direction:', message.direction)
+
+    console.log('Sender Type:', message.senderType)
+
+    console.log(
+      'WhatsApp Contact:',
+      message.whatsappContact?._id?.toString?.() ||
+        message.whatsappContact?.toString?.() ||
+        null,
+    )
+
+    console.log('External ID:', message.externalMessageId)
+
+    console.log('Status:', message.status)
+
+    console.log('Lead ID:', lead._id.toString())
+
+    console.log('Assigned To:', lead.assignedTo || null)
+
+    console.log('==========================================')
   }
 
   // ==========================================================
@@ -777,6 +969,10 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
 
   if (payload.event === 'message.sent') {
     console.log('📤 Mensagem enviada')
+
+    console.log('Session ID:', sessionId)
+
+    console.log('Integration ID:', integration._id.toString())
   }
 
   // ==========================================================
@@ -785,6 +981,10 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
 
   if (payload.event === 'connection.update') {
     console.log('🔌 Atualização da conexão')
+
+    console.log('Session ID:', sessionId)
+
+    console.log('Data:', payload.data || {})
   }
 
   console.log('==========================================')
@@ -815,6 +1015,8 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
           remoteJid: contact.remoteJid,
 
           isGroup: contact.isGroup,
+
+          lead: contact.lead,
         }
       : null,
 
@@ -827,6 +1029,12 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
           type: conversation.type,
 
           whatsappContact: conversation.whatsappContact,
+
+          whatsappIntegration: conversation.whatsappIntegration,
+
+          lead: conversation.lead,
+
+          assignedTo: conversation.assignedTo,
 
           participants: conversation.participants,
         }

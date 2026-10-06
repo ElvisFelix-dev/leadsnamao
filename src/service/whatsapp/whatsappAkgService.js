@@ -4,7 +4,10 @@ import crypto from 'crypto'
 import WhatsAppIntegration from '../../models/WhatsAppIntegration.js'
 import WhatsAppContact from '../../models/WhatsAppContact.js'
 import Conversation from '../../models/Conversation.js'
+import Lead from '../../models/Lead.js'
 import AppError from '../../utils/AppError.js'
+
+import { normalizePhone } from '../../utils/phone.js'
 
 import * as chatService from '../chatService.js'
 
@@ -13,8 +16,6 @@ import * as chatService from '../chatService.js'
 // ============================================================
 
 const normalizeBaseUrl = (value) => String(value || '').replace(/\/+$/, '')
-
-const normalizePhone = (value) => String(value || '').replace(/\D/g, '')
 
 const toJid = (phone) => {
   const normalized = normalizePhone(phone)
@@ -542,142 +543,231 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
     console.log('Grupo:', data.isGroup)
 
     // ========================================================
-    // CONTATO
+    // VALIDAR REMOTE JID
     // ========================================================
 
     if (!remoteJid) {
-      console.warn(
-        '⚠️ Mensagem recebida sem remoteJid. Contato não será persistido.',
-      )
+      console.warn('⚠️ Mensagem recebida sem remoteJid. Evento será ignorado.')
     } else {
-      contact = await upsertWhatsAppContact({
-        integrationId: integration._id,
+      // ======================================================
+      // NORMALIZAR TELEFONE
+      // ======================================================
 
-        remoteJid,
-
-        name: data.pushName || '',
-
-        isGroup: Boolean(data.isGroup),
-
-        metadata: {
-          provider: 'wa-akg',
-
-          chatType: data.chatType || '',
-        },
-      })
+      const phone = normalizePhone(remoteJid.split('@')[0])
 
       console.log('')
 
-      console.log('👤 CONTATO WHATSAPP PERSISTIDO')
+      console.log('🔎 BUSCA DE LEAD')
 
       console.log('==========================================')
 
-      console.log('Contato ID:', contact._id.toString())
+      console.log('Remote JID:', remoteJid)
 
-      console.log('Nome:', contact.name)
-
-      console.log('Telefone:', contact.phone)
-
-      console.log('Remote JID:', contact.remoteJid)
-
-      console.log('Grupo:', contact.isGroup)
+      console.log('Telefone normalizado:', phone)
 
       console.log('==========================================')
 
       // ======================================================
-      // CONVERSATION
+      // BUSCAR LEAD
       // ======================================================
 
-      conversation = await upsertWhatsAppConversation({
-        whatsappContactId: contact._id,
-
-        contactName: contact.name,
-      })
-
-      console.log('')
-
-      console.log('💬 CONVERSA WHATSAPP')
-
-      console.log('==========================================')
-
-      console.log('Conversation ID:', conversation._id.toString())
-
-      console.log('Channel:', conversation.channel)
-
-      console.log(
-        'Contact ID:',
-        conversation.whatsappContact?.toString() || null,
-      )
-
-      console.log('Participantes:', conversation.participants.length)
-
-      console.log('==========================================')
+      const lead = phone ? await Lead.findByNormalizedPhone(phone) : null
 
       // ======================================================
-      // MESSAGE
+      // PRIVACIDADE
       // ======================================================
 
-      message = await chatService.receiveWhatsAppMessage({
-        conversationId: conversation._id,
+      if (!lead) {
+        console.log('')
 
-        whatsappContactId: contact._id,
+        console.log('🔒 WHATSAPP IGNORADO')
 
-        externalMessageId: data.key?.id || '',
+        console.log('==========================================')
 
-        content: data.content || '',
+        console.log('Motivo: número não está vinculado a nenhum Lead.')
 
-        type:
-          data.type === 'TEXT'
-            ? 'text'
-            : data.type === 'IMAGE'
-              ? 'image'
-              : data.type === 'FILE'
-                ? 'file'
-                : 'text',
+        console.log('Telefone:', phone || 'inválido')
 
-        attachment: data.fileUrl
-          ? {
-              url: data.fileUrl,
+        console.log('Remote JID:', remoteJid)
 
-              name: '',
+        console.log('Nome:', data.pushName || '')
 
-              size: 0,
+        console.log('Nenhum WhatsAppContact foi criado.')
 
-              mimeType: '',
-            }
-          : null,
-      })
+        console.log('Nenhuma Conversation foi criada.')
 
-      // ======================================================
-      // MESSAGE LOG
-      // ======================================================
+        console.log('Nenhuma Message foi criada.')
 
-      console.log('')
+        console.log('==========================================')
 
-      console.log('📝 MESSAGE WHATSAPP PERSISTIDA')
+        // IMPORTANTE:
+        // O webhook retorna sucesso para o WA-AKG.
+        // Assim o provedor não fica tentando reenviar
+        // mensagens pessoais que o CRM decidiu ignorar.
+      } else {
+        // ====================================================
+        // LEAD ENCONTRADO
+        // ====================================================
 
-      console.log('==========================================')
+        console.log('')
 
-      console.log('Message ID:', message._id.toString())
+        console.log('✅ LEAD ENCONTRADO')
 
-      console.log('Content:', message.content)
+        console.log('==========================================')
 
-      console.log('Direction:', message.direction)
+        console.log('Lead ID:', lead._id.toString())
 
-      console.log('Sender Type:', message.senderType)
+        console.log('Nome:', lead.name)
 
-      console.log(
-        'WhatsApp Contact:',
-        message.whatsappContact?._id?.toString?.() ||
-          message.whatsappContact?.toString?.() ||
-          null,
-      )
+        console.log('Telefone:', lead.phone)
 
-      console.log('External ID:', message.externalMessageId)
+        console.log('Telefone normalizado:', lead.phoneNormalized)
 
-      console.log('Status:', message.status)
+        console.log('Assigned To:', lead.assignedTo || null)
 
-      console.log('==========================================')
+        console.log('==========================================')
+
+        // ====================================================
+        // CONTATO
+        // ====================================================
+
+        contact = await upsertWhatsAppContact({
+          integrationId: integration._id,
+
+          remoteJid,
+
+          name: data.pushName || lead.name || '',
+
+          isGroup: Boolean(data.isGroup),
+
+          metadata: {
+            provider: 'wa-akg',
+
+            chatType: data.chatType || '',
+
+            leadId: lead._id.toString(),
+          },
+        })
+
+        console.log('')
+
+        console.log('👤 CONTATO WHATSAPP PERSISTIDO')
+
+        console.log('==========================================')
+
+        console.log('Contato ID:', contact._id.toString())
+
+        console.log('Nome:', contact.name)
+
+        console.log('Telefone:', contact.phone)
+
+        console.log('Remote JID:', contact.remoteJid)
+
+        console.log('Grupo:', contact.isGroup)
+
+        console.log('Lead ID:', lead._id.toString())
+
+        console.log('==========================================')
+
+        // ====================================================
+        // CONVERSATION
+        // ====================================================
+
+        conversation = await upsertWhatsAppConversation({
+          whatsappContactId: contact._id,
+
+          contactName: contact.name || lead.name || 'Lead WhatsApp',
+        })
+
+        console.log('')
+
+        console.log('💬 CONVERSA WHATSAPP')
+
+        console.log('==========================================')
+
+        console.log('Conversation ID:', conversation._id.toString())
+
+        console.log('Channel:', conversation.channel)
+
+        console.log(
+          'Contact ID:',
+          conversation.whatsappContact?.toString() || null,
+        )
+
+        console.log('Participantes:', conversation.participants.length)
+
+        console.log('Lead ID:', lead._id.toString())
+
+        console.log('==========================================')
+
+        // ====================================================
+        // MESSAGE
+        // ====================================================
+
+        message = await chatService.receiveWhatsAppMessage({
+          conversationId: conversation._id,
+
+          whatsappContactId: contact._id,
+
+          externalMessageId: data.key?.id || null,
+
+          content: data.content || '',
+
+          type:
+            data.type === 'TEXT'
+              ? 'text'
+              : data.type === 'IMAGE'
+                ? 'image'
+                : data.type === 'FILE'
+                  ? 'file'
+                  : 'text',
+
+          attachment: data.fileUrl
+            ? {
+                url: data.fileUrl,
+
+                name: '',
+
+                size: 0,
+
+                mimeType: '',
+              }
+            : null,
+        })
+
+        // ====================================================
+        // MESSAGE LOG
+        // ====================================================
+
+        console.log('')
+
+        console.log('📝 MESSAGE WHATSAPP PERSISTIDA')
+
+        console.log('==========================================')
+
+        console.log('Message ID:', message._id.toString())
+
+        console.log('Content:', message.content)
+
+        console.log('Direction:', message.direction)
+
+        console.log('Sender Type:', message.senderType)
+
+        console.log(
+          'WhatsApp Contact:',
+          message.whatsappContact?._id?.toString?.() ||
+            message.whatsappContact?.toString?.() ||
+            null,
+        )
+
+        console.log('External ID:', message.externalMessageId)
+
+        console.log('Status:', message.status)
+
+        console.log('Lead ID:', lead._id.toString())
+
+        console.log('==========================================')
+      }
     }
   }
 

@@ -1,9 +1,36 @@
 import axios from 'axios'
 import crypto from 'crypto'
+
 import WhatsAppIntegration from '../../models/WhatsAppIntegration.js'
 import WhatsAppContact from '../../models/WhatsAppContact.js'
 import Conversation from '../../models/Conversation.js'
 import AppError from '../../utils/AppError.js'
+
+import * as chatService from '../chatService.js'
+
+// ============================================================
+// HELPERS
+// ============================================================
+
+const normalizeBaseUrl = (value) => String(value || '').replace(/\/+$/, '')
+
+const normalizePhone = (value) => String(value || '').replace(/\D/g, '')
+
+const toJid = (phone) => {
+  const normalized = normalizePhone(phone)
+
+  if (!normalized) {
+    throw new AppError('Número de WhatsApp inválido.', 400)
+  }
+
+  return normalized.endsWith('@s.whatsapp.net')
+    ? normalized
+    : `${normalized}@s.whatsapp.net`
+}
+
+// ============================================================
+// WHATSAPP CONTACT
+// ============================================================
 
 const upsertWhatsAppContact = async ({
   integrationId,
@@ -47,6 +74,10 @@ const upsertWhatsAppContact = async ({
   return contact
 }
 
+// ============================================================
+// WHATSAPP CONVERSATION
+// ============================================================
+
 const upsertWhatsAppConversation = async ({
   whatsappContactId,
   contactName = '',
@@ -66,19 +97,34 @@ const upsertWhatsAppConversation = async ({
   }
 
   conversation = await Conversation.create({
+    // Conversas WhatsApp ainda não possuem corretor atribuído.
+    // A distribuição será tratada posteriormente.
     participants: [],
+
     channel: 'whatsapp',
+
     type: 'direct',
+
     name: contactName?.trim() || 'Novo contato WhatsApp',
+
     avatar: '',
+
     lastMessage: '',
+
     lastMessageAt: new Date(),
+
     lastMessageFrom: null,
+
     unreadCounts: new Map(),
+
     isActive: true,
+
     isBrokerChannel: false,
+
     createdBy: null,
+
     whatsappContact: whatsappContactId,
+
     metadata: {
       provider: 'wa-akg',
     },
@@ -87,24 +133,14 @@ const upsertWhatsAppConversation = async ({
   return conversation
 }
 
-const normalizeBaseUrl = (value) => String(value || '').replace(/\/+$/, '')
-
-const normalizePhone = (value) => String(value || '').replace(/\D/g, '')
-
-const toJid = (phone) => {
-  const normalized = normalizePhone(phone)
-
-  if (!normalized) {
-    throw new AppError('Número de WhatsApp inválido.', 400)
-  }
-
-  return normalized.endsWith('@s.whatsapp.net')
-    ? normalized
-    : `${normalized}@s.whatsapp.net`
-}
+// ============================================================
+// INTEGRATION
+// ============================================================
 
 const getIntegrationWithSecrets = async (integrationId = null) => {
-  const query = { enabled: true }
+  const query = {
+    enabled: true,
+  }
 
   if (integrationId) {
     query._id = integrationId
@@ -125,6 +161,10 @@ const getIntegrationWithSecrets = async (integrationId = null) => {
 
   return integration
 }
+
+// ============================================================
+// CREATE INTEGRATION
+// ============================================================
 
 export const createIntegration = async ({
   name,
@@ -160,12 +200,20 @@ export const createIntegration = async ({
   return integration
 }
 
+// ============================================================
+// LIST INTEGRATIONS
+// ============================================================
+
 export const listIntegrations = async () => {
   return WhatsAppIntegration.find()
     .select('-apiKey -webhookSecret')
     .sort({ createdAt: -1 })
     .lean()
 }
+
+// ============================================================
+// SEND TEXT MESSAGE
+// ============================================================
 
 export const sendTextMessage = async ({
   integrationId = null,
@@ -177,6 +225,7 @@ export const sendTextMessage = async ({
   }
 
   const integration = await getIntegrationWithSecrets(integrationId)
+
   const jid = toJid(phone)
 
   const url = `${normalizeBaseUrl(
@@ -203,7 +252,9 @@ export const sendTextMessage = async ({
     )
 
     await WhatsAppIntegration.updateOne(
-      { _id: integration._id },
+      {
+        _id: integration._id,
+      },
       {
         $set: {
           status: 'connected',
@@ -215,10 +266,15 @@ export const sendTextMessage = async ({
 
     return {
       integrationId: integration._id,
+
       integrationName: integration.name,
+
       sessionId: integration.sessionId,
+
       phone: normalizePhone(phone),
+
       jid,
+
       providerResponse: response.data,
     }
   } catch (error) {
@@ -231,7 +287,9 @@ export const sendTextMessage = async ({
       'Erro desconhecido ao comunicar com o WA-AKG.'
 
     await WhatsAppIntegration.updateOne(
-      { _id: integration._id },
+      {
+        _id: integration._id,
+      },
       {
         $set: {
           status: 'error',
@@ -243,8 +301,11 @@ export const sendTextMessage = async ({
 
     console.error('❌ Erro ao enviar mensagem pelo WA-AKG:', {
       integrationId: integration._id.toString(),
+
       sessionId: integration.sessionId,
+
       status,
+
       message: providerMessage,
     })
 
@@ -257,6 +318,10 @@ export const sendTextMessage = async ({
   }
 }
 
+// ============================================================
+// GET INTEGRATION SECRETS
+// ============================================================
+
 export const getIntegrationSecrets = async (integrationId) => {
   const integration = await WhatsAppIntegration.findById(integrationId).select(
     '+apiKey +webhookSecret',
@@ -268,6 +333,10 @@ export const getIntegrationSecrets = async (integrationId) => {
 
   return integration
 }
+
+// ============================================================
+// GET QR CODE / SESSION
+// ============================================================
 
 export const getQrCode = async ({ integrationId = null }) => {
   const integration = await getIntegrationWithSecrets(integrationId)
@@ -288,10 +357,15 @@ export const getQrCode = async ({ integrationId = null }) => {
 
     return {
       integrationId: integration._id,
+
       integrationName: integration.name,
+
       sessionId: integration.sessionId,
+
       status: session?.status || null,
+
       qr: session?.qr || null,
+
       me: session?.me || null,
     }
   } catch (error) {
@@ -305,8 +379,11 @@ export const getQrCode = async ({ integrationId = null }) => {
 
     console.error('❌ Erro ao obter sessão do WA-AKG:', {
       integrationId: integration._id.toString(),
+
       sessionId: integration.sessionId,
+
       status,
+
       message: providerMessage,
     })
 
@@ -319,11 +396,9 @@ export const getQrCode = async ({ integrationId = null }) => {
   }
 }
 
-/**
- * ============================================================
- * WEBHOOK WA-AKG
- * ============================================================
- */
+// ============================================================
+// WEBHOOK SIGNATURE
+// ============================================================
 
 const verifyWebhookSignature = ({ rawBody, signature, secret }) => {
   if (!secret) {
@@ -345,13 +420,19 @@ const verifyWebhookSignature = ({ rawBody, signature, secret }) => {
     .digest('hex')
 
   console.log('🔐 WEBHOOK SIGNATURE DEBUG')
+
   console.log('Received:', receivedSignature)
+
   console.log('Expected:', expectedSignature)
+
   console.log('Raw body:', rawBody.toString('utf8'))
+
   console.log('Raw body length:', rawBody.length)
+
   console.log('================================')
 
   const receivedBuffer = Buffer.from(receivedSignature, 'hex')
+
   const expectedBuffer = Buffer.from(expectedSignature, 'hex')
 
   if (
@@ -363,6 +444,10 @@ const verifyWebhookSignature = ({ rawBody, signature, secret }) => {
 
   return true
 }
+
+// ============================================================
+// WEBHOOK
+// ============================================================
 
 export const handleWebhook = async ({ rawBody, body, signature }) => {
   if (!rawBody) {
@@ -408,17 +493,26 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
   })
 
   console.log('')
+
   console.log('==========================================')
+
   console.log('📩 WEBHOOK WHATSAPP RECEBIDO')
+
   console.log('==========================================')
+
   console.log('Integração:', integration.name)
+
   console.log('Session ID:', sessionId)
+
   console.log('Evento:', payload.event)
+
   console.log('Timestamp:', payload.timestamp)
+
   console.log('==========================================')
 
   let contact = null
   let conversation = null
+  let message = null
 
   // ==========================================================
   // MESSAGE RECEIVED
@@ -427,18 +521,28 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
   if (payload.event === 'message.received') {
     const data = payload.data || {}
 
+    // ========================================================
+    // REMOTE JID
+    // ========================================================
+
     const remoteJid = data.key?.remoteJid || data.remoteJid || data.from || ''
 
     console.log('📱 Mensagem recebida')
+
     console.log('From:', data.from)
+
     console.log('Remote JID:', remoteJid)
+
     console.log('Nome:', data.pushName)
+
     console.log('Tipo:', data.type)
+
     console.log('Mensagem:', data.content)
+
     console.log('Grupo:', data.isGroup)
 
     // ========================================================
-    // CONTATO WHATSAPP
+    // CONTATO
     // ========================================================
 
     if (!remoteJid) {
@@ -448,44 +552,131 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
     } else {
       contact = await upsertWhatsAppContact({
         integrationId: integration._id,
+
         remoteJid,
+
         name: data.pushName || '',
+
         isGroup: Boolean(data.isGroup),
+
         metadata: {
           provider: 'wa-akg',
+
           chatType: data.chatType || '',
         },
       })
 
       console.log('')
+
       console.log('👤 CONTATO WHATSAPP PERSISTIDO')
+
       console.log('==========================================')
+
       console.log('Contato ID:', contact._id.toString())
+
       console.log('Nome:', contact.name)
+
       console.log('Telefone:', contact.phone)
+
       console.log('Remote JID:', contact.remoteJid)
+
       console.log('Grupo:', contact.isGroup)
+
       console.log('==========================================')
 
       // ======================================================
-      // CONVERSATION WHATSAPP
+      // CONVERSATION
       // ======================================================
 
       conversation = await upsertWhatsAppConversation({
         whatsappContactId: contact._id,
+
         contactName: contact.name,
       })
 
       console.log('')
+
       console.log('💬 CONVERSA WHATSAPP')
+
       console.log('==========================================')
+
       console.log('Conversation ID:', conversation._id.toString())
+
       console.log('Channel:', conversation.channel)
+
       console.log(
         'Contact ID:',
         conversation.whatsappContact?.toString() || null,
       )
+
       console.log('Participantes:', conversation.participants.length)
+
+      console.log('==========================================')
+
+      // ======================================================
+      // MESSAGE
+      // ======================================================
+
+      message = await chatService.receiveWhatsAppMessage({
+        conversationId: conversation._id,
+
+        whatsappContactId: contact._id,
+
+        externalMessageId: data.key?.id || '',
+
+        content: data.content || '',
+
+        type:
+          data.type === 'TEXT'
+            ? 'text'
+            : data.type === 'IMAGE'
+              ? 'image'
+              : data.type === 'FILE'
+                ? 'file'
+                : 'text',
+
+        attachment: data.fileUrl
+          ? {
+              url: data.fileUrl,
+
+              name: '',
+
+              size: 0,
+
+              mimeType: '',
+            }
+          : null,
+      })
+
+      // ======================================================
+      // MESSAGE LOG
+      // ======================================================
+
+      console.log('')
+
+      console.log('📝 MESSAGE WHATSAPP PERSISTIDA')
+
+      console.log('==========================================')
+
+      console.log('Message ID:', message._id.toString())
+
+      console.log('Content:', message.content)
+
+      console.log('Direction:', message.direction)
+
+      console.log('Sender Type:', message.senderType)
+
+      console.log(
+        'WhatsApp Contact:',
+        message.whatsappContact?._id?.toString?.() ||
+          message.whatsappContact?.toString?.() ||
+          null,
+      )
+
+      console.log('External ID:', message.externalMessageId)
+
+      console.log('Status:', message.status)
+
       console.log('==========================================')
     }
   }
@@ -507,20 +698,32 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
   }
 
   console.log('==========================================')
+
   console.log('')
+
+  // ==========================================================
+  // RESPONSE
+  // ==========================================================
 
   return {
     received: true,
+
     event: payload.event,
+
     sessionId,
+
     integrationId: integration._id,
 
     contact: contact
       ? {
           id: contact._id,
+
           name: contact.name,
+
           phone: contact.phone,
+
           remoteJid: contact.remoteJid,
+
           isGroup: contact.isGroup,
         }
       : null,
@@ -528,14 +731,42 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
     conversation: conversation
       ? {
           id: conversation._id,
+
           channel: conversation.channel,
+
           type: conversation.type,
+
           whatsappContact: conversation.whatsappContact,
+
           participants: conversation.participants,
+        }
+      : null,
+
+    message: message
+      ? {
+          id: message._id,
+
+          content: message.content,
+
+          type: message.type,
+
+          direction: message.direction,
+
+          senderType: message.senderType,
+
+          whatsappContact: message.whatsappContact,
+
+          externalMessageId: message.externalMessageId,
+
+          status: message.status,
         }
       : null,
   }
 }
+
+// ============================================================
+// UPDATE WEBHOOK SECRET
+// ============================================================
 
 export const updateWebhookSecret = async ({ integrationId, webhookSecret }) => {
   if (!integrationId) {
@@ -553,16 +784,20 @@ export const updateWebhookSecret = async ({ integrationId, webhookSecret }) => {
   }
 
   integration.webhookSecret = webhookSecret.trim()
+
   await integration.save()
 
   console.log('🔐 Webhook secret atualizado:', {
     integrationId: integration._id.toString(),
+
     sessionId: integration.sessionId,
   })
 
   return {
     integrationId: integration._id,
+
     sessionId: integration.sessionId,
+
     updated: true,
   }
 }

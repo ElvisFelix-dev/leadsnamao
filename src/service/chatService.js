@@ -488,11 +488,156 @@ export const addBrokerToChannel = async ({ brokerId }) => {
   return channel
 }
 
+/**
+ * ==========================================================
+ * CRIA MENSAGEM RECEBIDA PELO WHATSAPP
+ * ==========================================================
+ *
+ * Usada exclusivamente pelo webhook do WA-AKG.
+ *
+ * Não exige User como remetente.
+ * O remetente é um WhatsAppContact.
+ */
+export const receiveWhatsAppMessage = async ({
+  conversationId,
+  whatsappContactId,
+  externalMessageId,
+  content,
+  type = 'text',
+  attachment = null,
+}) => {
+  if (!conversationId) {
+    throw new AppError('ID da conversa WhatsApp é obrigatório.', 400)
+  }
+
+  if (!whatsappContactId) {
+    throw new AppError('ID do contato WhatsApp é obrigatório.', 400)
+  }
+
+  if (!content || !content.trim()) {
+    throw new AppError('Conteúdo da mensagem WhatsApp é obrigatório.', 400)
+  }
+
+  // ----------------------------------------------------------
+  // Evitar mensagem duplicada
+  // ----------------------------------------------------------
+
+  if (externalMessageId) {
+    const existingMessage = await Message.findOne({
+      externalMessageId,
+    })
+
+    if (existingMessage) {
+      console.log('⚠️ Mensagem WhatsApp já existe:', externalMessageId)
+
+      return existingMessage
+    }
+  }
+
+  // ----------------------------------------------------------
+  // Validar conversa
+  // ----------------------------------------------------------
+
+  const conversation = await Conversation.findOne({
+    _id: conversationId,
+    channel: 'whatsapp',
+    whatsappContact: whatsappContactId,
+    isActive: true,
+  })
+
+  if (!conversation) {
+    throw new AppError('Conversa WhatsApp não encontrada.', 404)
+  }
+
+  // ----------------------------------------------------------
+  // Criar mensagem
+  // ----------------------------------------------------------
+
+  const message = new Message({
+    conversation: conversationId,
+
+    sender: null,
+
+    senderType: 'whatsapp_contact',
+
+    whatsappContact: whatsappContactId,
+
+    externalMessageId: externalMessageId || '',
+
+    direction: 'inbound',
+
+    content: content.trim(),
+
+    type,
+
+    attachment,
+
+    status: 'delivered',
+
+    readBy: [],
+
+    readAt: null,
+
+    replyTo: null,
+
+    mentions: [],
+  })
+
+  await message.save()
+
+  // ----------------------------------------------------------
+  // Atualizar conversa
+  // ----------------------------------------------------------
+
+  conversation.lastMessage = message.content
+
+  conversation.lastMessageAt = new Date()
+
+  // Não usamos lastMessageFrom porque esse campo referencia
+  // exclusivamente User.
+  conversation.lastMessageFrom = null
+
+  await conversation.save()
+
+  // ----------------------------------------------------------
+  // Populate
+  // ----------------------------------------------------------
+
+  await message.populate([
+    {
+      path: 'whatsappContact',
+      select: 'name phone remoteJid profilePicture isGroup',
+    },
+
+    {
+      path: 'conversation',
+      select: 'channel whatsappContact name',
+    },
+  ])
+
+  console.log('')
+  console.log('📨 MENSAGEM WHATSAPP PERSISTIDA')
+  console.log('==========================================')
+  console.log('Message ID:', message._id.toString())
+  console.log('Conversation ID:', conversation._id.toString())
+  console.log('WhatsApp Contact:', whatsappContactId.toString())
+  console.log('External Message ID:', externalMessageId || null)
+  console.log('Content:', message.content)
+  console.log('Direction:', message.direction)
+  console.log('Sender Type:', message.senderType)
+  console.log('Status:', message.status)
+  console.log('==========================================')
+  console.log('')
+
+  return message
+}
+
 export default {
   createConversation,
   getUserConversations,
   getConversationMessages,
   sendMessage,
+  receiveWhatsAppMessage,
   markMessageAsRead,
   markConversationAsRead,
   createBrokerChannel,

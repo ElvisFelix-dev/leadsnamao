@@ -258,13 +258,27 @@ messageSchema.pre('save', function (next) {
     this.content = this.content.trim()
   }
 
-  // Mensagem interna
+  // ==========================================================
+  // VALIDAÇÃO DO REMETENTE
+  // ==========================================================
+
+  // Mensagem enviada por usuário do CRM
   if (this.senderType === 'user') {
     if (!this.sender) {
-      return next(new Error('Mensagem interna precisa possuir um remetente.'))
+      return next(
+        new Error('Mensagem enviada por usuário precisa possuir um remetente.'),
+      )
     }
 
-    this.whatsappContact = null
+    // Mensagem interna:
+    // sender = usuário
+    // whatsappContact = null
+    //
+    // Mensagem WhatsApp outbound:
+    // sender = usuário
+    // whatsappContact = contato WhatsApp
+    //
+    // Portanto, não limpamos whatsappContact aqui.
   }
 
   // Mensagem WhatsApp recebida

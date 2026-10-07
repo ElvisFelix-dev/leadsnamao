@@ -1,6 +1,16 @@
 import { Server } from 'socket.io'
 import Conversation from '../models/Conversation.js'
 
+// =========================================================
+// INSTÂNCIA GLOBAL DO SOCKET.IO
+// =========================================================
+
+let ioInstance = null
+
+export const getSocketIO = () => {
+  return ioInstance
+}
+
 export function setupSocketIO(httpServer) {
   const allowedOrigins = process.env.ALLOWED_ORIGINS
     ? process.env.ALLOWED_ORIGINS.split(',')
@@ -14,20 +24,41 @@ export function setupSocketIO(httpServer) {
     },
   })
 
-  // Middleware de autenticação do Socket (opcional)
+  // Guardar a instância para uso por outros serviços
+  ioInstance = io
+
+  // =========================================================
+  // MIDDLEWARE DE AUTENTICAÇÃO DO SOCKET
+  // =========================================================
+
   io.use((socket, next) => {
     // Aqui você pode validar o token JWT do socket
+    //
     // const token = socket.handshake.auth.token
-    // if (!token) return next(new Error('Autenticação necessária'))
+    //
+    // if (!token) {
+    //   return next(new Error('Autenticação necessária'))
+    // }
+    //
     // try {
-    //   const decoded = jwt.verify(token, process.env.JWT_SECRET)
+    //   const decoded = jwt.verify(
+    //     token,
+    //     process.env.JWT_SECRET,
+    //   )
+    //
     //   socket.userId = decoded.id
+    //
     //   next()
     // } catch (err) {
     //   next(new Error('Token inválido'))
     // }
+
     next()
   })
+
+  // =========================================================
+  // CONEXÃO
+  // =========================================================
 
   io.on('connection', (socket) => {
     console.log(`🟢 Cliente conectado: ${socket.id}`)
@@ -35,12 +66,15 @@ export function setupSocketIO(httpServer) {
     // ============================================
     // ADMIN
     // ============================================
+
     socket.on('joinAdmin', async () => {
       socket.join('admins')
+
       console.log('👨‍💻 Admin conectado e ouvindo todas as conversas')
 
       try {
         const conversations = await Conversation.find({})
+
         conversations.forEach((conv) => {
           conv.messages.forEach((msg) => {
             socket.emit('newMessage', {
@@ -63,14 +97,21 @@ export function setupSocketIO(httpServer) {
     // ============================================
     // USUÁRIO
     // ============================================
+
     socket.on('joinConversation', async ({ userName }) => {
       socket.join(userName)
+
       console.log(`👤 Usuário ${userName} entrou na conversa`)
 
       try {
         let conversation = await Conversation.findOne({ userName })
+
         if (!conversation) {
-          conversation = new Conversation({ userName, messages: [] })
+          conversation = new Conversation({
+            userName,
+            messages: [],
+          })
+
           await conversation.save()
         }
 
@@ -94,6 +135,7 @@ export function setupSocketIO(httpServer) {
     // ============================================
     // ENVIAR MENSAGEM
     // ============================================
+
     socket.on('sendMessage', async (data) => {
       const { conversationId, from, to, body } = data
 
@@ -118,6 +160,7 @@ export function setupSocketIO(httpServer) {
         }
 
         conversation.messages.push(msg)
+
         await conversation.save()
 
         const messageData = {
@@ -130,9 +173,11 @@ export function setupSocketIO(httpServer) {
         }
 
         io.to(conversationId).emit('newMessage', messageData)
+
         io.to('admins').emit('newMessage', messageData)
       } catch (err) {
         console.error('❌ Erro ao salvar mensagem:', err.message)
+
         socket.emit('messageError', {
           message: 'Erro ao enviar mensagem',
           error: err.message,
@@ -143,14 +188,17 @@ export function setupSocketIO(httpServer) {
     // ============================================
     // DIGITAÇÃO
     // ============================================
+
     socket.on('typing', (conversationId) => {
       socket.to(conversationId).emit('typing', conversationId)
+
       socket.to('admins').emit('typing', conversationId)
     })
 
     // ============================================
     // DESCONEXÃO
     // ============================================
+
     socket.on('disconnect', () => {
       console.log(`🔴 Cliente desconectado: ${socket.id}`)
     })

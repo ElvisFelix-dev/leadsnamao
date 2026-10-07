@@ -1,266 +1,291 @@
 import mongoose from 'mongoose'
+import Conversation from '../models/Conversation.js'
 
-export const setupChatSocket = (io) => {
+const normalizeId = (value) => {
+  if (!value) return null
+
+  if (typeof value === 'string') {
+    return value
+  }
+
+  if (value?._id) {
+    return value._id.toString()
+  }
+
+  return value.toString()
+}
+
+const isAdminUser = (user) => {
+  return user?.isAdmin === true || user?.role === 'admin'
+}
+
+export function setupChatSocket(io) {
+  console.log('')
+  console.log('==========================================')
+  console.log('🔌 CHAT SOCKET.IO INICIADO')
+  console.log('==========================================')
+
   io.on('connection', async (socket) => {
-    console.log(`🔌 Cliente conectado ao chat: ${socket.id}`)
+    console.log('')
+    console.log('==========================================')
+    console.log('🟢 NOVO CLIENTE SOCKET.IO')
+    console.log('==========================================')
+    console.log('Socket ID:', socket.id)
+    console.log('Transport:', socket.conn?.transport?.name)
+    console.log('Origin:', socket.handshake?.headers?.origin || null)
 
-    // =========================================================
-    // IDENTIFICAR USUÁRIO
-    // =========================================================
+    const rawUserId = socket.handshake?.auth?.userId
 
-    let rawUserId = socket.handshake.auth?.userId
+    console.log('🔍 RAW userId:', rawUserId)
+    console.log('🔍 typeof userId:', typeof rawUserId)
 
-    console.log('🔍 RAW userId:', rawUserId, '| typeof:', typeof rawUserId)
+    const userId = normalizeId(rawUserId)
 
-    /**
-     * Corrige caso o frontend envie o ObjectId
-     * como objeto MongoDB:
-     *
-     * { $oid: "..." }
-     *
-     * ou:
-     *
-     * { _id: "..." }
-     */
-    if (rawUserId && typeof rawUserId === 'object') {
-      rawUserId = rawUserId.$oid || rawUserId._id || rawUserId.toString()
-    }
+    console.log('🔍 userId normalizado:', userId)
 
-    if (!rawUserId) {
-      console.warn('⚠️ Socket conectado sem userId. Desconectando...')
-
-      socket.disconnect(true)
+    if (!userId) {
+      console.warn('⚠️ Socket conectado sem userId.')
       return
     }
 
-    const userIdString = String(rawUserId)
-
-    console.log(`🔍 userId normalizado: ${userIdString}`)
-
-    // =========================================================
-    // VALIDAR USER ID
-    // =========================================================
-
-    if (!mongoose.Types.ObjectId.isValid(userIdString)) {
-      console.warn(`⚠️ userId inválido no Socket.IO: ${userIdString}`)
-
-      socket.disconnect(true)
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      console.warn('⚠️ userId inválido:', userId)
       return
     }
 
-    // =========================================================
-    // MODEL
-    // =========================================================
+    socket.data.userId = userId
 
-    const Conversation = mongoose.model('Conversation')
+    // =====================================================
+    // USER ROOM
+    // =====================================================
 
-    // =========================================================
-    // SALA INDIVIDUAL DO USUÁRIO
-    // =========================================================
-
-    const userRoom = `user_${userIdString}`
+    const userRoom = `user_${userId}`
 
     socket.join(userRoom)
 
-    console.log(`👤 Usuário ${userIdString} entrou na sala ${userRoom}`)
+    console.log('')
+    console.log('👤 USER ROOM')
+    console.log('==========================================')
+    console.log('User:', userId)
+    console.log('Room:', userRoom)
+    console.log('Socket:', socket.id)
 
-    // =========================================================
-    // FUNÇÃO: ENTRAR NAS CONVERSAS DO USUÁRIO
-    // =========================================================
+    // =====================================================
+    // BUSCAR CONVERSAS DO USUÁRIO
+    // =====================================================
 
     const joinUserConversations = async () => {
       try {
-        /**
-         * CHAT INTERNO
-         * ----------------
-         * O usuário participa através de:
-         *
-         * participants: [userId]
-         *
-         * WHATSAPP
-         * ----------------
-         * O corretor responsável participa através de:
-         *
-         * assignedTo: userId
-         *
-         * Portanto usamos $or para contemplar os
-         * dois tipos de conversa.
-         */
+        console.log('')
+        console.log('🔎 BUSCANDO CONVERSAS DO USUÁRIO')
+        console.log('User:', userId)
+
         const conversations = await Conversation.find({
           isActive: true,
           $or: [
             {
-              participants: userIdString,
+              participants: userId,
             },
             {
-              assignedTo: userIdString,
+              assignedTo: userId,
             },
           ],
-        }).select('_id channel assignedTo participants')
+        })
+          .select('_id channel assignedTo participants')
+          .lean()
 
-        console.log(
-          `📩 Usuário ${userIdString} possui ${conversations.length} conversas`,
-        )
+        console.log('📩 Conversas encontradas:', conversations.length)
 
         for (const conversation of conversations) {
           const conversationId = conversation._id.toString()
 
+          const canJoin =
+            conversation.channel === 'whatsapp'
+              ? normalizeId(conversation.assignedTo) === userId
+              : conversation.participants?.some(
+                  (participant) => normalizeId(participant) === userId,
+                )
+
+          console.log('')
+          console.log('💬 CONVERSA')
+          console.log('------------------------------------------')
+          console.log('Conversation:', conversationId)
+          console.log('Channel:', conversation.channel)
+          console.log('AssignedTo:', normalizeId(conversation.assignedTo))
+          console.log(
+            'Participants:',
+            conversation.participants?.map(normalizeId),
+          )
+          console.log('Pode entrar:', canJoin)
+
+          if (!canJoin) {
+            console.log('⛔ Socket não entrou na conversa')
+            continue
+          }
+
           socket.join(conversationId)
 
-          console.log(
-            `📩 Usuário ${userIdString} entrou na conversa ${conversationId} (${conversation.channel})`,
-          )
+          console.log('✅ SOCKET ENTROU NA CONVERSA:', conversationId)
+
+          console.log('📦 ROOMS ATUAIS DO SOCKET:', [...socket.rooms])
         }
 
-        return conversations
+        console.log('')
+        console.log('==========================================')
+        console.log('🏁 JOIN AUTOMÁTICO FINALIZADO')
+        console.log('Socket:', socket.id)
+        console.log('User:', userId)
+        console.log('Rooms:', [...socket.rooms])
+        console.log('==========================================')
       } catch (error) {
-        console.error('❌ Erro ao entrar nas conversas:', error.message)
-
-        return []
+        console.error('❌ Erro ao entrar nas conversas:', error)
       }
     }
 
-    // =========================================================
-    // ENTRAR AUTOMATICAMENTE NAS CONVERSAS
-    // =========================================================
-
     await joinUserConversations()
 
-    // =========================================================
-    // NOTIFICAR OUTROS USUÁRIOS QUE ESTE USUÁRIO ESTÁ ONLINE
-    // =========================================================
-
-    socket.broadcast.emit('user_online', userIdString)
-
-    console.log(`🟢 Usuário ${userIdString} está online`)
-
-    // =========================================================
-    // EVENTO: JOIN_CONVERSATIONS
-    // =========================================================
+    // =====================================================
+    // JOIN CONVERSATIONS
+    // =====================================================
 
     socket.on('join_conversations', async () => {
-      console.log(`📩 Solicitação para entrar nas conversas: ${userIdString}`)
+      console.log('')
+      console.log('📡 EVENTO join_conversations')
+      console.log('Socket:', socket.id)
+      console.log('User:', userId)
 
       await joinUserConversations()
     })
 
-    // =========================================================
-    // EVENTO: JOIN_CONVERSATION
-    // =========================================================
+    // =====================================================
+    // JOIN CONVERSATION
+    // =====================================================
 
-    socket.on('join_conversation', async (conversationId) => {
+    socket.on('join_conversation', async (conversationId, callback) => {
       try {
-        if (!conversationId) {
-          console.warn('⚠️ join_conversation sem conversationId')
+        console.log('')
+        console.log('==========================================')
+        console.log('📡 EVENTO join_conversation')
+        console.log('==========================================')
+        console.log('Socket:', socket.id)
+        console.log('User:', userId)
+        console.log('Conversation:', conversationId)
+
+        if (
+          !conversationId ||
+          !mongoose.Types.ObjectId.isValid(conversationId)
+        ) {
+          console.warn('⚠️ Conversation ID inválido:', conversationId)
+
+          if (typeof callback === 'function') {
+            callback({
+              success: false,
+              message: 'Conversation ID inválido.',
+            })
+          }
 
           return
         }
 
-        if (!mongoose.Types.ObjectId.isValid(conversationId)) {
-          console.warn(`⚠️ conversationId inválido: ${conversationId}`)
-
-          return
-        }
-
-        /**
-         * Precisamos buscar tanto:
-         *
-         * - participants → chat interno
-         * - assignedTo → WhatsApp
-         */
         const conversation = await Conversation.findOne({
           _id: conversationId,
           isActive: true,
-        }).select('channel participants assignedTo')
+        })
+          .select('_id channel assignedTo participants')
+          .lean()
 
         if (!conversation) {
-          console.warn(`⚠️ Conversa não encontrada: ${conversationId}`)
+          console.warn('⚠️ Conversa não encontrada:', conversationId)
+
+          if (typeof callback === 'function') {
+            callback({
+              success: false,
+              message: 'Conversa não encontrada.',
+            })
+          }
 
           return
         }
 
-        // ===================================================
-        // CHAT INTERNO
-        // ===================================================
+        const assignedTo = normalizeId(conversation.assignedTo)
 
-        const isInternalParticipant = conversation.participants?.some(
-          (participant) =>
-            participant && participant.toString() === userIdString,
+        const isAssigned = assignedTo === userId
+
+        const isParticipant = conversation.participants?.some(
+          (participant) => normalizeId(participant) === userId,
         )
 
-        // ===================================================
-        // WHATSAPP
-        // ===================================================
+        const canJoin =
+          isAdminUser(socket.data.user) || isAssigned || isParticipant
 
-        const isWhatsAppAssigned =
-          conversation.channel === 'whatsapp' &&
-          conversation.assignedTo &&
-          conversation.assignedTo.toString() === userIdString
+        console.log('Channel:', conversation.channel)
+        console.log('AssignedTo:', assignedTo)
+        console.log('Is assigned:', isAssigned)
+        console.log('Is participant:', isParticipant)
+        console.log('Can join:', canJoin)
 
-        // ===================================================
-        // AUTORIZAÇÃO
-        // ===================================================
+        if (!canJoin) {
+          console.warn('⛔ Usuário não autorizado para room:', conversationId)
 
-        if (!isInternalParticipant && !isWhatsAppAssigned) {
-          console.warn(
-            `⚠️ Usuário ${userIdString} tentou entrar em conversa sem permissão: ${conversationId}`,
-          )
+          if (typeof callback === 'function') {
+            callback({
+              success: false,
+              message: 'Sem permissão para esta conversa.',
+            })
+          }
 
           return
         }
-
-        // ===================================================
-        // ENTRAR NA ROOM
-        // ===================================================
 
         socket.join(conversationId)
 
-        console.log(
-          `📩 Usuário ${userIdString} entrou na conversa ${conversationId} (${conversation.channel})`,
-        )
-      } catch (error) {
-        console.error('❌ Erro ao entrar na conversa:', error.message)
-      }
-    })
+        console.log('✅ SOCKET ENTROU NA ROOM:', conversationId)
 
-    // =========================================================
-    // EVENTO: TYPING
-    // =========================================================
+        console.log('📦 ROOMS DO SOCKET:', [...socket.rooms])
 
-    socket.on('typing', ({ conversationId, isTyping } = {}) => {
-      try {
-        if (!conversationId) {
-          return
+        if (typeof callback === 'function') {
+          callback({
+            success: true,
+            conversationId,
+            rooms: [...socket.rooms],
+          })
         }
-
-        /**
-         * Envia somente para os outros usuários
-         * da conversa.
-         *
-         * O próprio usuário não recebe o evento.
-         */
-        socket.to(conversationId).emit('user_typing', {
-          userId: userIdString,
-          isTyping: Boolean(isTyping),
-        })
       } catch (error) {
-        console.error('❌ Erro no evento typing:', error.message)
+        console.error('❌ Erro no join_conversation:', error)
+
+        if (typeof callback === 'function') {
+          callback({
+            success: false,
+            message: error.message,
+          })
+        }
       }
     })
 
-    // =========================================================
-    // DESCONEXÃO
-    // =========================================================
+    // =====================================================
+    // TYPING
+    // =====================================================
+
+    socket.on('typing', (conversationId) => {
+      if (!conversationId) return
+
+      socket.to(conversationId).emit('typing', conversationId)
+    })
+
+    // =====================================================
+    // DISCONNECT
+    // =====================================================
 
     socket.on('disconnect', (reason) => {
-      console.log(`🔌 Cliente desconectado do chat: ${socket.id}`)
-
-      console.log(`👤 Usuário: ${userIdString}`)
-
-      console.log(`📌 Motivo: ${reason}`)
-
-      // Avisar outros usuários
-      socket.broadcast.emit('user_offline', userIdString)
+      console.log('')
+      console.log('==========================================')
+      console.log('🔴 SOCKET DESCONECTADO')
+      console.log('==========================================')
+      console.log('Socket:', socket.id)
+      console.log('User:', userId)
+      console.log('Reason:', reason)
+      console.log('Rooms:', [...socket.rooms])
+      console.log('==========================================')
     })
   })
 }

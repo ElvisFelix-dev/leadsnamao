@@ -748,6 +748,11 @@ export const sendWhatsAppMessage = async ({
     message: content.trim(),
   })
 
+  console.log(
+    '[CHAT][WHATSAPP] Provider response:',
+    JSON.stringify(providerResponse, null, 2),
+  )
+
   /**
    * ==========================================================
    * PERSISTÊNCIA DA MENSAGEM

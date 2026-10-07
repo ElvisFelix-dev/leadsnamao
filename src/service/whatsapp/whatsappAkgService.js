@@ -826,36 +826,110 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
 
     if (io && message?._id) {
       const conversationId = conversation._id.toString()
+
       const assignedTo = conversation.assignedTo?.toString()
+
+      const conversationRoom = conversationId
+
+      const userRoom = assignedTo ? `user_${assignedTo}` : null
 
       console.log('')
       console.log('📡 EMITINDO MENSAGEM WHATSAPP VIA SOCKET.IO')
       console.log('==========================================')
-      console.log('Conversation room:', conversationId)
+      console.log('Conversation room:', conversationRoom)
       console.log('Assigned user:', assignedTo || null)
+      console.log('User room:', userRoom || null)
       console.log('Message ID:', message._id.toString())
 
-      // Mensagem para quem está dentro da conversa
-      io.to(conversationId).emit('new_message', message)
+      // =======================================================
+      // DIAGNÓSTICO DAS ROOMS
+      // =======================================================
 
-      // Notificação para o responsável
-      if (assignedTo) {
-        io.to(`user_${assignedTo}`).emit('new_message_notification', {
-          conversationId,
-          channel: 'whatsapp',
-          message: {
-            _id: message._id,
-            content: message.content,
-            sender: message.sender,
-            senderType: message.senderType,
-            createdAt: message.createdAt,
-            type: message.type,
-            direction: message.direction,
-            status: message.status,
-          },
+      try {
+        const conversationSockets = await io.in(conversationRoom).fetchSockets()
+
+        console.log('')
+        console.log(
+          '🔎 SOCKETS NA ROOM DA CONVERSA:',
+          conversationSockets.length,
+        )
+
+        conversationSockets.forEach((socket) => {
+          console.log('   • Socket:', socket.id)
+
+          console.log(
+            '     User:',
+            socket.handshake?.auth?.userId || socket.data?.userId || null,
+          )
+
+          console.log('     Rooms:', [...socket.rooms])
         })
+
+        if (userRoom) {
+          const userSockets = await io.in(userRoom).fetchSockets()
+
+          console.log('')
+          console.log(
+            '🔎 SOCKETS NA USER ROOM:',
+            userRoom,
+            ':',
+            userSockets.length,
+          )
+
+          userSockets.forEach((socket) => {
+            console.log('   • Socket:', socket.id)
+
+            console.log(
+              '     User:',
+              socket.handshake?.auth?.userId || socket.data?.userId || null,
+            )
+
+            console.log('     Rooms:', [...socket.rooms])
+          })
+        }
+      } catch (socketInspectionError) {
+        console.error(
+          '❌ Erro ao inspecionar rooms Socket.IO:',
+          socketInspectionError,
+        )
       }
 
+      // =======================================================
+      // EMIT PARA A ROOM DA CONVERSA
+      // =======================================================
+
+      const socketMessage = {
+        ...(message.toObject?.() || message),
+      }
+
+      console.log('')
+      console.log('📤 Emitindo evento new_message:')
+      console.log('   Room:', conversationRoom)
+
+      io.to(conversationRoom).emit('new_message', socketMessage)
+
+      // =======================================================
+      // EMIT PARA A USER ROOM
+      // =======================================================
+
+      if (userRoom) {
+        const notificationPayload = {
+          conversationId,
+
+          channel: 'whatsapp',
+
+          message: socketMessage,
+        }
+
+        console.log('')
+        console.log('📤 Emitindo evento new_message_notification:')
+
+        console.log('   Room:', userRoom)
+
+        io.to(userRoom).emit('new_message_notification', notificationPayload)
+      }
+
+      console.log('')
       console.log('✅ MENSAGEM EMITIDA VIA SOCKET.IO')
       console.log('==========================================')
     } else {

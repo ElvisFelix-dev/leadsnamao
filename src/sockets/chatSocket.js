@@ -8,16 +8,27 @@ export const setupChatSocket = (io) => {
     // IDENTIFICAR USUÁRIO
     // =========================================================
 
-    const rawUserId = socket.handshake.auth?.userId
-    console.log(`🔍 RAW userId:`, rawUserId, '| typeof:', typeof rawUserId)
+    let rawUserId = socket.handshake.auth?.userId
 
-    // ✅ Corrige caso venha como objeto { $oid: "..." }
+    console.log('🔍 RAW userId:', rawUserId, '| typeof:', typeof rawUserId)
+
+    /**
+     * Corrige caso o frontend envie o ObjectId
+     * como objeto MongoDB:
+     *
+     * { $oid: "..." }
+     *
+     * ou:
+     *
+     * { _id: "..." }
+     */
     if (rawUserId && typeof rawUserId === 'object') {
       rawUserId = rawUserId.$oid || rawUserId._id || rawUserId.toString()
     }
 
     if (!rawUserId) {
       console.warn('⚠️ Socket conectado sem userId. Desconectando...')
+
       socket.disconnect(true)
       return
     }
@@ -25,6 +36,17 @@ export const setupChatSocket = (io) => {
     const userIdString = String(rawUserId)
 
     console.log(`🔍 userId normalizado: ${userIdString}`)
+
+    // =========================================================
+    // VALIDAR USER ID
+    // =========================================================
+
+    if (!mongoose.Types.ObjectId.isValid(userIdString)) {
+      console.warn(`⚠️ userId inválido no Socket.IO: ${userIdString}`)
+
+      socket.disconnect(true)
+      return
+    }
 
     // =========================================================
     // MODEL
@@ -48,10 +70,33 @@ export const setupChatSocket = (io) => {
 
     const joinUserConversations = async () => {
       try {
+        /**
+         * CHAT INTERNO
+         * ----------------
+         * O usuário participa através de:
+         *
+         * participants: [userId]
+         *
+         * WHATSAPP
+         * ----------------
+         * O corretor responsável participa através de:
+         *
+         * assignedTo: userId
+         *
+         * Portanto usamos $or para contemplar os
+         * dois tipos de conversa.
+         */
         const conversations = await Conversation.find({
-          participants: userIdString,
           isActive: true,
-        }).select('_id')
+          $or: [
+            {
+              participants: userIdString,
+            },
+            {
+              assignedTo: userIdString,
+            },
+          ],
+        }).select('_id channel assignedTo participants')
 
         console.log(
           `📩 Usuário ${userIdString} possui ${conversations.length} conversas`,
@@ -63,13 +108,14 @@ export const setupChatSocket = (io) => {
           socket.join(conversationId)
 
           console.log(
-            `📩 Usuário ${userIdString} entrou na conversa ${conversationId}`,
+            `📩 Usuário ${userIdString} entrou na conversa ${conversationId} (${conversation.channel})`,
           )
         }
 
         return conversations
       } catch (error) {
         console.error('❌ Erro ao entrar nas conversas:', error.message)
+
         return []
       }
     }
@@ -94,6 +140,7 @@ export const setupChatSocket = (io) => {
 
     socket.on('join_conversations', async () => {
       console.log(`📩 Solicitação para entrar nas conversas: ${userIdString}`)
+
       await joinUserConversations()
     })
 
@@ -105,51 +152,71 @@ export const setupChatSocket = (io) => {
       try {
         if (!conversationId) {
           console.warn('⚠️ join_conversation sem conversationId')
+
           return
         }
 
         if (!mongoose.Types.ObjectId.isValid(conversationId)) {
           console.warn(`⚠️ conversationId inválido: ${conversationId}`)
+
           return
         }
 
+        /**
+         * Precisamos buscar tanto:
+         *
+         * - participants → chat interno
+         * - assignedTo → WhatsApp
+         */
         const conversation = await Conversation.findOne({
           _id: conversationId,
           isActive: true,
-        }).select('participants')
+        }).select('channel participants assignedTo')
 
         if (!conversation) {
           console.warn(`⚠️ Conversa não encontrada: ${conversationId}`)
+
           return
         }
 
         // ===================================================
-        // CORREÇÃO IMPORTANTE:
-        //
-        // Não usar:
-        //
-        // conversation.participants.includes(userId)
-        //
-        // porque participants contém ObjectIds e userId
-        // normalmente é string.
+        // CHAT INTERNO
         // ===================================================
 
-        const isParticipant = conversation.participants?.some(
+        const isInternalParticipant = conversation.participants?.some(
           (participant) =>
             participant && participant.toString() === userIdString,
         )
 
-        if (!isParticipant) {
+        // ===================================================
+        // WHATSAPP
+        // ===================================================
+
+        const isWhatsAppAssigned =
+          conversation.channel === 'whatsapp' &&
+          conversation.assignedTo &&
+          conversation.assignedTo.toString() === userIdString
+
+        // ===================================================
+        // AUTORIZAÇÃO
+        // ===================================================
+
+        if (!isInternalParticipant && !isWhatsAppAssigned) {
           console.warn(
             `⚠️ Usuário ${userIdString} tentou entrar em conversa sem permissão: ${conversationId}`,
           )
+
           return
         }
+
+        // ===================================================
+        // ENTRAR NA ROOM
+        // ===================================================
 
         socket.join(conversationId)
 
         console.log(
-          `📩 Usuário ${userIdString} entrou na conversa ${conversationId}`,
+          `📩 Usuário ${userIdString} entrou na conversa ${conversationId} (${conversation.channel})`,
         )
       } catch (error) {
         console.error('❌ Erro ao entrar na conversa:', error.message)
@@ -166,6 +233,12 @@ export const setupChatSocket = (io) => {
           return
         }
 
+        /**
+         * Envia somente para os outros usuários
+         * da conversa.
+         *
+         * O próprio usuário não recebe o evento.
+         */
         socket.to(conversationId).emit('user_typing', {
           userId: userIdString,
           isTyping: Boolean(isTyping),
@@ -181,7 +254,9 @@ export const setupChatSocket = (io) => {
 
     socket.on('disconnect', (reason) => {
       console.log(`🔌 Cliente desconectado do chat: ${socket.id}`)
+
       console.log(`👤 Usuário: ${userIdString}`)
+
       console.log(`📌 Motivo: ${reason}`)
 
       // Avisar outros usuários

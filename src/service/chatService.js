@@ -748,11 +748,6 @@ export const sendWhatsAppMessage = async ({
     message: content.trim(),
   })
 
-  console.log(
-    '[CHAT][WHATSAPP] Provider response:',
-    JSON.stringify(providerResponse, null, 2),
-  )
-
   /**
    * ==========================================================
    * PERSISTÊNCIA DA MENSAGEM
@@ -760,10 +755,7 @@ export const sendWhatsAppMessage = async ({
    */
 
   const externalMessageId =
-    providerResponse?.providerResponse?.data?.messageId ||
-    providerResponse?.providerResponse?.messageId ||
-    providerResponse?.providerResponse?.id ||
-    null
+    providerResponse?.providerResponse?.data?.key?.id || null
 
   const message = await Message.create({
     conversation: conversation._id,

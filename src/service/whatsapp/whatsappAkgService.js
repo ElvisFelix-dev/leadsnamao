@@ -8,6 +8,7 @@ import Lead from '../../models/Lead.js'
 import AppError from '../../utils/AppError.js'
 
 import { normalizePhone } from '../../utils/phone.js'
+import { getSocketIO } from '../../sockets/index.js'
 
 import * as chatService from '../chatService.js'
 
@@ -67,20 +68,11 @@ const upsertWhatsAppContact = async ({
     {
       $set: {
         lead: leadId,
-
         phone,
-
-        // O Lead continua sendo a fonte principal de identidade.
-        // O pushName do WhatsApp serve apenas como informação
-        // complementar do contato.
         name: name?.trim() || '',
-
         isGroup: Boolean(isGroup),
-
         lastMessageAt: new Date(),
-
         isActive: true,
-
         metadata,
       },
     },
@@ -174,13 +166,6 @@ const upsertWhatsAppConversation = async ({
   // ==========================================================
 
   conversation = await Conversation.create({
-    // IMPORTANTE:
-    // Conversas WhatsApp NÃO usam participants para definir
-    // quem é o responsável pela conversa.
-    //
-    // A responsabilidade vem de:
-    // Conversation.assignedTo
-    // e principalmente Lead.assignedTo.
     participants: [],
 
     channel: 'whatsapp',
@@ -191,7 +176,9 @@ const upsertWhatsAppConversation = async ({
 
     avatar: '',
 
-    lastMessage: '',
+    // Conversation.lastMessage é ObjectId.
+    // Não devemos utilizar string vazia.
+    lastMessage: null,
 
     lastMessageAt: new Date(),
 
@@ -514,7 +501,6 @@ const verifyWebhookSignature = ({ rawBody, signature, secret }) => {
     .update(rawBody)
     .digest('hex')
 
-  // Evita problemas de tamanho antes do timingSafeEqual.
   if (receivedSignature.length !== expectedSignature.length) {
     throw new AppError('Assinatura do webhook inválida.', 401)
   }
@@ -581,31 +567,19 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
   })
 
   console.log('')
-
   console.log('==========================================')
-
   console.log('📩 WEBHOOK WHATSAPP RECEBIDO')
-
   console.log('==========================================')
-
   console.log('Integração:', integration.name)
-
   console.log('Integration ID:', integration._id.toString())
-
   console.log('Session ID:', sessionId)
-
   console.log('Evento:', payload.event)
-
   console.log('Timestamp:', payload.timestamp)
-
   console.log('==========================================')
 
   let contact = null
-
   let conversation = null
-
   let message = null
-
   let lead = null
 
   // ==========================================================
@@ -622,17 +596,11 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
     const remoteJid = data.key?.remoteJid || data.remoteJid || data.from || ''
 
     console.log('📱 Mensagem recebida')
-
     console.log('From:', data.from)
-
     console.log('Remote JID:', remoteJid)
-
     console.log('Nome:', data.pushName)
-
     console.log('Tipo:', data.type)
-
     console.log('Mensagem:', data.content)
-
     console.log('Grupo:', data.isGroup)
 
     // ========================================================
@@ -644,21 +612,13 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
 
       return {
         received: true,
-
         event: payload.event,
-
         sessionId,
-
         integrationId: integration._id,
-
         ignored: true,
-
         reason: 'missing_remote_jid',
-
         contact: null,
-
         conversation: null,
-
         message: null,
       }
     }
@@ -669,42 +629,25 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
 
     if (data.isGroup || remoteJid.endsWith('@g.us')) {
       console.log('')
-
       console.log('👥 WHATSAPP GRUPO IGNORADO')
-
       console.log('==========================================')
-
       console.log('Remote JID:', remoteJid)
-
       console.log('Nome:', data.pushName || '')
-
       console.log('Motivo: mensagens de grupos não são processadas pelo CRM.')
-
       console.log('Nenhum WhatsAppContact foi criado.')
-
       console.log('Nenhuma Conversation foi criada.')
-
       console.log('Nenhuma Message foi criada.')
-
       console.log('==========================================')
 
       return {
         received: true,
-
         event: payload.event,
-
         sessionId,
-
         integrationId: integration._id,
-
         ignored: true,
-
         reason: 'whatsapp_group',
-
         contact: null,
-
         conversation: null,
-
         message: null,
       }
     }
@@ -716,15 +659,10 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
     const phone = normalizePhone(remoteJid.split('@')[0])
 
     console.log('')
-
     console.log('🔎 BUSCA DE LEAD')
-
     console.log('==========================================')
-
     console.log('Remote JID:', remoteJid)
-
     console.log('Telefone normalizado:', phone)
-
     console.log('==========================================')
 
     // ========================================================
@@ -739,44 +677,26 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
 
     if (!lead) {
       console.log('')
-
       console.log('🔒 WHATSAPP IGNORADO')
-
       console.log('==========================================')
-
       console.log('Motivo: número não está vinculado a nenhum Lead.')
-
       console.log('Telefone:', phone || 'inválido')
-
       console.log('Remote JID:', remoteJid)
-
       console.log('Nome:', data.pushName || '')
-
       console.log('Nenhum WhatsAppContact foi criado.')
-
       console.log('Nenhuma Conversation foi criada.')
-
       console.log('Nenhuma Message foi criada.')
-
       console.log('==========================================')
 
       return {
         received: true,
-
         event: payload.event,
-
         sessionId,
-
         integrationId: integration._id,
-
         ignored: true,
-
         reason: 'lead_not_found',
-
         contact: null,
-
         conversation: null,
-
         message: null,
       }
     }
@@ -786,21 +706,13 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
     // ========================================================
 
     console.log('')
-
     console.log('✅ LEAD ENCONTRADO')
-
     console.log('==========================================')
-
     console.log('Lead ID:', lead._id.toString())
-
     console.log('Nome:', lead.name)
-
     console.log('Telefone:', lead.phone)
-
     console.log('Telefone normalizado:', lead.phoneNormalized)
-
     console.log('Assigned To:', lead.assignedTo || null)
-
     console.log('==========================================')
 
     // ========================================================
@@ -814,8 +726,6 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
 
       leadId: lead._id,
 
-      // O nome do Lead é priorizado.
-      // O pushName entra apenas como fallback.
       name: lead.name || data.pushName || '',
 
       isGroup: false,
@@ -832,23 +742,14 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
     })
 
     console.log('')
-
     console.log('👤 CONTATO WHATSAPP PERSISTIDO')
-
     console.log('==========================================')
-
     console.log('Contato ID:', contact._id.toString())
-
     console.log('Nome:', contact.name)
-
     console.log('Telefone:', contact.phone)
-
     console.log('Remote JID:', contact.remoteJid)
-
     console.log('Grupo:', contact.isGroup)
-
     console.log('Lead ID:', lead._id.toString())
-
     console.log('==========================================')
 
     // ========================================================
@@ -868,28 +769,18 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
     })
 
     console.log('')
-
     console.log('💬 CONVERSA WHATSAPP')
-
     console.log('==========================================')
-
     console.log('Conversation ID:', conversation._id.toString())
-
     console.log('Channel:', conversation.channel)
-
     console.log('Contact ID:', conversation.whatsappContact?.toString() || null)
-
     console.log(
       'Integration ID:',
       conversation.whatsappIntegration?.toString() || null,
     )
-
     console.log('Lead ID:', conversation.lead?.toString() || null)
-
     console.log('Assigned To:', conversation.assignedTo?.toString() || null)
-
-    console.log('Participantes:', conversation.participants.length)
-
+    console.log('Participantes:', conversation.participants?.length || 0)
     console.log('==========================================')
 
     // ========================================================
@@ -928,21 +819,61 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
     })
 
     // ========================================================
+    // SOCKET.IO — TEMPO REAL
+    // ========================================================
+
+    const io = getSocketIO()
+
+    if (io && message?._id) {
+      const conversationId = conversation._id.toString()
+      const assignedTo = conversation.assignedTo?.toString()
+
+      console.log('')
+      console.log('📡 EMITINDO MENSAGEM WHATSAPP VIA SOCKET.IO')
+      console.log('==========================================')
+      console.log('Conversation room:', conversationId)
+      console.log('Assigned user:', assignedTo || null)
+      console.log('Message ID:', message._id.toString())
+
+      // Mensagem para quem está dentro da conversa
+      io.to(conversationId).emit('new_message', message)
+
+      // Notificação para o responsável
+      if (assignedTo) {
+        io.to(`user_${assignedTo}`).emit('new_message_notification', {
+          conversationId,
+          channel: 'whatsapp',
+          message: {
+            _id: message._id,
+            content: message.content,
+            sender: message.sender,
+            senderType: message.senderType,
+            createdAt: message.createdAt,
+            type: message.type,
+            direction: message.direction,
+            status: message.status,
+          },
+        })
+      }
+
+      console.log('✅ MENSAGEM EMITIDA VIA SOCKET.IO')
+      console.log('==========================================')
+    } else {
+      console.warn(
+        '⚠️ Socket.IO indisponível ou mensagem sem ID. Evento não emitido.',
+      )
+    }
+
+    // ========================================================
     // MESSAGE LOG
     // ========================================================
 
     console.log('')
-
     console.log('📝 MESSAGE WHATSAPP PERSISTIDA')
-
     console.log('==========================================')
-
     console.log('Message ID:', message._id.toString())
-
     console.log('Content:', message.content)
-
     console.log('Direction:', message.direction)
-
     console.log('Sender Type:', message.senderType)
 
     console.log(
@@ -953,13 +884,9 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
     )
 
     console.log('External ID:', message.externalMessageId)
-
     console.log('Status:', message.status)
-
     console.log('Lead ID:', lead._id.toString())
-
     console.log('Assigned To:', lead.assignedTo || null)
-
     console.log('==========================================')
   }
 
@@ -969,10 +896,12 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
 
   if (payload.event === 'message.sent') {
     console.log('📤 Mensagem enviada')
-
     console.log('Session ID:', sessionId)
-
     console.log('Integration ID:', integration._id.toString())
+
+    // Não criamos Message aqui.
+    // A mensagem outbound já é persistida pelo
+    // chatService.sendWhatsAppMessage().
   }
 
   // ==========================================================
@@ -981,14 +910,11 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
 
   if (payload.event === 'connection.update') {
     console.log('🔌 Atualização da conexão')
-
     console.log('Session ID:', sessionId)
-
     console.log('Data:', payload.data || {})
   }
 
   console.log('==========================================')
-
   console.log('')
 
   // ==========================================================

@@ -1,15 +1,9 @@
 import { Server } from 'socket.io'
 import Conversation from '../models/Conversation.js'
 
-// =========================================================
-// INSTÂNCIA GLOBAL DO SOCKET.IO
-// =========================================================
-
 let ioInstance = null
 
-export const getSocketIO = () => {
-  return ioInstance
-}
+export const getSocketIO = () => ioInstance
 
 export function setupSocketIO(httpServer) {
   const allowedOrigins = process.env.ALLOWED_ORIGINS
@@ -24,7 +18,6 @@ export function setupSocketIO(httpServer) {
     },
   })
 
-  // Guardar a instância para uso por outros serviços
   ioInstance = io
 
   // =========================================================

@@ -34,6 +34,20 @@ export function setupChatSocket(io) {
     console.log('Transport:', socket.conn?.transport?.name)
     console.log('Origin:', socket.handshake?.headers?.origin || null)
 
+    console.log('')
+    console.log('==========================================')
+    console.log('🧪 SOCKET INSTANCE DIAGNOSTIC')
+    console.log('==========================================')
+    console.log('PID:', process.pid)
+    console.log('HOSTNAME:', process.env.HOSTNAME || 'unknown')
+    console.log('NODE_ENV:', process.env.NODE_ENV)
+    console.log('Socket ID:', socket.id)
+    console.log(
+      'User ID:',
+      socket.data?.userId || socket.handshake?.auth?.userId,
+    )
+    console.log('==========================================')
+
     const rawUserId = socket.handshake?.auth?.userId
 
     console.log('🔍 RAW userId:', rawUserId)

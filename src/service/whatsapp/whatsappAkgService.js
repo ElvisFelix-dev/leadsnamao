@@ -523,7 +523,12 @@ const verifyWebhookSignature = ({ rawBody, signature, secret }) => {
 // WEBHOOK
 // ============================================================
 
-export const handleWebhook = async ({ rawBody, body, signature }) => {
+export const handleWebhook = async ({
+  rawBody,
+  body,
+  signature,
+  io: requestIo = null,
+}) => {
   if (!rawBody) {
     throw new AppError('Corpo bruto do webhook não disponível.', 400)
   }
@@ -822,7 +827,16 @@ export const handleWebhook = async ({ rawBody, body, signature }) => {
     // SOCKET.IO — TEMPO REAL
     // ========================================================
 
-    const io = getSocketIO()
+    const io = requestIo || getSocketIO()
+
+    console.log('')
+    console.log('==========================================')
+    console.log('🔌 SOCKET.IO DO WEBHOOK')
+    console.log('==========================================')
+    console.log('Socket.IO disponível:', !!io)
+    console.log('Veio do request:', !!requestIo)
+    console.log('PID:', process.pid)
+    console.log('==========================================')
 
     if (io && message?._id) {
       const conversationId = conversation._id.toString()

@@ -75,6 +75,9 @@ export const receiveWebhook = asyncHandler(async (req, res) => {
     rawBody: req.rawBody,
     body: req.body,
     signature: req.headers['x-webhook-signature'],
+
+    // Usa a mesma instância do Socket.IO registrada no Express.
+    io: req.app.get('io'),
   })
 
   res.status(200).json({

@@ -37,15 +37,15 @@ router.use(protect)
  * CONVERSATIONS
  * ============================================================
  *
- * Chat interno:
- *
  * GET  /api/chat/conversations
  * POST /api/chat/conversations
  *
- * A listagem também retorna conversas WhatsApp às quais
- * o usuário possui acesso.
+ * A listagem pode retornar:
  *
- * O controle de acesso é realizado pelo chatService:
+ * - conversas internas
+ * - conversas WhatsApp
+ *
+ * O controle de acesso é realizado pelo chatService.
  *
  * ADMIN
  *   → todas
@@ -63,8 +63,8 @@ router.get('/conversations', getConversations)
 /**
  * Cria conversa interna.
  *
- * O usuário autenticado é automaticamente adicionado
- * aos participantes pelo controller.
+ * Conversas WhatsApp são criadas automaticamente
+ * pela integração/webhook.
  */
 router.post('/conversations', createConversation)
 
@@ -88,7 +88,7 @@ router.post('/broker-channel', createBrokerChannel)
  *
  * GET /api/chat/conversations/:id/messages
  *
- * O chatService valida se:
+ * O chatService valida se o usuário possui acesso:
  *
  * - admin
  * - participante da conversa interna
@@ -97,31 +97,41 @@ router.post('/broker-channel', createBrokerChannel)
 router.get('/conversations/:id/messages', getMessages)
 
 /**
- * Envia mensagem pelo chat interno.
+ * ============================================================
+ * ENVIO DE MENSAGENS
+ * ============================================================
  *
- * IMPORTANTE:
+ * POST /api/chat/conversations/:id/messages
  *
- * Esta rota NÃO envia mensagens WhatsApp.
+ * O mesmo endpoint suporta:
  *
- * Se a conversa for:
+ * INTERNAL
+ *   → chatService.sendMessage()
  *
- * channel === 'whatsapp'
+ * WHATSAPP
+ *   → chatService.sendWhatsAppMessage()
+ *   → WA-AKG
  *
- * o chatService irá bloquear a operação.
+ * O controller identifica o canal através de:
  *
- * O WhatsApp terá endpoint próprio:
+ * conversation.channel
  *
- * POST /api/whatsapp/conversations/:id/messages
+ * Portanto, o frontend não precisa conhecer
+ * endpoints diferentes para cada canal.
  */
 router.post('/conversations/:id/messages', sendMessage)
 
 /**
+ * ============================================================
+ * READ
+ * ============================================================
+ *
  * Marca uma conversa como lida.
  *
  * Funciona para:
  *
  * - chat interno
- * - conversa WhatsApp
+ * - WhatsApp
  *
  * A autorização é feita pelo chatService.
  */
@@ -147,33 +157,38 @@ router.get('/users/search', searchUsers)
  */
 
 /**
- * Exclui mensagem do chat interno.
+ * Exclui mensagem.
  *
- * Mensagens recebidas pelo WhatsApp não podem ser excluídas
- * através deste endpoint.
+ * A validação sobre o tipo de mensagem/conversa
+ * permanece no chatService.
  */
 router.delete('/messages/:id', deleteMessage)
 
 /**
  * ============================================================
- * FUTURE WHATSAPP ROUTES
+ * WHATSAPP
  * ============================================================
  *
- * As rotas WhatsApp NÃO devem ficar neste router.
+ * Não precisamos criar uma rota separada para envio
+ * de mensagens WhatsApp.
  *
- * Elas ficarão em:
+ * O envio utiliza:
  *
- * src/routes/whatsappRoutes.js
+ * POST /api/chat/conversations/:id/messages
  *
- * Exemplos futuros:
+ * e o controller direciona automaticamente para
+ * chatService.sendWhatsAppMessage() quando:
  *
- * POST /api/whatsapp/conversations/:id/messages
- * POST /api/whatsapp/conversations/:id/read
- * GET  /api/whatsapp/integrations
- * POST /api/whatsapp/integrations
+ * conversation.channel === 'whatsapp'
  *
- * Isso mantém o domínio do chat interno separado
- * da integração externa WhatsApp.
+ * As rotas específicas da integração WA-AKG continuam
+ * no whatsappRoutes.js, por exemplo:
+ *
+ * - integrações
+ * - QR Code
+ * - webhook
+ * - teste de conexão
+ * - configuração da integração
  */
 
 export default router

@@ -206,14 +206,18 @@ export const getMessages = asyncHandler(async (req, res) => {
 /**
  * POST /api/chat/conversations/:id/messages
  *
- * Envia mensagem pelo CHAT INTERNO.
+ * Envia mensagem.
  *
- * IMPORTANTE:
- * Conversas WhatsApp não podem utilizar este endpoint
- * para envio.
+ * O mesmo endpoint atende os dois tipos de conversa:
  *
- * O envio WhatsApp terá um endpoint próprio, que chamará
- * whatsappAkgService.sendTextMessage().
+ * INTERNAL:
+ *   → chatService.sendMessage()
+ *
+ * WHATSAPP:
+ *   → chatService.sendWhatsAppMessage()
+ *
+ * Isso permite que o frontend continue utilizando
+ * um único endpoint.
  */
 export const sendMessage = asyncHandler(async (req, res) => {
   const { id } = req.params
@@ -231,23 +235,164 @@ export const sendMessage = asyncHandler(async (req, res) => {
   const userId = getUserId(req.user)
 
   /**
-   * Validar conteúdo.
+   * ----------------------------------------------------------
+   * VALIDAÇÃO DO CONTEÚDO
+   * ----------------------------------------------------------
+   */
+
+  const normalizedContent = typeof content === 'string' ? content.trim() : ''
+
+  /**
+   * ----------------------------------------------------------
+   * LOCALIZAR CONVERSA
+   * ----------------------------------------------------------
    *
+   * Precisamos saber se a mensagem será enviada:
+   *
+   * - internamente
+   * - pelo WhatsApp
+   */
+  const conversation = await Conversation.findOne({
+    _id: id,
+    isActive: true,
+  })
+    .select(
+      'channel participants assignedTo whatsappContact whatsappIntegration lead',
+    )
+    .lean()
+
+  if (!conversation) {
+    throw new AppError('Conversa não encontrada.', 404)
+  }
+
+  /**
+   * ----------------------------------------------------------
+   * VALIDAR MENTIONS
+   * ----------------------------------------------------------
+   */
+
+  if (mentions !== undefined && mentions !== null && !Array.isArray(mentions)) {
+    throw new AppError('Mentions deve ser um array.', 400)
+  }
+
+  /**
+   * ----------------------------------------------------------
+   * WHATSAPP
+   * ----------------------------------------------------------
+   */
+
+  if (conversation.channel === 'whatsapp') {
+    /**
+     * WhatsApp atualmente trabalha somente com texto.
+     *
+     * Anexos poderão ser adicionados posteriormente através
+     * de um fluxo específico de mídia do WA-AKG.
+     */
+    if (attachment) {
+      throw new AppError(
+        'Envio de anexos pelo WhatsApp ainda não está disponível.',
+        400,
+      )
+    }
+
+    if (!normalizedContent) {
+      throw new AppError('Conteúdo da mensagem WhatsApp é obrigatório.', 400)
+    }
+
+    const message = await chatService.sendWhatsAppMessage({
+      conversationId: id,
+      senderId: req.user._id,
+      content: normalizedContent,
+      replyTo,
+      mentions: mentions || [],
+    })
+
+    if (!message?._id) {
+      throw new AppError('Não foi possível criar a mensagem WhatsApp.', 500)
+    }
+
+    /**
+     * --------------------------------------------------------
+     * SOCKET.IO — WHATSAPP
+     * --------------------------------------------------------
+     *
+     * A mensagem já foi:
+     *
+     * 1. enviada para o WA-AKG;
+     * 2. persistida no MongoDB.
+     *
+     * Agora notificamos os clientes conectados.
+     */
+    const io = req.app.get('io')
+
+    if (io) {
+      try {
+        /**
+         * Todos os clientes conectados à conversa
+         * recebem a nova mensagem.
+         */
+        io.to(id).emit('new_message', message)
+
+        /**
+         * Notificação para o responsável pela conversa.
+         *
+         * Não notificamos o próprio remetente.
+         */
+        const assignedTo = conversation.assignedTo?.toString()
+
+        if (assignedTo && assignedTo !== userId) {
+          io.to(`user_${assignedTo}`).emit('new_message_notification', {
+            conversationId: id,
+            channel: 'whatsapp',
+            message: {
+              _id: message._id,
+              content: message.content,
+              sender: message.sender,
+              senderType: message.senderType,
+              createdAt: message.createdAt,
+              type: message.type,
+              direction: message.direction,
+              status: message.status,
+            },
+          })
+        }
+      } catch (socketError) {
+        /**
+         * Socket.IO não deve impedir o sucesso da API.
+         */
+        console.error(
+          'Erro ao emitir evento Socket.IO WhatsApp:',
+          socketError.message,
+        )
+      }
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: message,
+    })
+  }
+
+  /**
+   * ----------------------------------------------------------
+   * CHAT INTERNO
+   * ----------------------------------------------------------
+   */
+
+  if (conversation.channel !== 'internal') {
+    throw new AppError(
+      `Canal de conversa não suportado: ${conversation.channel || 'não informado'}.`,
+      400,
+    )
+  }
+
+  /**
    * Attachment sozinho continua sendo permitido pelo
    * service, mas mantemos a validação de content quando
    * não houver attachment.
    */
-  const normalizedContent = typeof content === 'string' ? content.trim() : ''
-
   if (!normalizedContent && !attachment) {
     throw new AppError('Conteúdo da mensagem é obrigatório.', 400)
-  }
-
-  /**
-   * Validar mentions.
-   */
-  if (mentions !== undefined && mentions !== null && !Array.isArray(mentions)) {
-    throw new AppError('Mentions deve ser um array.', 400)
   }
 
   const message = await chatService.sendMessage({
@@ -267,7 +412,7 @@ export const sendMessage = asyncHandler(async (req, res) => {
 
   /**
    * ========================================================
-   * SOCKET.IO
+   * SOCKET.IO — CHAT INTERNO
    * ========================================================
    *
    * A persistência já foi concluída.
@@ -278,14 +423,14 @@ export const sendMessage = asyncHandler(async (req, res) => {
 
   if (io) {
     try {
-      const conversation = await Conversation.findOne({
+      const updatedConversation = await Conversation.findOne({
         _id: id,
         isActive: true,
       })
         .select('channel participants assignedTo')
         .lean()
 
-      if (!conversation) {
+      if (!updatedConversation) {
         console.warn('Conversa não encontrada para Socket.IO:', id)
       } else {
         /**
@@ -303,9 +448,9 @@ export const sendMessage = asyncHandler(async (req, res) => {
          *
          * Notificamos os participantes.
          */
-        if (conversation.channel === 'internal') {
-          const participants = Array.isArray(conversation.participants)
-            ? conversation.participants.filter(Boolean)
+        if (updatedConversation.channel === 'internal') {
+          const participants = Array.isArray(updatedConversation.participants)
+            ? updatedConversation.participants.filter(Boolean)
             : []
 
           for (const participant of participants) {
@@ -335,17 +480,14 @@ export const sendMessage = asyncHandler(async (req, res) => {
 
         /**
          * ----------------------------------------------------
-         * WHATSAPP
+         * WHATSAPP — BLOCO DEFENSIVO
          * ----------------------------------------------------
          *
-         * Normalmente o endpoint acima não deveria receber
-         * uma conversa WhatsApp, pois o chatService bloqueia.
-         *
-         * Mantemos este bloco defensivo para evitar que uma
-         * futura alteração do service quebre as notificações.
+         * Normalmente este fluxo não será atingido porque
+         * conversas WhatsApp são tratadas acima.
          */
-        if (conversation.channel === 'whatsapp') {
-          const assignedTo = conversation.assignedTo?.toString()
+        if (updatedConversation.channel === 'whatsapp') {
+          const assignedTo = updatedConversation.assignedTo?.toString()
 
           if (assignedTo && assignedTo !== userId) {
             io.to(`user_${assignedTo}`).emit('new_message_notification', {

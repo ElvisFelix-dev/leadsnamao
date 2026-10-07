@@ -4,6 +4,8 @@ import Message from '../models/Message.js'
 import User from '../models/User.js'
 import AppError from '../utils/AppError.js'
 
+import WhatsAppContact from '../models/WhatsAppContact.js'
+
 /**
  * ============================================================
  * HELPERS
@@ -571,6 +573,295 @@ export const sendMessage = async ({
   } finally {
     await session.endSession()
   }
+}
+
+/**
+ * ============================================================
+ * ENVIO DE MENSAGEM WHATSAPP
+ * ============================================================
+ */
+
+/**
+ * Envia uma mensagem de texto para uma conversa WhatsApp.
+ *
+ * IMPORTANTE:
+ *
+ * Este método é separado de sendMessage().
+ *
+ * sendMessage()
+ *   → chat interno
+ *
+ * sendWhatsAppMessage()
+ *   → WhatsApp / WA-AKG
+ *
+ * Fluxo:
+ *
+ * Frontend
+ *   ↓
+ * chatController
+ *   ↓
+ * sendWhatsAppMessage()
+ *   ↓
+ * whatsappAkgService.sendTextMessage()
+ *   ↓
+ * WA-AKG
+ *   ↓
+ * Message outbound
+ *   ↓
+ * Conversation
+ */
+export const sendWhatsAppMessage = async ({
+  conversationId,
+  senderId,
+  content,
+  replyTo = null,
+  mentions = [],
+}) => {
+  if (!conversationId) {
+    throw new AppError('ID da conversa é obrigatório.', 400)
+  }
+
+  if (!senderId) {
+    throw new AppError('Remetente é obrigatório.', 400)
+  }
+
+  if (!content?.trim()) {
+    throw new AppError('A mensagem é obrigatória.', 400)
+  }
+
+  const conversation = await Conversation.findOne({
+    _id: conversationId,
+    channel: 'whatsapp',
+    isActive: true,
+  })
+    .populate({
+      path: 'whatsappContact',
+      select:
+        'name phone phoneNormalized remoteJid isGroup isActive lastMessageAt',
+    })
+    .populate({
+      path: 'whatsappIntegration',
+      select: 'name provider status sessionId enabled',
+    })
+    .populate({
+      path: 'lead',
+      select:
+        'name phone phoneNormalized email stage status priority source assignedTo',
+    })
+
+  if (!conversation) {
+    throw new AppError('Conversa WhatsApp não encontrada.', 404)
+  }
+
+  /**
+   * ==========================================================
+   * AUTORIZAÇÃO
+   * ==========================================================
+   *
+   * Admin pode enviar em qualquer conversa.
+   *
+   * Broker somente se for o responsável pela conversa.
+   */
+  const user = await User.findById(senderId).select(
+    '_id name email role isAdmin avatar',
+  )
+
+  if (!user) {
+    throw new AppError('Usuário não encontrado.', 404)
+  }
+
+  const authorized =
+    isAdminUser(user) ||
+    sameId(conversation.assignedTo, user._id) ||
+    sameId(conversation.lead?.assignedTo, user._id)
+
+  if (!authorized) {
+    throw new AppError(
+      'Você não tem permissão para enviar mensagens nesta conversa WhatsApp.',
+      403,
+    )
+  }
+
+  /**
+   * ==========================================================
+   * WHATSAPP CONTACT
+   * ==========================================================
+   */
+
+  const whatsappContact = conversation.whatsappContact
+
+  if (!whatsappContact) {
+    throw new AppError(
+      'O contato WhatsApp desta conversa não foi encontrado.',
+      400,
+    )
+  }
+
+  if (!whatsappContact.isActive) {
+    throw new AppError('O contato WhatsApp está inativo.', 400)
+  }
+
+  const phone =
+    whatsappContact.phoneNormalized ||
+    whatsappContact.phone ||
+    whatsappContact.remoteJid?.split('@')[0]
+
+  if (!phone) {
+    throw new AppError(
+      'Não foi possível identificar o número do WhatsApp.',
+      400,
+    )
+  }
+
+  /**
+   * ==========================================================
+   * INTEGRAÇÃO
+   * ==========================================================
+   */
+
+  const whatsappIntegration = conversation.whatsappIntegration
+
+  if (!whatsappIntegration) {
+    throw new AppError(
+      'A integração WhatsApp desta conversa não foi encontrada.',
+      400,
+    )
+  }
+
+  /**
+   * ==========================================================
+   * ENVIO PELO WA-AKG
+   * ==========================================================
+   *
+   * IMPORTANTE:
+   *
+   * Usamos import dinâmico porque whatsappAkgService.js
+   * já importa chatService.js.
+   *
+   * Dessa forma evitamos dependência circular estática.
+   */
+  const { sendTextMessage } = await import('./whatsapp/whatsappAkgService.js')
+
+  const providerResponse = await sendTextMessage({
+    integrationId: whatsappIntegration._id,
+    phone,
+    message: content.trim(),
+  })
+
+  /**
+   * ==========================================================
+   * PERSISTÊNCIA DA MENSAGEM
+   * ==========================================================
+   */
+
+  const externalMessageId =
+    providerResponse?.providerResponse?.data?.messageId ||
+    providerResponse?.providerResponse?.messageId ||
+    providerResponse?.providerResponse?.id ||
+    null
+
+  const message = await Message.create({
+    conversation: conversation._id,
+
+    sender: senderId,
+
+    senderType: 'user',
+
+    whatsappContact: whatsappContact._id,
+
+    externalMessageId,
+
+    content: content.trim(),
+
+    type: 'text',
+
+    attachment: null,
+
+    replyTo,
+
+    mentions,
+
+    direction: 'outbound',
+
+    status: 'sent',
+
+    readBy: [senderId],
+  })
+
+  /**
+   * ==========================================================
+   * ATUALIZA CONVERSATION
+   * ==========================================================
+   */
+
+  const now = new Date()
+
+  conversation.lastMessage = message._id
+
+  conversation.lastMessageAt = now
+
+  conversation.lastMessageFrom = senderId
+
+  /**
+   * Atualiza o horário do contato.
+   */
+  await WhatsAppContact.updateOne(
+    {
+      _id: whatsappContact._id,
+    },
+    {
+      $set: {
+        lastMessageAt: now,
+      },
+    },
+  )
+
+  await conversation.save()
+
+  /**
+   * ==========================================================
+   * POPULATE
+   * ==========================================================
+   */
+
+  await message.populate([
+    {
+      path: 'sender',
+      select: 'name email role isAdmin avatar',
+    },
+    {
+      path: 'whatsappContact',
+      select:
+        'name phone phoneNormalized remoteJid isGroup isActive lastMessageAt',
+    },
+    {
+      path: 'replyTo',
+      populate: {
+        path: 'sender',
+        select: 'name email role isAdmin avatar',
+      },
+    },
+    {
+      path: 'conversation',
+      populate: [
+        {
+          path: 'lead',
+          select:
+            'name phone phoneNormalized email stage status priority source assignedTo',
+        },
+        {
+          path: 'assignedTo',
+          select: 'name email role isAdmin avatar',
+        },
+        {
+          path: 'whatsappIntegration',
+          select: 'name provider status sessionId enabled',
+        },
+      ],
+    },
+  ])
+
+  return message
 }
 
 /**
@@ -1223,6 +1514,7 @@ export default {
   getUserConversations,
   getConversationMessages,
   sendMessage,
+  sendWhatsAppMessage,
   markMessageAsRead,
   markConversationAsRead,
   createBrokerChannel,

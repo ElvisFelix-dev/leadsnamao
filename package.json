@@ -38,6 +38,7 @@
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.3",
     "ua-parser-js": "^2.0.10",
+    "web-push": "^3.6.7",
     "winston": "^3.19.0"
   },
   "devDependencies": {

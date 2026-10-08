@@ -18,6 +18,13 @@ import {
   adminGetUser,
 } from '../controllers/userController.js'
 
+import {
+  subscribePush,
+  unsubscribePush,
+  getPushPublicKey,
+  testPush,
+} from '../controllers/pushController.js'
+
 import { avatarUpload, coverUpload } from '../utils/upload.js'
 
 import { protect, admin } from '../middleware/authMiddleware.js'
@@ -83,6 +90,30 @@ CAPA
 */
 
 router.put('/cover', protect, coverUpload.single('cover'), uploadCover)
+
+/*
+====================================================
+PUSH NOTIFICATIONS
+====================================================
+*/
+
+// Registrar dispositivo para receber notificações
+router.post('/push/subscribe', protect, subscribePush)
+
+// Remover dispositivo das notificações
+router.delete('/push/unsubscribe', protect, unsubscribePush)
+
+// Obter chave pública VAPID
+router.get('/push/vapid-public-key', protect, getPushPublicKey)
+
+// Enviar uma notificação de teste
+router.post('/push/test', protect, testPush)
+
+/*
+====================================================
+BROKERS
+====================================================
+*/
 
 router.get('/brokers', protect, admin, listBrokers)
 

@@ -1,3 +1,5 @@
+// src/service/whatsapp/whatsappAkgService.js
+
 import axios from 'axios'
 import crypto from 'crypto'
 
@@ -6,211 +8,95 @@ import WhatsAppContact from '../../models/WhatsAppContact.js'
 import Conversation from '../../models/Conversation.js'
 import Lead from '../../models/Lead.js'
 import AppError from '../../utils/AppError.js'
-
 import { normalizePhone } from '../../utils/phone.js'
 import { getSocketIO } from '../../sockets/index.js'
-
 import * as chatService from '../chatService.js'
 
-// ============================================================
+// ==========================================================
+// CONFIGURAÇÕES
+// ==========================================================
+
+const REQUEST_TIMEOUT = 20000
+
+const ALLOWED_MEDIA_TYPES = ['image', 'file', 'gif']
+
+// ==========================================================
 // HELPERS
-// ============================================================
+// ==========================================================
 
-const normalizeBaseUrl = (value) => String(value || '').replace(/\/+$/, '')
-
-const toJid = (phone) => {
-  const normalized = normalizePhone(phone)
-
-  if (!normalized) {
-    throw new AppError('Número de WhatsApp inválido.', 400)
-  }
-
-  return normalized.endsWith('@s.whatsapp.net')
-    ? normalized
-    : `${normalized}@s.whatsapp.net`
+const normalizeBaseUrl = (url) => {
+  return String(url || '')
+    .trim()
+    .replace(/\/+$/, '')
 }
 
-// ============================================================
-// WHATSAPP CONTACT
-// ============================================================
+const normalizeId = (value) => {
+  if (!value) return null
 
-const upsertWhatsAppContact = async ({
-  integrationId,
-  remoteJid,
-  leadId,
-  name = '',
-  isGroup = false,
-  metadata = {},
-}) => {
-  if (!integrationId) {
-    throw new Error('Integration ID é obrigatório para criar contato WhatsApp.')
+  if (typeof value === 'object' && value._id) {
+    return String(value._id)
   }
 
-  if (!remoteJid) {
-    throw new Error('remoteJid é obrigatório para criar contato WhatsApp.')
-  }
+  return String(value)
+}
 
-  if (!leadId) {
-    throw new Error('Lead ID é obrigatório para criar contato WhatsApp.')
-  }
-
-  const phone = normalizePhone(remoteJid.split('@')[0])
-
-  if (!phone) {
-    throw new Error('Não foi possível normalizar o telefone do WhatsApp.')
-  }
-
-  const contact = await WhatsAppContact.findOneAndUpdate(
-    {
-      integration: integrationId,
-      remoteJid,
-    },
-    {
-      $set: {
-        lead: leadId,
-        phone,
-        name: name?.trim() || '',
-        isGroup: Boolean(isGroup),
-        lastMessageAt: new Date(),
-        isActive: true,
-        metadata,
-      },
-    },
-    {
-      new: true,
-      upsert: true,
-      setDefaultsOnInsert: true,
-    },
+const getErrorMessage = (error) => {
+  return (
+    error?.response?.data?.message ||
+    error?.response?.data?.error ||
+    error?.message ||
+    'Erro inesperado na comunicação com o WA-AKG.'
   )
-
-  return contact
 }
 
-// ============================================================
-// WHATSAPP CONVERSATION
-// ============================================================
+const validateHttpsUrl = (url) => {
+  let parsedUrl
 
-const upsertWhatsAppConversation = async ({
-  whatsappContactId,
-  integrationId,
-  leadId,
-  assignedTo = null,
-  contactName = '',
-}) => {
-  if (!whatsappContactId) {
-    throw new Error('WhatsApp Contact ID é obrigatório para criar a conversa.')
+  try {
+    parsedUrl = new URL(String(url || '').trim())
+  } catch {
+    throw new AppError('A URL da mídia é inválida.', 400)
   }
 
-  if (!integrationId) {
-    throw new Error(
-      'Integration ID é obrigatório para criar a conversa WhatsApp.',
+  if (parsedUrl.protocol !== 'https:') {
+    throw new AppError(
+      'A mídia precisa estar disponível por uma URL HTTPS.',
+      400,
     )
   }
 
-  if (!leadId) {
-    throw new Error('Lead ID é obrigatório para criar a conversa WhatsApp.')
-  }
-
-  let conversation = await Conversation.findOne({
-    channel: 'whatsapp',
-    whatsappContact: whatsappContactId,
-    isActive: true,
-  })
-
-  // ==========================================================
-  // CONVERSATION EXISTENTE
-  // ==========================================================
-
-  if (conversation) {
-    let changed = false
-
-    if (
-      !conversation.whatsappIntegration ||
-      conversation.whatsappIntegration.toString() !== integrationId.toString()
-    ) {
-      conversation.whatsappIntegration = integrationId
-      changed = true
-    }
-
-    if (
-      !conversation.lead ||
-      conversation.lead.toString() !== leadId.toString()
-    ) {
-      conversation.lead = leadId
-      changed = true
-    }
-
-    if (
-      assignedTo &&
-      (!conversation.assignedTo ||
-        conversation.assignedTo.toString() !== assignedTo.toString())
-    ) {
-      conversation.assignedTo = assignedTo
-      changed = true
-    }
-
-    if (!conversation.name && contactName?.trim()) {
-      conversation.name = contactName.trim()
-      changed = true
-    }
-
-    if (changed) {
-      await conversation.save()
-    }
-
-    return conversation
-  }
-
-  // ==========================================================
-  // NOVA CONVERSATION
-  // ==========================================================
-
-  conversation = await Conversation.create({
-    participants: [],
-
-    channel: 'whatsapp',
-
-    type: 'direct',
-
-    name: contactName?.trim() || 'Lead WhatsApp',
-
-    avatar: '',
-
-    // Conversation.lastMessage é ObjectId.
-    // Não devemos utilizar string vazia.
-    lastMessage: null,
-
-    lastMessageAt: new Date(),
-
-    lastMessageFrom: null,
-
-    unreadCounts: new Map(),
-
-    isActive: true,
-
-    isBrokerChannel: false,
-
-    createdBy: null,
-
-    whatsappContact: whatsappContactId,
-
-    whatsappIntegration: integrationId,
-
-    lead: leadId,
-
-    assignedTo: assignedTo || null,
-
-    metadata: {
-      provider: 'wa-akg',
-    },
-  })
-
-  return conversation
+  return parsedUrl.toString()
 }
 
-// ============================================================
-// INTEGRATION
-// ============================================================
+const toJid = (phone) => {
+  const value = String(phone || '').trim()
+
+  if (!value) {
+    throw new AppError('O telefone do contato é obrigatório.', 400)
+  }
+
+  if (value.includes('@s.whatsapp.net')) {
+    return value
+  }
+
+  if (value.includes('@g.us')) {
+    return value
+  }
+
+  const normalized = normalizePhone(value)
+
+  if (!normalized) {
+    throw new AppError('Não foi possível normalizar o telefone.', 400)
+  }
+
+  const digits = String(normalized).replace(/\D/g, '')
+
+  if (!digits) {
+    throw new AppError('O telefone informado é inválido.', 400)
+  }
+
+  return `${digits}@s.whatsapp.net`
+}
 
 const getIntegrationWithSecrets = async (integrationId = null) => {
   const query = {
@@ -221,67 +107,216 @@ const getIntegrationWithSecrets = async (integrationId = null) => {
     query._id = integrationId
   }
 
-  const integration = await WhatsAppIntegration.findOne(query).select(
-    '+apiKey +webhookSecret',
-  )
+  const integration = await WhatsAppIntegration.findOne(query)
+    .select('+apiKey +webhookSecret')
+    .lean()
 
   if (!integration) {
+    throw new AppError('Integração WhatsApp não encontrada ou desativada.', 404)
+  }
+
+  if (!integration.baseUrl || !integration.sessionId) {
     throw new AppError(
-      integrationId
-        ? 'Integração WhatsApp não encontrada ou desativada.'
-        : 'Nenhuma integração WhatsApp ativa foi configurada.',
-      404,
+      'A integração não possui baseUrl ou sessionId configurado.',
+      400,
     )
   }
 
   return integration
 }
 
-// ============================================================
-// CREATE INTEGRATION
-// ============================================================
+const getRequestHeaders = (integration) => {
+  const headers = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  }
 
-export const createIntegration = async ({
-  name,
-  baseUrl,
-  apiKey,
-  sessionId,
-  webhookSecret = '',
+  if (integration.apiKey) {
+    headers['X-API-Key'] = integration.apiKey
+  }
+
+  return headers
+}
+
+const updateIntegrationStatus = async (integrationId, status) => {
+  try {
+    await WhatsAppIntegration.findByIdAndUpdate(integrationId, {
+      status,
+    })
+  } catch (error) {
+    console.error(
+      '[WA-AKG] Erro ao atualizar status da integração:',
+      error.message,
+    )
+  }
+}
+
+const requestProvider = async ({
+  integration,
+  method = 'POST',
+  path,
+  data,
 }) => {
-  if (!name?.trim()) {
-    throw new AppError('Nome da integração é obrigatório.', 400)
+  const baseUrl = normalizeBaseUrl(integration.baseUrl)
+
+  if (!baseUrl) {
+    throw new AppError('A URL base da integração não está configurada.', 400)
   }
 
-  if (!baseUrl?.trim()) {
-    throw new AppError('URL do WA-AKG é obrigatória.', 400)
+  try {
+    return await axios({
+      method,
+      url: `${baseUrl}${path}`,
+      data,
+      headers: getRequestHeaders(integration),
+      timeout: REQUEST_TIMEOUT,
+    })
+  } catch (error) {
+    const message = getErrorMessage(error)
+
+    console.error('[WA-AKG] Erro na requisição:', {
+      method,
+      path,
+      status: error?.response?.status,
+      message,
+    })
+
+    throw new AppError(
+      `Falha na comunicação com o WhatsApp: ${message}`,
+      error?.response?.status >= 400 && error?.response?.status < 600
+        ? error.response.status
+        : 502,
+    )
+  }
+}
+
+// ==========================================================
+// CONTATOS WHATSAPP
+// ==========================================================
+
+export const upsertWhatsAppContact = async ({
+  integrationId,
+  remoteJid,
+  leadId,
+  name = '',
+  isGroup = false,
+  metadata = {},
+}) => {
+  if (!integrationId || !remoteJid || !leadId) {
+    throw new AppError(
+      'integrationId, remoteJid e leadId são obrigatórios.',
+      400,
+    )
   }
 
-  if (!apiKey?.trim()) {
-    throw new AppError('API Key do WA-AKG é obrigatória.', 400)
+  const normalizedJid = String(remoteJid).trim()
+
+  const phone = normalizedJid.includes('@')
+    ? normalizedJid.split('@')[0]
+    : normalizedJid
+
+  const phoneNormalized = normalizePhone(phone)
+
+  const contact = await WhatsAppContact.findOneAndUpdate(
+    {
+      integration: integrationId,
+      remoteJid: normalizedJid,
+    },
+    {
+      $set: {
+        lead: leadId,
+        phone,
+        phoneNormalized,
+        name: name || undefined,
+        isGroup,
+        lastMessageAt: new Date(),
+        isActive: true,
+        metadata,
+      },
+    },
+    {
+      new: true,
+      upsert: true,
+      setDefaultsOnInsert: true,
+      runValidators: true,
+    },
+  )
+
+  return contact
+}
+
+// ==========================================================
+// CONVERSAS WHATSAPP
+// ==========================================================
+
+export const upsertWhatsAppConversation = async ({
+  whatsappContactId,
+  integrationId,
+  leadId,
+  assignedTo = null,
+  name = '',
+}) => {
+  if (!whatsappContactId || !integrationId || !leadId) {
+    throw new AppError(
+      'Contato, integração e lead são obrigatórios para criar a conversa.',
+      400,
+    )
   }
 
-  if (!sessionId?.trim()) {
-    throw new AppError('Session ID do WA-AKG é obrigatório.', 400)
-  }
-
-  const integration = await WhatsAppIntegration.create({
-    name: name.trim(),
-
-    baseUrl: normalizeBaseUrl(baseUrl),
-
-    apiKey: apiKey.trim(),
-
-    sessionId: sessionId.trim(),
-
-    webhookSecret: webhookSecret?.trim() || '',
+  let conversation = await Conversation.findOne({
+    channel: 'whatsapp',
+    whatsappContact: whatsappContactId,
+    isActive: true,
   })
+
+  if (conversation) {
+    conversation.whatsappIntegration = integrationId
+    conversation.lead = leadId
+
+    if (assignedTo) {
+      conversation.assignedTo = assignedTo
+    }
+
+    if (!conversation.name && name) {
+      conversation.name = name
+    }
+
+    await conversation.save()
+
+    return conversation
+  }
+
+  conversation = await Conversation.create({
+    participants: [],
+    channel: 'whatsapp',
+    type: 'direct',
+    name: name || '',
+    lastMessage: '',
+    lastMessageAt: null,
+    lastMessageFrom: null,
+    unreadCounts: new Map(),
+    isActive: true,
+    whatsappContact: whatsappContactId,
+    whatsappIntegration: integrationId,
+    lead: leadId,
+    assignedTo,
+    metadata: {
+      provider: 'wa-akg',
+    },
+  })
+
+  return conversation
+}
+
+// ==========================================================
+// INTEGRAÇÕES
+// ==========================================================
+
+export const createIntegration = async (payload) => {
+  const integration = await WhatsAppIntegration.create(payload)
 
   return integration
 }
-
-// ============================================================
-// LIST INTEGRATIONS
-// ============================================================
 
 export const listIntegrations = async () => {
   return WhatsAppIntegration.find()
@@ -290,116 +325,140 @@ export const listIntegrations = async () => {
     .lean()
 }
 
-// ============================================================
-// SEND TEXT MESSAGE
-// ============================================================
+// ==========================================================
+// ENVIO DE TEXTO
+// ==========================================================
 
 export const sendTextMessage = async ({
   integrationId = null,
   phone,
   message,
 }) => {
-  if (!message?.trim()) {
-    throw new AppError('Mensagem é obrigatória.', 400)
+  const text = String(message || '').trim()
+
+  if (!text) {
+    throw new AppError('O conteúdo da mensagem é obrigatório.', 400)
   }
 
   const integration = await getIntegrationWithSecrets(integrationId)
-
   const jid = toJid(phone)
 
-  const url = `${normalizeBaseUrl(
-    integration.baseUrl,
-  )}/api/messages/${encodeURIComponent(
-    integration.sessionId,
-  )}/${encodeURIComponent(jid)}/send`
-
   try {
-    const response = await axios.post(
-      url,
-      {
+    const response = await requestProvider({
+      integration,
+      method: 'POST',
+      path: `/api/messages/${encodeURIComponent(
+        integration.sessionId,
+      )}/${encodeURIComponent(jid)}/send`,
+      data: {
         message: {
-          text: message.trim(),
+          text,
         },
       },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': integration.apiKey,
-        },
-        timeout: 15000,
-      },
-    )
+    })
 
-    await WhatsAppIntegration.updateOne(
-      {
-        _id: integration._id,
-      },
-      {
-        $set: {
-          status: 'connected',
-          lastError: '',
-          lastCheckedAt: new Date(),
-        },
-      },
-    )
+    await updateIntegrationStatus(integration._id, 'connected')
 
     return {
       integrationId: integration._id,
-
       integrationName: integration.name,
-
       sessionId: integration.sessionId,
-
-      phone: normalizePhone(phone),
-
+      phone,
       jid,
-
       providerResponse: response.data,
     }
   } catch (error) {
-    const status = error.response?.status || null
-
-    const providerMessage =
-      error.response?.data?.message ||
-      error.response?.data?.error ||
-      error.message ||
-      'Erro desconhecido ao comunicar com o WA-AKG.'
-
-    await WhatsAppIntegration.updateOne(
-      {
-        _id: integration._id,
-      },
-      {
-        $set: {
-          status: 'error',
-          lastError: String(providerMessage).slice(0, 1000),
-          lastCheckedAt: new Date(),
-        },
-      },
-    )
-
-    console.error('❌ Erro ao enviar mensagem pelo WA-AKG:', {
-      integrationId: integration._id.toString(),
-
-      sessionId: integration.sessionId,
-
-      status,
-
-      message: providerMessage,
-    })
-
-    throw new AppError(
-      `WA-AKG não conseguiu enviar a mensagem${
-        status ? ` (HTTP ${status})` : ''
-      }: ${providerMessage}`,
-      status && status >= 400 && status < 500 ? status : 502,
-    )
+    await updateIntegrationStatus(integration._id, 'error')
+    throw error
   }
 }
 
-// ============================================================
-// GET INTEGRATION SECRETS
-// ============================================================
+// ==========================================================
+// ENVIO DE IMAGENS, GIFS E ARQUIVOS
+// ==========================================================
+
+export const sendMediaMessage = async ({
+  integrationId = null,
+  phone,
+  mediaUrl,
+  mediaType = 'image',
+  caption = '',
+  fileName = '',
+  mimeType = '',
+}) => {
+  const normalizedMediaType = String(mediaType || 'image')
+    .trim()
+    .toLowerCase()
+
+  if (!ALLOWED_MEDIA_TYPES.includes(normalizedMediaType)) {
+    throw new AppError(
+      'Tipo de mídia inválido. Utilize image, gif ou file.',
+      400,
+    )
+  }
+
+  const validatedUrl = validateHttpsUrl(mediaUrl)
+  const normalizedCaption = String(caption || '').trim()
+
+  const integration = await getIntegrationWithSecrets(integrationId)
+  const jid = toJid(phone)
+
+  let mediaPayload
+
+  if (normalizedMediaType === 'image' || normalizedMediaType === 'gif') {
+    // O GIF é enviado pelo formato de imagem.
+    // A animação depende do suporte do provedor.
+    mediaPayload = {
+      image: {
+        url: validatedUrl,
+      },
+      ...(normalizedCaption ? { caption: normalizedCaption } : {}),
+    }
+  } else {
+    // Documento/arquivo.
+    mediaPayload = {
+      document: {
+        url: validatedUrl,
+        ...(fileName ? { fileName: String(fileName).trim() } : {}),
+        ...(mimeType ? { mimetype: String(mimeType).trim() } : {}),
+      },
+      ...(normalizedCaption ? { caption: normalizedCaption } : {}),
+    }
+  }
+
+  try {
+    const response = await requestProvider({
+      integration,
+      method: 'POST',
+      path: `/api/messages/${encodeURIComponent(
+        integration.sessionId,
+      )}/${encodeURIComponent(jid)}/send`,
+      data: {
+        message: mediaPayload,
+      },
+    })
+
+    await updateIntegrationStatus(integration._id, 'connected')
+
+    return {
+      integrationId: integration._id,
+      integrationName: integration.name,
+      sessionId: integration.sessionId,
+      phone,
+      jid,
+      mediaType: normalizedMediaType,
+      mediaUrl: validatedUrl,
+      providerResponse: response.data,
+    }
+  } catch (error) {
+    await updateIntegrationStatus(integration._id, 'error')
+    throw error
+  }
+}
+
+// ==========================================================
+// CONSULTA DE SEGREDOS
+// ==========================================================
 
 export const getIntegrationSecrets = async (integrationId) => {
   const integration = await WhatsAppIntegration.findById(integrationId).select(
@@ -407,121 +466,74 @@ export const getIntegrationSecrets = async (integrationId) => {
   )
 
   if (!integration) {
-    throw new AppError('Integração WhatsApp não encontrada.', 404)
+    throw new AppError('Integração não encontrada.', 404)
   }
 
-  return integration
+  return {
+    apiKey: integration.apiKey,
+    webhookSecret: integration.webhookSecret,
+  }
 }
 
-// ============================================================
-// GET QR CODE / SESSION
-// ============================================================
+// ==========================================================
+// QR CODE / STATUS DA SESSÃO
+// ==========================================================
 
-export const getQrCode = async ({ integrationId = null }) => {
+export const getQrCode = async (integrationId) => {
   const integration = await getIntegrationWithSecrets(integrationId)
 
-  const url = `${normalizeBaseUrl(
-    integration.baseUrl,
-  )}/api/sessions/${encodeURIComponent(integration.sessionId)}`
+  const response = await requestProvider({
+    integration,
+    method: 'GET',
+    path: `/api/sessions/${encodeURIComponent(integration.sessionId)}`,
+  })
 
-  try {
-    const response = await axios.get(url, {
-      headers: {
-        'X-API-Key': integration.apiKey,
-      },
-      timeout: 15000,
-    })
-
-    const session = response.data?.data
-
-    return {
-      integrationId: integration._id,
-
-      integrationName: integration.name,
-
-      sessionId: integration.sessionId,
-
-      status: session?.status || null,
-
-      qr: session?.qr || null,
-
-      me: session?.me || null,
-    }
-  } catch (error) {
-    const status = error.response?.status || null
-
-    const providerMessage =
-      error.response?.data?.message ||
-      error.response?.data?.error ||
-      error.message ||
-      'Erro desconhecido ao obter os dados da sessão.'
-
-    console.error('❌ Erro ao obter sessão do WA-AKG:', {
-      integrationId: integration._id.toString(),
-
-      sessionId: integration.sessionId,
-
-      status,
-
-      message: providerMessage,
-    })
-
-    throw new AppError(
-      `WA-AKG não conseguiu obter a sessão${
-        status ? ` (HTTP ${status})` : ''
-      }: ${providerMessage}`,
-      status && status >= 400 && status < 500 ? status : 502,
-    )
+  return {
+    integrationId: integration._id,
+    integrationName: integration.name,
+    sessionId: integration.sessionId,
+    status: response.data?.status || 'unknown',
+    qr: response.data?.qr || response.data?.qrcode || null,
+    me: response.data?.me || null,
+    providerResponse: response.data,
   }
 }
 
-// ============================================================
-// WEBHOOK SIGNATURE
-// ============================================================
+// ==========================================================
+// ASSINATURA DO WEBHOOK
+// ==========================================================
 
-const verifyWebhookSignature = ({ rawBody, signature, secret }) => {
-  if (!secret) {
-    throw new AppError(
-      'Webhook secret não configurado para esta integração.',
-      500,
-    )
-  }
-
-  if (!signature) {
-    throw new AppError('Assinatura do webhook não informada.', 401)
+export const verifyWebhookSignature = ({ rawBody, signature, secret }) => {
+  if (!rawBody || !signature || !secret) {
+    return false
   }
 
   const receivedSignature = String(signature)
-    .replace(/^sha256=/, '')
     .trim()
-    .toLowerCase()
+    .replace(/^sha256=/i, '')
 
   const expectedSignature = crypto
     .createHmac('sha256', secret)
     .update(rawBody)
     .digest('hex')
 
-  if (receivedSignature.length !== expectedSignature.length) {
-    throw new AppError('Assinatura do webhook inválida.', 401)
+  try {
+    const received = Buffer.from(receivedSignature, 'hex')
+    const expected = Buffer.from(expectedSignature, 'hex')
+
+    if (received.length === 0 || received.length !== expected.length) {
+      return false
+    }
+
+    return crypto.timingSafeEqual(received, expected)
+  } catch {
+    return false
   }
-
-  const receivedBuffer = Buffer.from(receivedSignature, 'hex')
-
-  const expectedBuffer = Buffer.from(expectedSignature, 'hex')
-
-  if (
-    receivedBuffer.length !== expectedBuffer.length ||
-    !crypto.timingSafeEqual(receivedBuffer, expectedBuffer)
-  ) {
-    throw new AppError('Assinatura do webhook inválida.', 401)
-  }
-
-  return true
 }
 
-// ============================================================
-// WEBHOOK
-// ============================================================
+// ==========================================================
+// WEBHOOK WA-AKG
+// ==========================================================
 
 export const handleWebhook = async ({
   rawBody,
@@ -529,587 +541,337 @@ export const handleWebhook = async ({
   signature,
   io: requestIo = null,
 }) => {
-  if (!rawBody) {
-    throw new AppError('Corpo bruto do webhook não disponível.', 400)
-  }
-
   let payload = body
 
-  if (!payload || Buffer.isBuffer(payload)) {
+  if (rawBody) {
     try {
-      payload = JSON.parse(rawBody.toString('utf8'))
+      payload =
+        typeof rawBody === 'string'
+          ? JSON.parse(rawBody)
+          : JSON.parse(rawBody.toString('utf8'))
     } catch {
-      throw new AppError('Payload do webhook inválido.', 400)
+      throw new AppError('Payload JSON do webhook inválido.', 400)
     }
   }
 
-  const sessionId = payload?.sessionId
+  if (!payload || typeof payload !== 'object') {
+    throw new AppError('Payload do webhook inválido.', 400)
+  }
+
+  const sessionId =
+    payload.sessionId || payload.session?.id || payload.data?.sessionId
 
   if (!sessionId) {
-    throw new AppError('sessionId não informado no webhook.', 400)
+    throw new AppError('O webhook não informou o sessionId.', 400)
   }
 
   const integration = await WhatsAppIntegration.findOne({
     sessionId,
     enabled: true,
-  }).select('+webhookSecret')
+  }).select('+apiKey +webhookSecret')
 
   if (!integration) {
     throw new AppError(
-      'Integração WhatsApp não encontrada para esta sessão.',
+      'Não existe integração ativa para esta sessão WhatsApp.',
       404,
     )
   }
 
-  // ==========================================================
-  // HMAC
-  // ==========================================================
+  if (integration.webhookSecret) {
+    const isValid = verifyWebhookSignature({
+      rawBody,
+      signature,
+      secret: integration.webhookSecret,
+    })
 
-  verifyWebhookSignature({
-    rawBody,
-    signature,
-    secret: integration.webhookSecret,
+    if (!isValid) {
+      throw new AppError('Assinatura do webhook inválida.', 401)
+    }
+  }
+
+  const event = payload.event || payload.type || payload.data?.event || ''
+
+  const data = payload.data || payload
+
+  console.info('[WA-AKG] Webhook recebido:', {
+    event,
+    sessionId,
   })
 
-  console.log('')
-  console.log('==========================================')
-  console.log('📩 WEBHOOK WHATSAPP RECEBIDO')
-  console.log('==========================================')
-  console.log('Integração:', integration.name)
-  console.log('Integration ID:', integration._id.toString())
-  console.log('Session ID:', sessionId)
-  console.log('Evento:', payload.event)
-  console.log('Timestamp:', payload.timestamp)
-  console.log('==========================================')
+  // --------------------------------------------------------
+  // MENSAGEM RECEBIDA
+  // --------------------------------------------------------
 
-  let contact = null
-  let conversation = null
-  let message = null
-  let lead = null
+  if (event === 'message.received' || event === 'messages.upsert') {
+    const key = data.key || data.message?.key || {}
 
-  // ==========================================================
-  // MESSAGE RECEIVED
-  // ==========================================================
+    const remoteJid =
+      key.remoteJid || data.remoteJid || data.from || data.chatId
 
-  if (payload.event === 'message.received') {
-    const data = payload.data || {}
+    const externalMessageId = key.id || data.id || data.messageId || null
 
-    // ========================================================
-    // REMOTE JID
-    // ========================================================
+    const fromMe = key.fromMe === true || data.fromMe === true
 
-    const remoteJid = data.key?.remoteJid || data.remoteJid || data.from || ''
-
-    console.log('📱 Mensagem recebida')
-    console.log('From:', data.from)
-    console.log('Remote JID:', remoteJid)
-    console.log('Nome:', data.pushName)
-    console.log('Tipo:', data.type)
-    console.log('Mensagem:', data.content)
-    console.log('Grupo:', data.isGroup)
-
-    // ========================================================
-    // VALIDAR REMOTE JID
-    // ========================================================
+    if (fromMe) {
+      return {
+        success: true,
+        ignored: true,
+        reason: 'Mensagem enviada pela própria sessão.',
+      }
+    }
 
     if (!remoteJid) {
-      console.warn('⚠️ Mensagem recebida sem remoteJid. Evento será ignorado.')
-
       return {
-        received: true,
-        event: payload.event,
-        sessionId,
-        integrationId: integration._id,
+        success: true,
         ignored: true,
-        reason: 'missing_remote_jid',
-        contact: null,
-        conversation: null,
-        message: null,
+        reason: 'Mensagem sem remoteJid.',
       }
     }
 
-    // ========================================================
-    // IGNORAR GRUPOS
-    // ========================================================
-
-    if (data.isGroup || remoteJid.endsWith('@g.us')) {
-      console.log('')
-      console.log('👥 WHATSAPP GRUPO IGNORADO')
-      console.log('==========================================')
-      console.log('Remote JID:', remoteJid)
-      console.log('Nome:', data.pushName || '')
-      console.log('Motivo: mensagens de grupos não são processadas pelo CRM.')
-      console.log('Nenhum WhatsAppContact foi criado.')
-      console.log('Nenhuma Conversation foi criada.')
-      console.log('Nenhuma Message foi criada.')
-      console.log('==========================================')
-
+    // Grupos não são convertidos automaticamente em leads.
+    if (String(remoteJid).endsWith('@g.us')) {
       return {
-        received: true,
-        event: payload.event,
-        sessionId,
-        integrationId: integration._id,
+        success: true,
         ignored: true,
-        reason: 'whatsapp_group',
-        contact: null,
-        conversation: null,
-        message: null,
+        reason: 'Mensagem de grupo ignorada.',
       }
     }
 
-    // ========================================================
-    // NORMALIZAR TELEFONE
-    // ========================================================
+    const phone = String(remoteJid).split('@')[0]
+    const phoneNormalized = normalizePhone(phone)
 
-    const phone = normalizePhone(remoteJid.split('@')[0])
-
-    console.log('')
-    console.log('🔎 BUSCA DE LEAD')
-    console.log('==========================================')
-    console.log('Remote JID:', remoteJid)
-    console.log('Telefone normalizado:', phone)
-    console.log('==========================================')
-
-    // ========================================================
-    // BUSCAR LEAD
-    // ========================================================
-
-    lead = phone ? await Lead.findByNormalizedPhone(phone) : null
-
-    // ========================================================
-    // PRIVACIDADE
-    // ========================================================
+    const lead = await Lead.findOne({
+      $or: [{ phoneNormalized }, { phone: phoneNormalized }, { phone }],
+    })
 
     if (!lead) {
-      console.log('')
-      console.log('🔒 WHATSAPP IGNORADO')
-      console.log('==========================================')
-      console.log('Motivo: número não está vinculado a nenhum Lead.')
-      console.log('Telefone:', phone || 'inválido')
-      console.log('Remote JID:', remoteJid)
-      console.log('Nome:', data.pushName || '')
-      console.log('Nenhum WhatsAppContact foi criado.')
-      console.log('Nenhuma Conversation foi criada.')
-      console.log('Nenhuma Message foi criada.')
-      console.log('==========================================')
-
       return {
-        received: true,
-        event: payload.event,
-        sessionId,
-        integrationId: integration._id,
+        success: true,
         ignored: true,
-        reason: 'lead_not_found',
-        contact: null,
-        conversation: null,
-        message: null,
+        reason: 'Nenhum lead correspondente ao telefone.',
       }
     }
 
-    // ========================================================
-    // LEAD ENCONTRADO
-    // ========================================================
+    const leadId = lead._id
 
-    console.log('')
-    console.log('✅ LEAD ENCONTRADO')
-    console.log('==========================================')
-    console.log('Lead ID:', lead._id.toString())
-    console.log('Nome:', lead.name)
-    console.log('Telefone:', lead.phone)
-    console.log('Telefone normalizado:', lead.phoneNormalized)
-    console.log('Assigned To:', lead.assignedTo || null)
-    console.log('==========================================')
-
-    // ========================================================
-    // CONTATO WHATSAPP
-    // ========================================================
-
-    contact = await upsertWhatsAppContact({
+    const contact = await upsertWhatsAppContact({
       integrationId: integration._id,
-
       remoteJid,
-
-      leadId: lead._id,
-
-      name: lead.name || data.pushName || '',
-
+      leadId,
+      name:
+        data.pushName || data.notifyName || data.senderName || lead.name || '',
       isGroup: false,
-
       metadata: {
         provider: 'wa-akg',
-
-        chatType: data.chatType || '',
-
-        leadId: lead._id.toString(),
-
-        integrationId: integration._id.toString(),
       },
     })
 
-    console.log('')
-    console.log('👤 CONTATO WHATSAPP PERSISTIDO')
-    console.log('==========================================')
-    console.log('Contato ID:', contact._id.toString())
-    console.log('Nome:', contact.name)
-    console.log('Telefone:', contact.phone)
-    console.log('Remote JID:', contact.remoteJid)
-    console.log('Grupo:', contact.isGroup)
-    console.log('Lead ID:', lead._id.toString())
-    console.log('==========================================')
-
-    // ========================================================
-    // CONVERSATION WHATSAPP
-    // ========================================================
-
-    conversation = await upsertWhatsAppConversation({
+    const conversation = await upsertWhatsAppConversation({
       whatsappContactId: contact._id,
-
       integrationId: integration._id,
-
-      leadId: lead._id,
-
+      leadId,
       assignedTo: lead.assignedTo || null,
-
-      contactName: lead.name || contact.name || 'Lead WhatsApp',
+      name: contact.name || lead.name || '',
     })
 
-    console.log('')
-    console.log('💬 CONVERSA WHATSAPP')
-    console.log('==========================================')
-    console.log('Conversation ID:', conversation._id.toString())
-    console.log('Channel:', conversation.channel)
-    console.log('Contact ID:', conversation.whatsappContact?.toString() || null)
-    console.log(
-      'Integration ID:',
-      conversation.whatsappIntegration?.toString() || null,
-    )
-    console.log('Lead ID:', conversation.lead?.toString() || null)
-    console.log('Assigned To:', conversation.assignedTo?.toString() || null)
-    console.log('Participantes:', conversation.participants?.length || 0)
-    console.log('==========================================')
+    const messageObject = data.message?.message || data.message || data
 
-    // ========================================================
-    // MESSAGE WHATSAPP
-    // ========================================================
+    const imageUrl = data.fileUrl || data.mediaUrl || data.url || null
 
-    message = await chatService.receiveWhatsAppMessage({
+    const imageMessage =
+      messageObject.imageMessage || messageObject.image || null
+
+    const documentMessage =
+      messageObject.documentMessage || messageObject.document || null
+
+    const content =
+      data.content ||
+      data.text ||
+      imageMessage?.caption ||
+      documentMessage?.caption ||
+      messageObject.conversation ||
+      messageObject.extendedTextMessage?.text ||
+      messageObject.imageMessage?.caption ||
+      messageObject.documentMessage?.caption ||
+      ''
+
+    let messageType = 'text'
+
+    if (data.type === 'IMAGE' || data.type === 'image' || imageMessage) {
+      messageType = 'image'
+    } else if (
+      data.type === 'FILE' ||
+      data.type === 'DOCUMENT' ||
+      data.type === 'document' ||
+      documentMessage
+    ) {
+      messageType = 'file'
+    }
+
+    const attachmentUrl =
+      imageUrl || imageMessage?.url || documentMessage?.url || ''
+
+    const attachment = attachmentUrl
+      ? {
+          url: attachmentUrl,
+          name: data.fileName || documentMessage?.fileName || '',
+          size: Number(data.fileSize || 0),
+          mimeType:
+            data.mimeType ||
+            imageMessage?.mimetype ||
+            documentMessage?.mimetype ||
+            '',
+        }
+      : null
+
+    const savedMessage = await chatService.receiveWhatsAppMessage({
       conversationId: conversation._id,
-
       whatsappContactId: contact._id,
-
-      externalMessageId: data.key?.id || null,
-
-      content: data.content || '',
-
-      type:
-        data.type === 'TEXT'
-          ? 'text'
-          : data.type === 'IMAGE'
-            ? 'image'
-            : data.type === 'FILE'
-              ? 'file'
-              : 'text',
-
-      attachment: data.fileUrl
-        ? {
-            url: data.fileUrl,
-
-            name: '',
-
-            size: 0,
-
-            mimeType: '',
-          }
-        : null,
+      externalMessageId,
+      content:
+        content ||
+        (messageType === 'image' ? 'Imagem recebida' : 'Arquivo recebido'),
+      type: messageType,
+      attachment,
     })
 
-    // ========================================================
-    // SOCKET.IO — TEMPO REAL
-    // ========================================================
+    if (savedMessage?.duplicate) {
+      return {
+        success: true,
+        duplicate: true,
+        conversationId: String(conversation._id),
+      }
+    }
+
+    await WhatsAppContact.findByIdAndUpdate(contact._id, {
+      lastMessageAt: new Date(),
+    })
 
     const io = requestIo || getSocketIO()
 
-    console.log('')
-    console.log('==========================================')
-    console.log('🔌 SOCKET.IO DO WEBHOOK')
-    console.log('==========================================')
-    console.log('Socket.IO disponível:', !!io)
-    console.log('Veio do request:', !!requestIo)
-    console.log('PID:', process.pid)
-    console.log('==========================================')
+    if (io) {
+      const conversationId = String(conversation._id)
+      const assignedTo = normalizeId(conversation.assignedTo)
 
-    if (io && message?._id) {
-      const conversationId = conversation._id.toString()
+      io.to(conversationId).emit('new_message', {
+        conversationId,
+        message: savedMessage,
+      })
 
-      const assignedTo = conversation.assignedTo?.toString()
-
-      const conversationRoom = conversationId
-
-      const userRoom = assignedTo ? `user_${assignedTo}` : null
-
-      console.log('')
-      console.log('📡 EMITINDO MENSAGEM WHATSAPP VIA SOCKET.IO')
-      console.log('==========================================')
-      console.log('Conversation room:', conversationRoom)
-      console.log('Assigned user:', assignedTo || null)
-      console.log('User room:', userRoom || null)
-      console.log('Message ID:', message._id.toString())
-
-      // =======================================================
-      // DIAGNÓSTICO DAS ROOMS
-      // =======================================================
-
-      try {
-        const conversationSockets = await io.in(conversationRoom).fetchSockets()
-
-        console.log('')
-        console.log(
-          '🔎 SOCKETS NA ROOM DA CONVERSA:',
-          conversationSockets.length,
-        )
-
-        conversationSockets.forEach((socket) => {
-          console.log('   • Socket:', socket.id)
-
-          console.log(
-            '     User:',
-            socket.handshake?.auth?.userId || socket.data?.userId || null,
-          )
-
-          console.log('     Rooms:', [...socket.rooms])
-        })
-
-        if (userRoom) {
-          const userSockets = await io.in(userRoom).fetchSockets()
-
-          console.log('')
-          console.log(
-            '🔎 SOCKETS NA USER ROOM:',
-            userRoom,
-            ':',
-            userSockets.length,
-          )
-
-          userSockets.forEach((socket) => {
-            console.log('   • Socket:', socket.id)
-
-            console.log(
-              '     User:',
-              socket.handshake?.auth?.userId || socket.data?.userId || null,
-            )
-
-            console.log('     Rooms:', [...socket.rooms])
-          })
-        }
-      } catch (socketInspectionError) {
-        console.error(
-          '❌ Erro ao inspecionar rooms Socket.IO:',
-          socketInspectionError,
-        )
-      }
-
-      // =======================================================
-      // EMIT PARA A ROOM DA CONVERSA
-      // =======================================================
-
-      const socketMessage = {
-        ...(message.toObject?.() || message),
-      }
-
-      console.log('')
-      console.log('📤 Emitindo evento new_message:')
-      console.log('   Room:', conversationRoom)
-
-      io.to(conversationRoom).emit('new_message', socketMessage)
-
-      // =======================================================
-      // EMIT PARA A USER ROOM
-      // =======================================================
-
-      if (userRoom) {
-        const notificationPayload = {
+      if (assignedTo) {
+        io.to(assignedTo).emit('new_message_notification', {
           conversationId,
-
-          channel: 'whatsapp',
-
-          message: socketMessage,
-        }
-
-        console.log('')
-        console.log('📤 Emitindo evento new_message_notification:')
-
-        console.log('   Room:', userRoom)
-
-        io.to(userRoom).emit('new_message_notification', notificationPayload)
+          message: savedMessage,
+          leadId: String(leadId),
+        })
       }
-
-      console.log('')
-      console.log('✅ MENSAGEM EMITIDA VIA SOCKET.IO')
-      console.log('==========================================')
-    } else {
-      console.warn(
-        '⚠️ Socket.IO indisponível ou mensagem sem ID. Evento não emitido.',
-      )
     }
 
-    // ========================================================
-    // MESSAGE LOG
-    // ========================================================
-
-    console.log('')
-    console.log('📝 MESSAGE WHATSAPP PERSISTIDA')
-    console.log('==========================================')
-    console.log('Message ID:', message._id.toString())
-    console.log('Content:', message.content)
-    console.log('Direction:', message.direction)
-    console.log('Sender Type:', message.senderType)
-
-    console.log(
-      'WhatsApp Contact:',
-      message.whatsappContact?._id?.toString?.() ||
-        message.whatsappContact?.toString?.() ||
-        null,
-    )
-
-    console.log('External ID:', message.externalMessageId)
-    console.log('Status:', message.status)
-    console.log('Lead ID:', lead._id.toString())
-    console.log('Assigned To:', lead.assignedTo || null)
-    console.log('==========================================')
+    return {
+      success: true,
+      event,
+      conversationId: String(conversation._id),
+      messageId: savedMessage?._id ? String(savedMessage._id) : null,
+    }
   }
 
-  // ==========================================================
-  // MESSAGE SENT
-  // ==========================================================
+  // --------------------------------------------------------
+  // MENSAGEM ENVIADA
+  // --------------------------------------------------------
 
-  if (payload.event === 'message.sent') {
-    console.log('📤 Mensagem enviada')
-    console.log('Session ID:', sessionId)
-    console.log('Integration ID:', integration._id.toString())
-
-    // Não criamos Message aqui.
-    // A mensagem outbound já é persistida pelo
-    // chatService.sendWhatsAppMessage().
+  if (event === 'message.sent' || event === 'messages.update') {
+    // O envio de mensagens pelo CRM já é persistido pelo
+    // chatService após a confirmação da API.
+    // Não criamos uma segunda mensagem neste evento.
+    return {
+      success: true,
+      event,
+      ignored: true,
+      reason: 'Evento de confirmação de mensagem enviada.',
+    }
   }
 
-  // ==========================================================
-  // CONNECTION UPDATE
-  // ==========================================================
+  // --------------------------------------------------------
+  // STATUS DA CONEXÃO
+  // --------------------------------------------------------
 
-  if (payload.event === 'connection.update') {
-    console.log('🔌 Atualização da conexão')
-    console.log('Session ID:', sessionId)
-    console.log('Data:', payload.data || {})
+  if (event === 'connection.update' || event === 'session.status') {
+    const providerStatus =
+      data.status || data.state || data.connection || 'unknown'
+
+    const normalizedStatus = String(providerStatus).toLowerCase()
+
+    const connected = ['connected', 'open', 'online'].includes(normalizedStatus)
+
+    const disconnected = [
+      'disconnected',
+      'close',
+      'closed',
+      'offline',
+    ].includes(normalizedStatus)
+
+    if (connected) {
+      await updateIntegrationStatus(integration._id, 'connected')
+    } else if (disconnected) {
+      await updateIntegrationStatus(integration._id, 'disconnected')
+    }
+
+    return {
+      success: true,
+      event,
+      status: providerStatus,
+    }
   }
-
-  console.log('==========================================')
-  console.log('')
-
-  // ==========================================================
-  // RESPONSE
-  // ==========================================================
 
   return {
-    received: true,
-
-    event: payload.event,
-
-    sessionId,
-
-    integrationId: integration._id,
-
-    contact: contact
-      ? {
-          id: contact._id,
-
-          name: contact.name,
-
-          phone: contact.phone,
-
-          remoteJid: contact.remoteJid,
-
-          isGroup: contact.isGroup,
-
-          lead: contact.lead,
-        }
-      : null,
-
-    conversation: conversation
-      ? {
-          id: conversation._id,
-
-          channel: conversation.channel,
-
-          type: conversation.type,
-
-          whatsappContact: conversation.whatsappContact,
-
-          whatsappIntegration: conversation.whatsappIntegration,
-
-          lead: conversation.lead,
-
-          assignedTo: conversation.assignedTo,
-
-          participants: conversation.participants,
-        }
-      : null,
-
-    message: message
-      ? {
-          id: message._id,
-
-          content: message.content,
-
-          type: message.type,
-
-          direction: message.direction,
-
-          senderType: message.senderType,
-
-          whatsappContact: message.whatsappContact,
-
-          externalMessageId: message.externalMessageId,
-
-          status: message.status,
-        }
-      : null,
+    success: true,
+    ignored: true,
+    event,
+    reason: 'Evento do webhook não tratado por este serviço.',
   }
 }
 
-// ============================================================
-// UPDATE WEBHOOK SECRET
-// ============================================================
+// ==========================================================
+// ATUALIZAR SEGREDO DO WEBHOOK
+// ==========================================================
 
 export const updateWebhookSecret = async ({ integrationId, webhookSecret }) => {
-  if (!integrationId) {
-    throw new AppError('ID da integração é obrigatório.', 400)
+  if (!integrationId || !webhookSecret) {
+    throw new AppError('integrationId e webhookSecret são obrigatórios.', 400)
   }
 
-  if (!webhookSecret?.trim()) {
-    throw new AppError('Webhook secret é obrigatório.', 400)
-  }
-
-  const integration = await WhatsAppIntegration.findById(integrationId)
+  const integration = await WhatsAppIntegration.findByIdAndUpdate(
+    integrationId,
+    {
+      webhookSecret: String(webhookSecret).trim(),
+    },
+    {
+      new: true,
+      runValidators: true,
+    },
+  ).select('-apiKey -webhookSecret')
 
   if (!integration) {
-    throw new AppError('Integração WhatsApp não encontrada.', 404)
+    throw new AppError('Integração não encontrada.', 404)
   }
 
-  integration.webhookSecret = webhookSecret.trim()
+  return integration
+}
 
-  await integration.save()
+// ==========================================================
+// EXPORT DEFAULT
+// ==========================================================
 
-  console.log('🔐 Webhook secret atualizado:', {
-    integrationId: integration._id.toString(),
-
-    sessionId: integration.sessionId,
-  })
-
-  return {
-    integrationId: integration._id,
-
-    sessionId: integration.sessionId,
-
-    updated: true,
-  }
+export default {
+  createIntegration,
+  listIntegrations,
+  sendTextMessage,
+  sendMediaMessage,
+  getIntegrationSecrets,
+  getQrCode,
+  verifyWebhookSignature,
+  handleWebhook,
+  updateWebhookSecret,
+  upsertWhatsAppContact,
+  upsertWhatsAppConversation,
 }

@@ -1,632 +1,571 @@
+// src/service/chatService.js
+
 import mongoose from 'mongoose'
+
 import Conversation from '../models/Conversation.js'
 import Message from '../models/Message.js'
 import User from '../models/User.js'
+import WhatsAppContact from '../models/WhatsAppContact.js'
 import AppError from '../utils/AppError.js'
 
-import WhatsAppContact from '../models/WhatsAppContact.js'
+// ==========================================================
+// HELPERS
+// ==========================================================
 
-/**
- * ============================================================
- * HELPERS
- * ============================================================
- */
-
-/**
- * Verifica se o usuário possui privilégios administrativos.
- *
- * O projeto possui contextos onde o admin pode ser identificado
- * tanto por isAdmin quanto pelo role.
- */
 const isAdminUser = (user) => {
   return user?.isAdmin === true || user?.role === 'admin'
 }
 
-/**
- * Converte ObjectId/string para string com segurança.
- */
 const sameId = (valueA, valueB) => {
-  if (!valueA || !valueB) {
-    return false
-  }
+  if (!valueA || !valueB) return false
 
-  const idA = valueA?._id ?? valueA
-  const idB = valueB?._id ?? valueB
+  const idA =
+    typeof valueA === 'object' && valueA._id
+      ? String(valueA._id)
+      : String(valueA)
 
-  return idA.toString() === idB.toString()
+  const idB =
+    typeof valueB === 'object' && valueB._id
+      ? String(valueB._id)
+      : String(valueB)
+
+  return idA === idB
 }
 
-/**
- * Verifica se um usuário está entre os participantes
- * de uma conversa interna.
- */
-const isParticipant = (conversation, userId) => {
-  if (!conversation?.participants || !userId) {
-    return false
-  }
+const getUserId = (user) => {
+  if (!user) return null
 
-  return conversation.participants.some((participant) =>
+  return String(typeof user === 'object' && user._id ? user._id : user)
+}
+
+const isParticipant = (conversation, userId) => {
+  if (!conversation || !userId) return false
+
+  return (conversation.participants || []).some((participant) =>
     sameId(participant, userId),
   )
 }
 
-/**
- * Verifica se o usuário pode acessar determinada conversa.
- *
- * REGRAS:
- *
- * ADMIN
- *   → pode acessar qualquer conversa ativa.
- *
- * WHATSAPP
- *   → broker somente se assignedTo === user._id
- *
- * INTERNAL
- *   → usuário precisa estar em participants
- *
- * Isso mantém o WhatsApp separado do conceito de
- * participants usado pelo chat interno.
- */
 const canAccessConversation = (conversation, user) => {
-  if (!conversation || !user?._id) {
-    return false
-  }
+  if (!conversation || !user) return false
 
-  if (isAdminUser(user)) {
-    return true
-  }
+  if (!conversation.isActive) return false
+
+  if (isAdminUser(user)) return true
 
   if (conversation.channel === 'whatsapp') {
-    if (!conversation.assignedTo) {
-      return false
-    }
-
-    return sameId(conversation.assignedTo, user._id)
-  }
-
-  if (conversation.channel === 'internal') {
-    return isParticipant(conversation, user._id)
+    return (
+      sameId(conversation.assignedTo, user._id) ||
+      sameId(conversation.lead?.assignedTo, user._id)
+    )
   }
 
   return isParticipant(conversation, user._id)
 }
 
-/**
- * ============================================================
- * CONVERSATIONS
- * ============================================================
- */
+const assertConversationAccess = (conversation, user) => {
+  if (!conversation) {
+    throw new AppError('Conversa não encontrada.', 404)
+  }
 
-/**
- * Cria uma conversa interna.
- *
- * IMPORTANTE:
- * Conversas WhatsApp não são criadas por esta função.
- * Elas são criadas pelo fluxo do WhatsApp/webhook.
- */
+  if (!canAccessConversation(conversation, user)) {
+    throw new AppError(
+      'Você não tem permissão para acessar esta conversa.',
+      403,
+    )
+  }
+}
+
+const normalizeAttachment = (attachment) => {
+  if (!attachment) return null
+
+  if (typeof attachment !== 'object') {
+    throw new AppError('O anexo informado é inválido.', 400)
+  }
+
+  return {
+    url: String(attachment.url || '').trim(),
+    name: String(attachment.name || '').trim(),
+    size: Math.max(0, Number(attachment.size) || 0),
+    mimeType: String(attachment.mimeType || '').trim(),
+  }
+}
+
+const getMessagePreview = (message) => {
+  const content = String(message?.content || '').trim()
+
+  if (content) return content
+
+  switch (message?.type) {
+    case 'image':
+      return 'Imagem'
+    case 'file':
+      return message?.attachment?.name || 'Arquivo'
+    case 'system':
+      return 'Mensagem do sistema'
+    default:
+      return ''
+  }
+}
+
+const populateMessage = (query) => {
+  return query
+    .populate('sender', 'name email avatar profileImage role')
+    .populate('whatsappContact', 'name phone phoneNormalized')
+    .populate({
+      path: 'replyTo',
+      select: 'content type attachment sender createdAt',
+      populate: {
+        path: 'sender',
+        select: 'name avatar profileImage',
+      },
+    })
+    .populate('mentions', 'name email avatar profileImage')
+}
+
+const populateConversation = (query) => {
+  return query
+    .populate('participants', 'name email avatar profileImage role')
+    .populate('lastMessageFrom', 'name avatar profileImage')
+    .populate('createdBy', 'name email avatar profileImage')
+    .populate('assignedTo', 'name email avatar profileImage role')
+    .populate('lead', 'name phone phoneNormalized assignedTo')
+    .populate(
+      'whatsappContact',
+      'name phone phoneNormalized remoteJid isActive',
+    )
+    .populate('whatsappIntegration', 'name provider status enabled sessionId')
+}
+
+const incrementUnreadCount = (conversation, userId) => {
+  if (!userId) return
+
+  const currentValue =
+    Number(conversation.unreadCounts?.get?.(String(userId))) || 0
+
+  conversation.unreadCounts.set(String(userId), currentValue + 1)
+}
+
+const resetUnreadCount = (conversation, userId) => {
+  if (!userId) return
+
+  conversation.unreadCounts.set(String(userId), 0)
+}
+
+const getConversationById = async (conversationId) => {
+  if (!mongoose.Types.ObjectId.isValid(conversationId)) {
+    throw new AppError('ID da conversa inválido.', 400)
+  }
+
+  return Conversation.findOne({
+    _id: conversationId,
+    isActive: true,
+  })
+    .populate('lead', 'name phone phoneNormalized assignedTo')
+    .populate('whatsappContact')
+    .populate('whatsappIntegration')
+}
+
+// ==========================================================
+// CRIAR CONVERSA INTERNA
+// ==========================================================
+
 export const createConversation = async ({
-  participants,
+  participants = [],
+  createdBy,
   type = 'direct',
   name = '',
-  createdBy,
+  avatar = '',
+  isAdmin = false,
 }) => {
-  if (!participants || !Array.isArray(participants)) {
-    throw new AppError('Participantes são obrigatórios.', 400)
+  if (!createdBy) {
+    throw new AppError('O usuário criador é obrigatório.', 400)
+  }
+
+  if (!['direct', 'group', 'broker_channel'].includes(type)) {
+    throw new AppError('Tipo de conversa inválido.', 400)
   }
 
   const uniqueParticipants = [
     ...new Set(
-      participants.filter(Boolean).map((participant) => participant.toString()),
+      [...participants, createdBy]
+        .filter(Boolean)
+        .map((participant) => getUserId(participant)),
     ),
   ]
 
-  if (uniqueParticipants.length === 0) {
-    throw new AppError('A conversa precisa ter participantes.', 400)
+  if (uniqueParticipants.some((id) => !mongoose.Types.ObjectId.isValid(id))) {
+    throw new AppError('Um ou mais participantes são inválidos.', 400)
   }
 
-  /**
-   * Conversa direta:
-   *
-   * Se já existir uma conversa direta entre os mesmos
-   * usuários, reutilizamos a conversa existente.
-   */
-  if (type === 'direct' && uniqueParticipants.length === 2) {
-    const existingConversation = await Conversation.findOne({
+  if (type === 'direct' && uniqueParticipants.length !== 2) {
+    throw new AppError(
+      'Uma conversa direta precisa ter exatamente dois participantes.',
+      400,
+    )
+  }
+
+  if (type === 'group' && uniqueParticipants.length < 2) {
+    throw new AppError(
+      'Um grupo precisa ter pelo menos dois participantes.',
+      400,
+    )
+  }
+
+  const users = await User.find({
+    _id: { $in: uniqueParticipants },
+  }).select('_id')
+
+  if (users.length !== uniqueParticipants.length) {
+    throw new AppError('Um ou mais participantes não foram encontrados.', 404)
+  }
+
+  if (type === 'direct') {
+    const existingConversations = await Conversation.find({
       channel: 'internal',
       type: 'direct',
-      participants: {
-        $all: uniqueParticipants,
-      },
       isActive: true,
+      participants: { $all: uniqueParticipants },
     })
 
-    if (existingConversation) {
-      return existingConversation.populate([
-        {
-          path: 'participants',
-          select: 'name email role isAdmin avatar',
-        },
-        {
-          path: 'createdBy',
-          select: 'name email role isAdmin avatar',
-        },
-      ])
+    const existingDirect = existingConversations.find(
+      (conversation) =>
+        conversation.participants.length === 2 &&
+        uniqueParticipants.every((id) => isParticipant(conversation, id)),
+    )
+
+    if (existingDirect) {
+      return populateConversation(Conversation.findById(existingDirect._id))
     }
   }
 
-  const unreadCounts = {}
-
-  uniqueParticipants.forEach((participantId) => {
-    unreadCounts[participantId] = 0
-  })
-
   const conversation = await Conversation.create({
     participants: uniqueParticipants,
-    type,
-    name: name?.trim() || '',
-    createdBy,
     channel: 'internal',
-    unreadCounts,
+    type,
+    name: String(name || '').trim(),
+    avatar: String(avatar || '').trim(),
+    lastMessage: '',
+    lastMessageAt: null,
+    lastMessageFrom: null,
+    unreadCounts: new Map(),
     isActive: true,
+    isBrokerChannel: type === 'broker_channel',
+    createdBy,
   })
 
-  return conversation.populate([
-    {
-      path: 'participants',
-      select: 'name email role isAdmin avatar',
-    },
-    {
-      path: 'createdBy',
-      select: 'name email role isAdmin avatar',
-    },
-  ])
+  return populateConversation(Conversation.findById(conversation._id))
 }
 
-/**
- * Busca as conversas que o usuário pode visualizar.
- *
- * ADMIN:
- *   → todas as conversas ativas.
- *
- * BROKER:
- *   → conversas internas onde participa
- *   → conversas WhatsApp atribuídas a ele
- */
-export const getUserConversations = async (user) => {
-  if (!user?._id) {
-    throw new AppError('Usuário não identificado.', 401)
+// ==========================================================
+// LISTAR CONVERSAS DO USUÁRIO
+// ==========================================================
+
+export const getUserConversations = async (userId) => {
+  if (!userId || !mongoose.Types.ObjectId.isValid(String(userId))) {
+    throw new AppError('ID do usuário inválido.', 400)
   }
 
-  const baseFilter = {
+  const user = await User.findById(userId).select('_id role isAdmin')
+
+  if (!user) {
+    throw new AppError('Usuário não encontrado.', 404)
+  }
+
+  const query = {
     isActive: true,
   }
 
-  if (!isAdminUser(user)) {
-    baseFilter.$or = [
+  if (isAdminUser(user)) {
+    query.channel = { $in: ['internal', 'whatsapp'] }
+  } else {
+    query.$or = [
       {
         channel: 'internal',
         participants: user._id,
       },
       {
         channel: 'whatsapp',
-        assignedTo: user._id,
+        $or: [{ assignedTo: user._id }, { lead: { $exists: true } }],
       },
     ]
-  } else {
-    baseFilter.channel = {
-      $in: ['internal', 'whatsapp'],
-    }
   }
 
-  const conversations = await Conversation.find(baseFilter)
-    .populate({
-      path: 'participants',
-      select: 'name email role isAdmin avatar',
-    })
-    .populate({
-      path: 'lastMessageFrom',
-      select: 'name email role isAdmin avatar',
-    })
-    .populate({
-      path: 'createdBy',
-      select: 'name email role isAdmin avatar',
-    })
-    .populate({
-      path: 'assignedTo',
-      select: 'name email role isAdmin avatar',
-    })
-    .populate({
-      path: 'lead',
-      select:
-        'name phone phoneNormalized email stage status priority source assignedTo',
-    })
-    .populate({
-      path: 'whatsappContact',
-      select:
-        'name phone phoneNormalized remoteJid isGroup isActive lastMessageAt metadata lead integration',
-    })
-    .populate({
-      path: 'whatsappIntegration',
-      select: 'name provider status sessionId enabled',
-    })
+  let conversations = await populateConversation(Conversation.find(query))
     .sort({
       lastMessageAt: -1,
       updatedAt: -1,
     })
+    .lean()
 
-  return conversations.map((conversation) => {
-    const conversationObject = conversation.toObject()
+  // Para usuários comuns, só retornamos conversas WhatsApp
+  // atribuídas a eles ou a leads sob sua responsabilidade.
+  if (!isAdminUser(user)) {
+    conversations = conversations.filter((conversation) => {
+      if (conversation.channel !== 'whatsapp') return true
 
-    /**
-     * Mantém o comportamento existente de retornar
-     * o contador individual de mensagens não lidas.
-     */
-    const unreadCounts = conversationObject.unreadCounts || {}
+      return (
+        sameId(conversation.assignedTo, user._id) ||
+        sameId(conversation.lead?.assignedTo, user._id)
+      )
+    })
+  }
 
-    conversationObject.unreadCount = unreadCounts[user._id.toString()] || 0
-
-    return conversationObject
-  })
+  return conversations.map((conversation) => ({
+    ...conversation,
+    unreadCount:
+      Number(
+        conversation.unreadCounts?.[String(user._id)] ??
+          conversation.unreadCounts?.get?.(String(user._id)),
+      ) || 0,
+  }))
 }
 
-/**
- * Busca as mensagens de uma conversa.
- *
- * A autorização é feita através de canAccessConversation():
- *
- * - admin → acesso global
- * - WhatsApp → assignedTo
- * - interno → participants
- */
+// ==========================================================
+// LISTAR MENSAGENS DE UMA CONVERSA
+// ==========================================================
+
 export const getConversationMessages = async ({
   conversationId,
-  user,
+  userId,
   limit = 50,
   before = null,
 }) => {
-  if (!conversationId) {
-    throw new AppError('ID da conversa é obrigatório.', 400)
+  if (!mongoose.Types.ObjectId.isValid(String(conversationId))) {
+    throw new AppError('ID da conversa inválido.', 400)
   }
 
-  if (!user?._id) {
-    throw new AppError('Usuário não identificado.', 401)
+  const normalizedLimit = Math.min(100, Math.max(1, Number(limit) || 50))
+
+  const user = await User.findById(userId).select('_id role isAdmin')
+
+  if (!user) {
+    throw new AppError('Usuário não encontrado.', 404)
   }
 
-  const conversation = await Conversation.findOne({
-    _id: conversationId,
-    isActive: true,
-  })
-    .populate({
-      path: 'participants',
-      select: 'name email role isAdmin avatar',
-    })
-    .populate({
-      path: 'assignedTo',
-      select: 'name email role isAdmin avatar',
-    })
-    .populate({
-      path: 'lead',
-      select:
-        'name phone phoneNormalized email stage status priority source assignedTo',
-    })
-    .populate({
-      path: 'whatsappContact',
-      select:
-        'name phone phoneNormalized remoteJid isGroup isActive lastMessageAt metadata lead integration',
-    })
-    .populate({
-      path: 'whatsappIntegration',
-      select: 'name provider status sessionId enabled',
-    })
+  const conversation = await getConversationById(conversationId)
 
-  if (!conversation) {
-    throw new AppError('Conversa não encontrada.', 404)
-  }
+  assertConversationAccess(conversation, user)
 
-  if (!canAccessConversation(conversation, user)) {
-    throw new AppError(
-      'Você não tem permissão para acessar esta conversa.',
-      403,
-    )
-  }
-
-  const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 100)
-
-  const messageFilter = {
-    conversation: conversationId,
+  const messageQuery = {
+    conversation: conversation._id,
+    isDeleted: { $ne: true },
   }
 
   if (before) {
     const beforeDate = new Date(before)
 
-    if (!Number.isNaN(beforeDate.getTime())) {
-      messageFilter.createdAt = {
-        $lt: beforeDate,
-      }
+    if (Number.isNaN(beforeDate.getTime())) {
+      throw new AppError('Data de paginação inválida.', 400)
     }
+
+    messageQuery.createdAt = { $lt: beforeDate }
   }
 
-  const messages = await Message.find(messageFilter)
-    .populate({
-      path: 'sender',
-      select: 'name email role isAdmin avatar',
-    })
-    .populate({
-      path: 'whatsappContact',
-      select:
-        'name phone phoneNormalized remoteJid isGroup isActive lastMessageAt',
-    })
-    .populate({
-      path: 'replyTo',
-      populate: {
-        path: 'sender',
-        select: 'name email role isAdmin avatar',
-      },
-    })
-    .sort({
-      createdAt: -1,
-    })
-    .limit(safeLimit)
+  const messages = await populateMessage(Message.find(messageQuery))
+    .sort({ createdAt: -1, _id: -1 })
+    .limit(normalizedLimit)
+    .lean()
 
-  /**
-   * Retorna em ordem cronológica.
-   */
-  messages.reverse()
+  // Marca como lidas apenas mensagens enviadas por outras pessoas.
+  const unreadMessageIds = messages
+    .filter(
+      (message) =>
+        !sameId(message.sender, user._id) &&
+        !(message.readBy || []).some((reader) => sameId(reader, user._id)),
+    )
+    .map((message) => message._id)
 
-  /**
-   * Marca como lidas as mensagens destinadas ao usuário.
-   *
-   * Mensagens recebidas pelo WhatsApp possuem sender null,
-   * então elas entram como mensagens não lidas para o
-   * responsável/admin através do mecanismo da conversa.
-   */
-  await Message.updateMany(
-    {
-      conversation: conversationId,
-      sender: {
-        $ne: user._id,
+  if (unreadMessageIds.length > 0) {
+    await Message.updateMany(
+      {
+        _id: { $in: unreadMessageIds },
       },
-      readBy: {
-        $ne: user._id,
+      {
+        $addToSet: { readBy: user._id },
+        $set: { readAt: new Date() },
       },
-    },
-    {
-      $addToSet: {
-        readBy: user._id,
-      },
-    },
-  )
-
-  await Conversation.updateOne(
-    {
-      _id: conversationId,
-    },
-    {
-      $set: {
-        [`unreadCounts.${user._id.toString()}`]: 0,
-      },
-    },
-  )
-
-  return {
-    conversation,
-    messages,
+    )
   }
+
+  resetUnreadCount(conversation, user._id)
+  await conversation.save()
+
+  return messages.reverse()
 }
 
-/**
- * ============================================================
- * ENVIO DE MENSAGENS
- * ============================================================
- */
+// ==========================================================
+// ENVIAR MENSAGEM INTERNA
+// ==========================================================
 
-/**
- * Envia mensagem pelo CHAT INTERNO.
- *
- * IMPORTANTE:
- * O WhatsApp não deve usar este método para envio.
- *
- * O envio WhatsApp será feito futuramente por um endpoint
- * específico que chama whatsappAkgService.sendTextMessage().
- */
 export const sendMessage = async ({
   conversationId,
   senderId,
-  content,
+  content = '',
   type = 'text',
   attachment = null,
   replyTo = null,
   mentions = [],
   isAdmin = false,
 }) => {
-  if (!conversationId) {
-    throw new AppError('ID da conversa é obrigatório.', 400)
+  if (!mongoose.Types.ObjectId.isValid(String(conversationId))) {
+    throw new AppError('ID da conversa inválido.', 400)
   }
 
-  if (!senderId) {
-    throw new AppError('Remetente é obrigatório.', 400)
+  const sender = await User.findById(senderId).select('_id name role isAdmin')
+
+  if (!sender) {
+    throw new AppError('Remetente não encontrado.', 404)
   }
 
-  if (!content?.trim() && !attachment) {
-    throw new AppError('A mensagem precisa ter conteúdo ou anexo.', 400)
+  const conversation = await Conversation.findOne({
+    _id: conversationId,
+    isActive: true,
+    channel: 'internal',
+  })
+
+  if (!conversation) {
+    throw new AppError('Conversa interna não encontrada.', 404)
+  }
+
+  if (
+    !isAdmin &&
+    !isAdminUser(sender) &&
+    !isParticipant(conversation, sender._id)
+  ) {
+    throw new AppError('Você não participa desta conversa.', 403)
+  }
+
+  const normalizedType = String(type || 'text').toLowerCase()
+
+  if (!['text', 'image', 'file', 'system'].includes(normalizedType)) {
+    throw new AppError('Tipo de mensagem inválido.', 400)
+  }
+
+  const normalizedContent = String(content || '').trim()
+  const normalizedAttachment = normalizeAttachment(attachment)
+
+  if (!normalizedContent && !normalizedAttachment?.url) {
+    throw new AppError('Informe um texto ou um anexo para enviar.', 400)
+  }
+
+  if (normalizedAttachment && !normalizedAttachment.url) {
+    throw new AppError('A URL do anexo é obrigatória.', 400)
+  }
+
+  if (replyTo) {
+    if (!mongoose.Types.ObjectId.isValid(String(replyTo))) {
+      throw new AppError('Mensagem respondida inválida.', 400)
+    }
+
+    const originalMessage = await Message.findOne({
+      _id: replyTo,
+      conversation: conversation._id,
+      isDeleted: { $ne: true },
+    }).select('_id')
+
+    if (!originalMessage) {
+      throw new AppError(
+        'A mensagem respondida não foi encontrada nesta conversa.',
+        404,
+      )
+    }
+  }
+
+  const validMentions = []
+
+  if (!Array.isArray(mentions)) {
+    throw new AppError('A lista de menções é inválida.', 400)
+  }
+
+  for (const mention of mentions) {
+    const id = getUserId(mention)
+
+    if (!mongoose.Types.ObjectId.isValid(String(id))) {
+      throw new AppError('Uma menção contém um ID inválido.', 400)
+    }
+
+    if (!validMentions.some((item) => sameId(item, id))) {
+      validMentions.push(id)
+    }
+  }
+
+  if (validMentions.length > 0) {
+    const mentionUsers = await User.find({
+      _id: { $in: validMentions },
+    }).select('_id')
+
+    if (mentionUsers.length !== validMentions.length) {
+      throw new AppError(
+        'Um ou mais usuários mencionados não foram encontrados.',
+        404,
+      )
+    }
   }
 
   const session = await mongoose.startSession()
+  let createdMessage
 
   try {
-    let createdMessage = null
-
     await session.withTransaction(async () => {
-      const conversation = await Conversation.findOne({
-        _id: conversationId,
-        isActive: true,
-      }).session(session)
-
-      if (!conversation) {
-        throw new AppError('Conversa não encontrada.', 404)
-      }
-
-      /**
-       * WhatsApp possui fluxo próprio de envio.
-       */
-      if (conversation.channel === 'whatsapp') {
-        throw new AppError(
-          'Mensagens WhatsApp devem ser enviadas pelo serviço de WhatsApp.',
-          400,
-        )
-      }
-
-      /**
-       * Para chat interno:
-       *
-       * - participante pode enviar
-       * - admin também pode enviar
-       */
-      const authorized = isAdmin || isParticipant(conversation, senderId)
-
-      if (!authorized) {
-        throw new AppError(
-          'Você não tem permissão para enviar mensagens nesta conversa.',
-          403,
-        )
-      }
-
-      if (
-        !conversation.participants ||
-        !Array.isArray(conversation.participants) ||
-        conversation.participants.length === 0
-      ) {
-        throw new AppError('A conversa não possui participantes.', 400)
-      }
-
-      createdMessage = await Message.create(
+      const [message] = await Message.create(
         [
           {
             conversation: conversation._id,
-            sender: senderId,
+            sender: sender._id,
             senderType: 'user',
-            content: content?.trim() || '',
-            type,
-            attachment,
-            replyTo,
-            mentions,
             direction: 'outbound',
+            content:
+              normalizedContent ||
+              normalizedAttachment?.name ||
+              (normalizedType === 'image' ? 'Imagem' : 'Arquivo'),
+            type: normalizedType,
+            attachment: normalizedAttachment || undefined,
+            replyTo: replyTo || null,
+            mentions: validMentions,
             status: 'sent',
-            readBy: [senderId],
+            readBy: [sender._id],
           },
         ],
-        {
-          session,
-        },
+        { session },
       )
 
-      createdMessage = createdMessage[0]
+      createdMessage = message
 
-      const now = new Date()
+      conversation.lastMessage = getMessagePreview(message)
+      conversation.lastMessageAt = message.createdAt || new Date()
+      conversation.lastMessageFrom = sender._id
 
-      conversation.lastMessage = createdMessage._id
-      conversation.lastMessageAt = now
-      conversation.lastMessageFrom = senderId
-
-      /**
-       * Atualiza contador individual de não lidas.
-       *
-       * O próprio remetente não recebe unread.
-       */
-      const unreadCounts = conversation.unreadCounts || {}
-
-      conversation.participants.forEach((participant) => {
-        const participantId = participant.toString()
-
-        if (participantId === senderId.toString()) {
-          return
+      for (const participant of conversation.participants) {
+        if (!sameId(participant, sender._id)) {
+          incrementUnreadCount(conversation, participant)
         }
+      }
 
-        unreadCounts[participantId] = (unreadCounts[participantId] || 0) + 1
-      })
-
-      conversation.unreadCounts = unreadCounts
-
-      await conversation.save({
-        session,
-      })
+      await conversation.save({ session })
     })
-
-    /**
-     * Populate fora da transação.
-     */
-    await createdMessage.populate([
-      {
-        path: 'sender',
-        select: 'name email role isAdmin avatar',
-      },
-      {
-        path: 'replyTo',
-        populate: {
-          path: 'sender',
-          select: 'name email role isAdmin avatar',
-        },
-      },
-    ])
-
-    return createdMessage
   } finally {
     await session.endSession()
   }
+
+  return populateMessage(Message.findById(createdMessage._id))
 }
 
-/**
- * ============================================================
- * ENVIO DE MENSAGEM WHATSAPP
- * ============================================================
- */
+// ==========================================================
+// ENVIAR MENSAGEM PELO WHATSAPP
+// ==========================================================
 
-/**
- * Envia uma mensagem de texto para uma conversa WhatsApp.
- *
- * IMPORTANTE:
- *
- * Este método é separado de sendMessage().
- *
- * sendMessage()
- *   → chat interno
- *
- * sendWhatsAppMessage()
- *   → WhatsApp / WA-AKG
- *
- * Fluxo:
- *
- * Frontend
- *   ↓
- * chatController
- *   ↓
- * sendWhatsAppMessage()
- *   ↓
- * whatsappAkgService.sendTextMessage()
- *   ↓
- * WA-AKG
- *   ↓
- * Message outbound
- *   ↓
- * Conversation
- */
 export const sendWhatsAppMessage = async ({
   conversationId,
   senderId,
-  content,
+  content = '',
+  type = 'text',
+  attachment = null,
   replyTo = null,
   mentions = [],
 }) => {
-  if (!conversationId) {
-    throw new AppError('ID da conversa é obrigatório.', 400)
-  }
-
-  if (!senderId) {
-    throw new AppError('Remetente é obrigatório.', 400)
-  }
-
-  if (!content?.trim()) {
-    throw new AppError('A mensagem é obrigatória.', 400)
+  if (!mongoose.Types.ObjectId.isValid(String(conversationId))) {
+    throw new AppError('ID da conversa inválido.', 400)
   }
 
   const conversation = await Conversation.findOne({
@@ -634,330 +573,415 @@ export const sendWhatsAppMessage = async ({
     channel: 'whatsapp',
     isActive: true,
   })
-    .populate({
-      path: 'whatsappContact',
-      select:
-        'name phone phoneNormalized remoteJid isGroup isActive lastMessageAt',
-    })
-    .populate({
-      path: 'whatsappIntegration',
-      select: 'name provider status sessionId enabled',
-    })
-    .populate({
-      path: 'lead',
-      select:
-        'name phone phoneNormalized email stage status priority source assignedTo',
-    })
+    .populate('whatsappContact')
+    .populate('whatsappIntegration')
+    .populate('lead')
 
   if (!conversation) {
     throw new AppError('Conversa WhatsApp não encontrada.', 404)
   }
 
-  /**
-   * ==========================================================
-   * AUTORIZAÇÃO
-   * ==========================================================
-   *
-   * Admin pode enviar em qualquer conversa.
-   *
-   * Broker somente se for o responsável pela conversa.
-   */
-  const user = await User.findById(senderId).select(
-    '_id name email role isAdmin avatar',
-  )
+  const sender = await User.findById(senderId).select('_id name role isAdmin')
 
-  if (!user) {
-    throw new AppError('Usuário não encontrado.', 404)
+  if (!sender) {
+    throw new AppError('Usuário remetente não encontrado.', 404)
   }
 
-  const authorized =
-    isAdminUser(user) ||
-    sameId(conversation.assignedTo, user._id) ||
-    sameId(conversation.lead?.assignedTo, user._id)
+  const isAssignedUser =
+    sameId(conversation.assignedTo, sender._id) ||
+    sameId(conversation.lead?.assignedTo, sender._id)
 
-  if (!authorized) {
+  if (!isAdminUser(sender) && !isAssignedUser) {
     throw new AppError(
       'Você não tem permissão para enviar mensagens nesta conversa WhatsApp.',
       403,
     )
   }
 
-  /**
-   * ==========================================================
-   * WHATSAPP CONTACT
-   * ==========================================================
-   */
+  const contact = conversation.whatsappContact
 
-  const whatsappContact = conversation.whatsappContact
-
-  if (!whatsappContact) {
+  if (!contact || contact.isActive === false) {
     throw new AppError(
-      'O contato WhatsApp desta conversa não foi encontrado.',
+      'O contato WhatsApp não está disponível ou está inativo.',
       400,
     )
   }
 
-  if (!whatsappContact.isActive) {
-    throw new AppError('O contato WhatsApp está inativo.', 400)
+  const integration = conversation.whatsappIntegration
+
+  if (!integration) {
+    throw new AppError(
+      'A conversa não possui uma integração WhatsApp associada.',
+      400,
+    )
   }
 
   const phone =
-    whatsappContact.phoneNormalized ||
-    whatsappContact.phone ||
-    whatsappContact.remoteJid?.split('@')[0]
+    contact.phoneNormalized || contact.phone || contact.remoteJid?.split('@')[0]
 
   if (!phone) {
+    throw new AppError('Não foi possível obter o telefone do contato.', 400)
+  }
+
+  const normalizedType = String(type || 'text').toLowerCase()
+  const normalizedContent = String(content || '').trim()
+  const normalizedAttachment = normalizeAttachment(attachment)
+
+  if (!['text', 'image', 'file'].includes(normalizedType)) {
+    throw new AppError('Tipo de mensagem WhatsApp inválido.', 400)
+  }
+
+  if (normalizedType === 'text' && !normalizedContent) {
+    throw new AppError('O texto da mensagem é obrigatório.', 400)
+  }
+
+  if (normalizedType !== 'text' && !normalizedAttachment?.url) {
+    throw new AppError('Informe uma URL para a mídia que deseja enviar.', 400)
+  }
+
+  if (replyTo) {
     throw new AppError(
-      'Não foi possível identificar o número do WhatsApp.',
+      'Respostas a mensagens específicas do WhatsApp ainda não estão habilitadas neste serviço.',
       400,
     )
   }
 
-  /**
-   * ==========================================================
-   * INTEGRAÇÃO
-   * ==========================================================
-   */
-
-  const whatsappIntegration = conversation.whatsappIntegration
-
-  if (!whatsappIntegration) {
+  if (Array.isArray(mentions) && mentions.length > 0) {
     throw new AppError(
-      'A integração WhatsApp desta conversa não foi encontrada.',
+      'Menções do chat interno não são suportadas em mensagens WhatsApp.',
       400,
     )
   }
 
-  /**
-   * ==========================================================
-   * ENVIO PELO WA-AKG
-   * ==========================================================
-   *
-   * IMPORTANTE:
-   *
-   * Usamos import dinâmico porque whatsappAkgService.js
-   * já importa chatService.js.
-   *
-   * Dessa forma evitamos dependência circular estática.
-   */
-  const { sendTextMessage } = await import('./whatsapp/whatsappAkgService.js')
+  // Importação dinâmica para evitar dependência circular.
+  const { sendTextMessage, sendMediaMessage } = await import(
+    './whatsapp/whatsappAkgService.js'
+  )
 
-  const providerResponse = await sendTextMessage({
-    integrationId: whatsappIntegration._id,
-    phone,
-    message: content.trim(),
-  })
+  let providerResult
 
-  /**
-   * ==========================================================
-   * PERSISTÊNCIA DA MENSAGEM
-   * ==========================================================
-   */
+  if (normalizedType === 'text') {
+    providerResult = await sendTextMessage({
+      integrationId: integration._id,
+      phone,
+      message: normalizedContent,
+    })
+  } else {
+    providerResult = await sendMediaMessage({
+      integrationId: integration._id,
+      phone,
+      mediaUrl: normalizedAttachment.url,
+      mediaType: normalizedType,
+      caption: normalizedContent,
+      fileName: normalizedAttachment.name,
+      mimeType: normalizedAttachment.mimeType,
+    })
+  }
+
+  // Só persiste depois que a API do provedor confirmar
+  // que a requisição foi aceita.
+  const providerData =
+    providerResult?.providerResponse?.data ||
+    providerResult?.providerResponse ||
+    {}
 
   const externalMessageId =
-    providerResponse?.providerResponse?.data?.key?.id || null
+    providerData?.key?.id ||
+    providerData?.message?.key?.id ||
+    providerData?.messageId ||
+    providerData?.id ||
+    null
 
   const message = await Message.create({
     conversation: conversation._id,
-
-    sender: senderId,
-
+    sender: sender._id,
     senderType: 'user',
-
-    whatsappContact: whatsappContact._id,
-
-    externalMessageId,
-
-    content: content.trim(),
-
-    type: 'text',
-
-    attachment: null,
-
-    replyTo,
-
-    mentions,
-
+    whatsappContact: contact._id,
+    ...(externalMessageId
+      ? { externalMessageId: String(externalMessageId) }
+      : {}),
     direction: 'outbound',
-
+    content:
+      normalizedContent ||
+      normalizedAttachment?.name ||
+      (normalizedType === 'image' ? 'Imagem' : 'Arquivo'),
+    type: normalizedType,
+    attachment: normalizedType === 'text' ? undefined : normalizedAttachment,
     status: 'sent',
-
-    readBy: [senderId],
+    readBy: [sender._id],
   })
 
-  /**
-   * ==========================================================
-   * ATUALIZA CONVERSATION
-   * ==========================================================
-   */
-
-  const now = new Date()
-
-  conversation.lastMessage = message._id
-
-  conversation.lastMessageAt = now
-
-  conversation.lastMessageFrom = senderId
-
-  /**
-   * Atualiza o horário do contato.
-   */
-  await WhatsAppContact.updateOne(
-    {
-      _id: whatsappContact._id,
-    },
-    {
-      $set: {
-        lastMessageAt: now,
-      },
-    },
-  )
+  conversation.lastMessage = getMessagePreview(message)
+  conversation.lastMessageAt = message.createdAt || new Date()
+  conversation.lastMessageFrom = sender._id
 
   await conversation.save()
 
-  /**
-   * ==========================================================
-   * POPULATE
-   * ==========================================================
-   */
-
-  await message.populate([
-    {
-      path: 'sender',
-      select: 'name email role isAdmin avatar',
-    },
-    {
-      path: 'whatsappContact',
-      select:
-        'name phone phoneNormalized remoteJid isGroup isActive lastMessageAt',
-    },
-    {
-      path: 'replyTo',
-      populate: {
-        path: 'sender',
-        select: 'name email role isAdmin avatar',
-      },
-    },
-    {
-      path: 'conversation',
-      populate: [
-        {
-          path: 'lead',
-          select:
-            'name phone phoneNormalized email stage status priority source assignedTo',
-        },
-        {
-          path: 'assignedTo',
-          select: 'name email role isAdmin avatar',
-        },
-        {
-          path: 'whatsappIntegration',
-          select: 'name provider status sessionId enabled',
-        },
-      ],
-    },
-  ])
-
-  return message
-}
-
-/**
- * ============================================================
- * READ STATUS
- * ============================================================
- */
-
-/**
- * Marca uma mensagem específica como lida.
- */
-export const markMessageAsRead = async ({ messageId, userId }) => {
-  if (!messageId || !userId) {
-    throw new AppError('Mensagem e usuário são obrigatórios.', 400)
-  }
-
-  const message = await Message.findById(messageId).populate({
-    path: 'conversation',
-    select: 'participants channel assignedTo isActive',
+  await WhatsAppContact.findByIdAndUpdate(contact._id, {
+    lastMessageAt: new Date(),
   })
 
-  if (!message) {
+  return populateMessage(Message.findById(message._id))
+}
+
+// ==========================================================
+// MARCAR MENSAGEM COMO LIDA
+// ==========================================================
+
+export const markMessageAsRead = async ({ messageId, userId }) => {
+  if (!mongoose.Types.ObjectId.isValid(String(messageId))) {
+    throw new AppError('ID da mensagem inválido.', 400)
+  }
+
+  const user = await User.findById(userId).select('_id role isAdmin')
+
+  if (!user) {
+    throw new AppError('Usuário não encontrado.', 404)
+  }
+
+  const message = await Message.findById(messageId)
+
+  if (!message || message.isDeleted) {
     throw new AppError('Mensagem não encontrada.', 404)
   }
 
-  if (!message.conversation?.isActive) {
-    throw new AppError('Conversa inativa.', 400)
+  const conversation = await Conversation.findOne({
+    _id: message.conversation,
+    isActive: true,
+  }).populate('lead', 'assignedTo')
+
+  assertConversationAccess(conversation, user)
+
+  await Message.updateOne(
+    { _id: message._id },
+    {
+      $addToSet: { readBy: user._id },
+      $set: { readAt: new Date() },
+    },
+  )
+
+  if (conversation.channel === 'internal') {
+    const participants = conversation.participants || []
+
+    if (
+      participants.length > 0 &&
+      participants.every(
+        (participant) =>
+          sameId(participant, user._id) ||
+          (message.readBy || []).some((reader) => sameId(reader, participant)),
+      )
+    ) {
+      await Message.updateOne(
+        { _id: message._id },
+        { $set: { status: 'read' } },
+      )
+    }
   }
 
-  /**
-   * Para esta função ainda recebemos apenas userId.
-   *
-   * O método é mantido compatível com o comportamento
-   * anterior. A rota atual também não expõe este método
-   * diretamente.
-   */
-  const conversation = message.conversation
+  resetUnreadCount(conversation, user._id)
+  await conversation.save()
 
-  const allowed =
-    conversation.channel === 'whatsapp'
-      ? sameId(conversation.assignedTo, userId)
-      : isParticipant(conversation, userId)
+  return {
+    success: true,
+    messageId: String(message._id),
+    conversationId: String(conversation._id),
+  }
+}
 
-  if (!allowed) {
+// ==========================================================
+// MARCAR TODA A CONVERSA COMO LIDA
+// ==========================================================
+
+export const markConversationAsRead = async ({ conversationId, userId }) => {
+  if (!mongoose.Types.ObjectId.isValid(String(conversationId))) {
+    throw new AppError('ID da conversa inválido.', 400)
+  }
+
+  const user = await User.findById(userId).select('_id role isAdmin')
+
+  if (!user) {
+    throw new AppError('Usuário não encontrado.', 404)
+  }
+
+  const conversation = await getConversationById(conversationId)
+
+  assertConversationAccess(conversation, user)
+
+  const unreadFilter = {
+    conversation: conversation._id,
+    isDeleted: { $ne: true },
+    sender: { $ne: user._id },
+    readBy: { $nin: [user._id] },
+  }
+
+  await Message.updateMany(unreadFilter, {
+    $addToSet: { readBy: user._id },
+    $set: { readAt: new Date() },
+  })
+
+  if (conversation.channel === 'internal') {
+    const participants = conversation.participants || []
+
+    if (participants.length > 0) {
+      const messages = await Message.find({
+        conversation: conversation._id,
+        isDeleted: { $ne: true },
+      }).select('_id sender readBy')
+
+      const fullyReadIds = messages
+        .filter((message) =>
+          participants.every(
+            (participant) =>
+              sameId(message.sender, participant) ||
+              sameId(participant, user._id) ||
+              (message.readBy || []).some((reader) =>
+                sameId(reader, participant),
+              ),
+          ),
+        )
+        .map((message) => message._id)
+
+      if (fullyReadIds.length > 0) {
+        await Message.updateMany(
+          { _id: { $in: fullyReadIds } },
+          { $set: { status: 'read' } },
+        )
+      }
+    }
+  }
+
+  resetUnreadCount(conversation, user._id)
+  await conversation.save()
+
+  return {
+    success: true,
+    conversationId: String(conversation._id),
+  }
+}
+
+// ==========================================================
+// CRIAR CANAL DE CORRETORES
+// ==========================================================
+
+export const createBrokerChannel = async ({
+  name,
+  participants = [],
+  createdBy,
+}) => {
+  if (!createdBy) {
+    throw new AppError('O criador do canal é obrigatório.', 400)
+  }
+
+  const creator = await User.findById(createdBy).select('_id role isAdmin')
+
+  if (!creator) {
+    throw new AppError('Usuário criador não encontrado.', 404)
+  }
+
+  if (creator.role !== 'broker' && !isAdminUser(creator)) {
     throw new AppError(
-      'Você não tem permissão para acessar esta mensagem.',
+      'Somente corretores e administradores podem criar canais.',
       403,
     )
   }
 
-  const alreadyRead = message.readBy?.some((reader) => sameId(reader, userId))
+  const uniqueParticipants = [
+    ...new Set(
+      [...participants, createdBy]
+        .filter(Boolean)
+        .map((participant) => getUserId(participant)),
+    ),
+  ]
 
-  if (alreadyRead) {
-    return message
+  const users = await User.find({
+    _id: { $in: uniqueParticipants },
+  }).select('_id role isAdmin')
+
+  if (users.length !== uniqueParticipants.length) {
+    throw new AppError('Um ou mais participantes não foram encontrados.', 404)
   }
 
-  message.readBy.push(userId)
+  const invalidParticipants = users.filter(
+    (user) => user.role !== 'broker' && !isAdminUser(user),
+  )
 
-  /**
-   * Quando todos os participantes tiverem lido,
-   * marcamos a mensagem como read.
-   *
-   * Para WhatsApp não existe participants.
-   * Nesse caso o status da mensagem recebida é controlado
-   * pelo fluxo específico do WhatsApp.
-   */
-  if (
-    conversation.channel === 'internal' &&
-    conversation.participants?.length
-  ) {
-    const participantCount = conversation.participants.length
-
-    if (message.readBy.length >= participantCount) {
-      message.status = 'read'
-    }
+  if (invalidParticipants.length > 0) {
+    throw new AppError(
+      'Os canais de corretores aceitam somente corretores e administradores.',
+      400,
+    )
   }
 
-  await message.save()
+  if (uniqueParticipants.length < 2) {
+    throw new AppError(
+      'O canal precisa ter pelo menos dois participantes.',
+      400,
+    )
+  }
 
-  return message
+  const conversation = await Conversation.create({
+    participants: uniqueParticipants,
+    channel: 'internal',
+    type: 'broker_channel',
+    name: String(name || '').trim(),
+    lastMessage: '',
+    lastMessageAt: null,
+    lastMessageFrom: null,
+    unreadCounts: new Map(),
+    isActive: true,
+    isBrokerChannel: true,
+    createdBy: creator._id,
+  })
+
+  return populateConversation(Conversation.findById(conversation._id))
 }
 
-/**
- * Marca todas as mensagens da conversa como lidas.
- *
- * Recebe o objeto user completo para conseguir aplicar
- * a mesma regra de autorização das demais operações.
- */
-export const markConversationAsRead = async ({ conversationId, user }) => {
-  if (!conversationId) {
-    throw new AppError('ID da conversa é obrigatório.', 400)
+// ==========================================================
+// BUSCAR USUÁRIOS
+// ==========================================================
+
+export const searchUsers = async ({ query = '', userId, limit = 20 }) => {
+  const searchTerm = String(query || '').trim()
+
+  if (searchTerm.length < 2) {
+    return []
   }
 
-  if (!user?._id) {
-    throw new AppError('Usuário não identificado.', 401)
+  const normalizedLimit = Math.min(50, Math.max(1, Number(limit) || 20))
+
+  const filter = {
+    _id: { $ne: userId },
+    isActive: { $ne: false },
+    $or: [
+      { name: { $regex: searchTerm, $options: 'i' } },
+      { email: { $regex: searchTerm, $options: 'i' } },
+    ],
+  }
+
+  return User.find(filter)
+    .select('_id name email avatar profileImage role')
+    .limit(normalizedLimit)
+    .sort({ name: 1 })
+    .lean()
+}
+
+// ==========================================================
+// EXCLUIR MENSAGEM
+// ==========================================================
+
+export const deleteMessage = async ({ messageId, userId }) => {
+  if (!mongoose.Types.ObjectId.isValid(String(messageId))) {
+    throw new AppError('ID da mensagem inválido.', 400)
+  }
+
+  const message = await Message.findById(messageId)
+
+  if (!message || message.isDeleted) {
+    throw new AppError('Mensagem não encontrada.', 404)
   }
 
   const conversation = await Conversation.findOne({
-    _id: conversationId,
+    _id: message.conversation,
     isActive: true,
   })
 
@@ -965,460 +989,137 @@ export const markConversationAsRead = async ({ conversationId, user }) => {
     throw new AppError('Conversa não encontrada.', 404)
   }
 
-  if (!canAccessConversation(conversation, user)) {
+  // Mantém a regra de que o usuário só pode excluir
+  // as próprias mensagens internas.
+  if (conversation.channel !== 'internal') {
     throw new AppError(
-      'Você não tem permissão para acessar esta conversa.',
-      403,
-    )
-  }
-
-  await Message.updateMany(
-    {
-      conversation: conversationId,
-      readBy: {
-        $ne: user._id,
-      },
-    },
-    {
-      $addToSet: {
-        readBy: user._id,
-      },
-    },
-  )
-
-  /**
-   * Para conversa interna podemos atualizar os status
-   * das mensagens quando todos os participantes leram.
-   *
-   * Para WhatsApp mantemos o status do provider.
-   */
-  if (conversation.channel === 'internal') {
-    const participantIds = conversation.participants || []
-
-    if (participantIds.length > 0) {
-      const unreadMessages = await Message.find({
-        conversation: conversationId,
-        status: {
-          $ne: 'read',
-        },
-      }).select('_id readBy')
-
-      const updates = []
-
-      for (const message of unreadMessages) {
-        const readers = message.readBy || []
-
-        const allParticipantsRead = participantIds.every((participantId) =>
-          readers.some((readerId) => sameId(readerId, participantId)),
-        )
-
-        if (allParticipantsRead) {
-          updates.push(message._id)
-        }
-      }
-
-      if (updates.length > 0) {
-        await Message.updateMany(
-          {
-            _id: {
-              $in: updates,
-            },
-          },
-          {
-            $set: {
-              status: 'read',
-            },
-          },
-        )
-      }
-    }
-  }
-
-  await Conversation.updateOne(
-    {
-      _id: conversationId,
-    },
-    {
-      $set: {
-        [`unreadCounts.${user._id.toString()}`]: 0,
-      },
-    },
-  )
-
-  return {
-    success: true,
-    conversationId,
-    userId: user._id,
-  }
-}
-
-/**
- * ============================================================
- * BROKER CHANNEL
- * ============================================================
- */
-
-/**
- * Cria o canal interno dos brokers.
- */
-export const createBrokerChannel = async ({ name, createdBy }) => {
-  if (!name?.trim()) {
-    throw new AppError('Nome do canal é obrigatório.', 400)
-  }
-
-  if (!createdBy) {
-    throw new AppError('Usuário criador é obrigatório.', 400)
-  }
-
-  const brokers = await User.find({
-    role: 'broker',
-    isActive: {
-      $ne: false,
-    },
-  }).select('_id')
-
-  const admins = await User.find({
-    isAdmin: true,
-    isActive: {
-      $ne: false,
-    },
-  }).select('_id')
-
-  const participantIds = [
-    ...new Set([
-      ...brokers.map((user) => user._id.toString()),
-      ...admins.map((user) => user._id.toString()),
-    ]),
-  ]
-
-  if (participantIds.length === 0) {
-    throw new AppError(
-      'Nenhum usuário disponível para participar do canal.',
+      'A exclusão de mensagens WhatsApp não está disponível.',
       400,
     )
   }
 
-  const unreadCounts = {}
-
-  participantIds.forEach((participantId) => {
-    unreadCounts[participantId] = 0
-  })
-
-  const conversation = await Conversation.create({
-    participants: participantIds,
-    type: 'broker_channel',
-    channel: 'internal',
-    name: name.trim(),
-    createdBy,
-    unreadCounts,
-    isActive: true,
-  })
-
-  return conversation.populate([
-    {
-      path: 'participants',
-      select: 'name email role isAdmin avatar',
-    },
-    {
-      path: 'createdBy',
-      select: 'name email role isAdmin avatar',
-    },
-  ])
-}
-
-/**
- * ============================================================
- * USERS
- * ============================================================
- */
-
-/**
- * Pesquisa usuários para criação de conversas internas.
- */
-export const searchUsers = async ({ query, userId, limit = 20 }) => {
-  if (!query?.trim()) {
-    return []
+  if (!sameId(message.sender, userId)) {
+    throw new AppError('Você só pode excluir suas próprias mensagens.', 403)
   }
 
-  const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 50)
-
-  const regex = new RegExp(
-    query.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
-    'i',
-  )
-
-  const filter = {
-    _id: {
-      $ne: userId,
-    },
-    isActive: {
-      $ne: false,
-    },
-    $or: [
-      {
-        name: regex,
-      },
-      {
-        email: regex,
-      },
-    ],
-  }
-
-  return User.find(filter)
-    .select('name email role isAdmin avatar')
-    .sort({
-      name: 1,
-    })
-    .limit(safeLimit)
-}
-
-/**
- * ============================================================
- * MESSAGES
- * ============================================================
- */
-
-/**
- * Exclui uma mensagem enviada pelo próprio usuário.
- *
- * Mantemos a regra atual:
- * somente o remetente da mensagem pode excluí-la.
- *
- * Mensagens recebidas pelo WhatsApp possuem sender null,
- * portanto não entram nessa regra.
- */
-export const deleteMessage = async ({ messageId, userId }) => {
-  if (!messageId || !userId) {
-    throw new AppError('Mensagem e usuário são obrigatórios.', 400)
-  }
-
-  const message = await Message.findOne({
-    _id: messageId,
-    sender: userId,
-  }).populate({
-    path: 'conversation',
-    select: 'channel isActive participants assignedTo',
-  })
-
-  if (!message) {
-    throw new AppError(
-      'Mensagem não encontrada ou você não pode excluí-la.',
-      404,
-    )
-  }
-
-  if (!message.conversation?.isActive) {
-    throw new AppError('A conversa está inativa.', 400)
-  }
-
-  /**
-   * Não permitir exclusão através desta função
-   * de mensagens WhatsApp.
-   */
-  if (message.conversation.channel === 'whatsapp') {
-    throw new AppError(
-      'Mensagens WhatsApp não podem ser excluídas por este serviço.',
-      400,
-    )
-  }
-
-  await Message.deleteOne({
-    _id: messageId,
-  })
-
-  /**
-   * Se a mensagem excluída era a última da conversa,
-   * recalculamos a última mensagem.
-   */
-  const conversation = message.conversation
+  message.isDeleted = true
+  message.deletedAt = new Date()
+  message.deletedBy = userId
+  await message.save()
 
   const lastMessage = await Message.findOne({
     conversation: conversation._id,
+    isDeleted: { $ne: true },
   })
-    .sort({
-      createdAt: -1,
-    })
-    .select('_id createdAt sender')
+    .sort({ createdAt: -1, _id: -1 })
+    .select('content type attachment sender createdAt')
 
   if (lastMessage) {
-    await Conversation.updateOne(
-      {
-        _id: conversation._id,
-      },
-      {
-        $set: {
-          lastMessage: lastMessage._id,
-          lastMessageAt: lastMessage.createdAt,
-          lastMessageFrom: lastMessage.sender || null,
-        },
-      },
-    )
+    conversation.lastMessage = getMessagePreview(lastMessage)
+    conversation.lastMessageAt = lastMessage.createdAt
+    conversation.lastMessageFrom = lastMessage.sender || null
   } else {
-    await Conversation.updateOne(
-      {
-        _id: conversation._id,
-      },
-      {
-        $set: {
-          lastMessage: null,
-          lastMessageAt: null,
-          lastMessageFrom: null,
-        },
-      },
-    )
+    conversation.lastMessage = ''
+    conversation.lastMessageAt = null
+    conversation.lastMessageFrom = null
   }
+
+  await conversation.save()
 
   return {
     success: true,
-    messageId,
+    messageId: String(message._id),
+    conversationId: String(conversation._id),
   }
 }
 
-/**
- * Adiciona um broker a um canal interno.
- */
-export const addBrokerToChannel = async ({ conversationId, brokerId }) => {
-  if (!conversationId || !brokerId) {
-    throw new AppError('Conversa e broker são obrigatórios.', 400)
-  }
+// ==========================================================
+// ADICIONAR CORRETOR A UM CANAL
+// ==========================================================
 
-  const broker = await User.findOne({
-    _id: brokerId,
-    role: 'broker',
-    isActive: {
-      $ne: false,
-    },
-  })
-
-  if (!broker) {
-    throw new AppError('Broker não encontrado.', 404)
+export const addBrokerToChannel = async ({
+  conversationId,
+  brokerId,
+  requesterId,
+}) => {
+  if (
+    !mongoose.Types.ObjectId.isValid(String(conversationId)) ||
+    !mongoose.Types.ObjectId.isValid(String(brokerId))
+  ) {
+    throw new AppError('ID da conversa ou do corretor inválido.', 400)
   }
 
   const conversation = await Conversation.findOne({
     _id: conversationId,
     channel: 'internal',
     type: 'broker_channel',
+    isBrokerChannel: true,
     isActive: true,
   })
 
   if (!conversation) {
-    throw new AppError('Canal de brokers não encontrado.', 404)
+    throw new AppError('Canal de corretores não encontrado.', 404)
   }
 
-  const alreadyParticipant = conversation.participants.some((participant) =>
-    sameId(participant, broker._id),
+  const requester = await User.findById(requesterId).select('_id role isAdmin')
+
+  if (!requester) {
+    throw new AppError('Usuário solicitante não encontrado.', 404)
+  }
+
+  if (!isAdminUser(requester) && !isParticipant(conversation, requester._id)) {
+    throw new AppError('Você não tem permissão para alterar este canal.', 403)
+  }
+
+  const broker = await User.findById(brokerId).select(
+    '_id name email role isAdmin',
   )
 
-  if (!alreadyParticipant) {
-    conversation.participants.push(broker._id)
-
-    const unreadCounts = conversation.unreadCounts || {}
-
-    if (unreadCounts[broker._id.toString()] === undefined) {
-      unreadCounts[broker._id.toString()] = 0
-    }
-
-    conversation.unreadCounts = unreadCounts
-
-    await conversation.save()
+  if (!broker) {
+    throw new AppError('Corretor não encontrado.', 404)
   }
 
-  return conversation.populate({
-    path: 'participants',
-    select: 'name email role isAdmin avatar',
-  })
+  if (broker.role !== 'broker' && !isAdminUser(broker)) {
+    throw new AppError(
+      'Somente corretores ou administradores podem ser adicionados a este canal.',
+      400,
+    )
+  }
+
+  if (isParticipant(conversation, broker._id)) {
+    return populateConversation(Conversation.findById(conversation._id))
+  }
+
+  conversation.participants.push(broker._id)
+  conversation.unreadCounts.set(String(broker._id), 0)
+
+  await conversation.save()
+
+  return populateConversation(Conversation.findById(conversation._id))
 }
 
-/**
- * ============================================================
- * WHATSAPP
- * ============================================================
- */
+// ==========================================================
+// RECEBER MENSAGEM DO WHATSAPP
+// ==========================================================
 
-/**
- * Persiste uma mensagem recebida pelo WhatsApp.
- *
- * Esta função NÃO decide se o Lead pode acessar a conversa.
- * Essa decisão já deve ter sido feita no webhook antes
- * da criação da conversa.
- *
- * Fluxo:
- *
- * WhatsApp
- *   ↓
- * webhook
- *   ↓
- * Lead encontrado
- *   ↓
- * Conversation WhatsApp
- *   ↓
- * receiveWhatsAppMessage()
- */
 export const receiveWhatsAppMessage = async ({
   conversationId,
   whatsappContactId,
-  externalMessageId,
-  content,
+  externalMessageId = null,
+  content = '',
   type = 'text',
   attachment = null,
 }) => {
-  if (!conversationId) {
-    throw new AppError('ID da conversa é obrigatório.', 400)
-  }
-
-  if (!whatsappContactId) {
-    throw new AppError('WhatsAppContact é obrigatório.', 400)
-  }
-
-  if (!content?.trim() && !attachment) {
-    throw new AppError('A mensagem precisa ter conteúdo ou anexo.', 400)
-  }
-
-  /**
-   * Idempotência:
-   *
-   * O WA-AKG pode reenviar um webhook.
-   *
-   * Se o externalMessageId já estiver salvo,
-   * não criamos uma mensagem duplicada.
-   */
-  if (externalMessageId) {
-    const existingMessage = await Message.findOne({
-      externalMessageId,
-    })
-      .populate({
-        path: 'whatsappContact',
-        select:
-          'name phone phoneNormalized remoteJid isGroup isActive lastMessageAt',
-      })
-      .populate({
-        path: 'conversation',
-        populate: [
-          {
-            path: 'lead',
-            select:
-              'name phone phoneNormalized email stage status priority assignedTo',
-          },
-          {
-            path: 'assignedTo',
-            select: 'name email role isAdmin avatar',
-          },
-          {
-            path: 'whatsappIntegration',
-            select: 'name provider status sessionId enabled',
-          },
-        ],
-      })
-
-    if (existingMessage) {
-      return existingMessage
-    }
+  if (
+    !mongoose.Types.ObjectId.isValid(String(conversationId)) ||
+    !mongoose.Types.ObjectId.isValid(String(whatsappContactId))
+  ) {
+    throw new AppError('Conversa ou contato WhatsApp inválido.', 400)
   }
 
   const conversation = await Conversation.findOne({
     _id: conversationId,
     channel: 'whatsapp',
-    whatsappContact: whatsappContactId,
     isActive: true,
   })
 
@@ -1426,85 +1127,90 @@ export const receiveWhatsAppMessage = async ({
     throw new AppError('Conversa WhatsApp não encontrada.', 404)
   }
 
-  /**
-   * WhatsApp não usa participants.
-   *
-   * O responsável pela conversa é determinado por
-   * conversation.assignedTo.
-   */
-  const message = await Message.create({
-    conversation: conversation._id,
-    sender: null,
-    senderType: 'whatsapp_contact',
-    whatsappContact: whatsappContactId,
-    externalMessageId: externalMessageId || null,
-    content: content?.trim() || '',
-    type,
-    attachment,
-    direction: 'inbound',
-    status: 'delivered',
-    readBy: [],
-  })
+  const contact = await WhatsAppContact.findById(whatsappContactId)
 
-  const now = new Date()
+  if (!contact) {
+    throw new AppError('Contato WhatsApp não encontrado.', 404)
+  }
 
-  conversation.lastMessage = message._id
-  conversation.lastMessageAt = now
+  // O identificador externo é único no modelo Message.
+  // Só consultamos/inserimos o campo quando existe um ID real.
+  if (externalMessageId) {
+    const existingMessage = await Message.findOne({
+      externalMessageId: String(externalMessageId),
+    })
+
+    if (existingMessage) {
+      return {
+        duplicate: true,
+        _id: existingMessage._id,
+      }
+    }
+  }
+
+  const normalizedType = String(type || 'text').toLowerCase()
+
+  if (!['text', 'image', 'file', 'system'].includes(normalizedType)) {
+    throw new AppError('Tipo de mensagem recebida inválido.', 400)
+  }
+
+  const normalizedAttachment = normalizeAttachment(attachment)
+  const normalizedContent = String(content || '').trim()
+
+  let message
+
+  try {
+    message = await Message.create({
+      conversation: conversation._id,
+      sender: null,
+      senderType: 'whatsapp_contact',
+      whatsappContact: contact._id,
+      ...(externalMessageId
+        ? { externalMessageId: String(externalMessageId) }
+        : {}),
+      direction: 'inbound',
+      content:
+        normalizedContent ||
+        (normalizedType === 'image' ? 'Imagem recebida' : 'Arquivo recebido'),
+      type: normalizedType,
+      attachment: normalizedAttachment || undefined,
+      status: 'delivered',
+      readBy: [],
+    })
+  } catch (error) {
+    // Protege contra dois webhooks concorrentes para o mesmo ID.
+    if (externalMessageId && error?.code === 11000) {
+      const existingMessage = await Message.findOne({
+        externalMessageId: String(externalMessageId),
+      })
+
+      if (existingMessage) {
+        return {
+          duplicate: true,
+          _id: existingMessage._id,
+        }
+      }
+    }
+
+    throw error
+  }
+
+  conversation.lastMessage = getMessagePreview(message)
+  conversation.lastMessageAt = message.createdAt || new Date()
   conversation.lastMessageFrom = null
 
-  /**
-   * Incrementa o contador de unread do responsável.
-   *
-   * Admin não precisa ser adicionado em unreadCounts.
-   * O frontend/admin pode calcular a existência de mensagens
-   * não lidas globalmente.
-   */
   if (conversation.assignedTo) {
-    const assignedToId = conversation.assignedTo.toString()
-
-    const unreadCounts = conversation.unreadCounts || {}
-
-    unreadCounts[assignedToId] = (unreadCounts[assignedToId] || 0) + 1
-
-    conversation.unreadCounts = unreadCounts
+    incrementUnreadCount(conversation, conversation.assignedTo)
   }
 
   await conversation.save()
 
-  await message.populate([
-    {
-      path: 'whatsappContact',
-      select:
-        'name phone phoneNormalized remoteJid isGroup isActive lastMessageAt',
-    },
-    {
-      path: 'conversation',
-      populate: [
-        {
-          path: 'lead',
-          select:
-            'name phone phoneNormalized email stage status priority source assignedTo',
-        },
-        {
-          path: 'assignedTo',
-          select: 'name email role isAdmin avatar',
-        },
-        {
-          path: 'whatsappIntegration',
-          select: 'name provider status sessionId enabled',
-        },
-      ],
-    },
-  ])
-
-  return message
+  return populateMessage(Message.findById(message._id))
 }
 
-/**
- * ============================================================
- * EXPORTS
- * ============================================================
- */
+// ==========================================================
+// EXPORT DEFAULT
+// ==========================================================
 
 export default {
   createConversation,

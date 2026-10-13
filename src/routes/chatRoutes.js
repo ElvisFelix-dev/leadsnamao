@@ -1,7 +1,6 @@
 // src/routes/chatRoutes.js
 
 import express from 'express'
-
 import { protect } from '../middleware/authMiddleware.js'
 
 import {
@@ -10,185 +9,72 @@ import {
   getMessages,
   sendMessage,
   markAsRead,
+  markMessageAsRead,
   createBrokerChannel,
   searchUsers,
   deleteMessage,
+  addBrokerToChannel,
 } from '../controllers/chatController.js'
 
 const router = express.Router()
 
-/**
- * ============================================================
- * AUTHENTICATION
- * ============================================================
- *
- * Todas as rotas do chat exigem usuário autenticado.
- *
- * O middleware protect deve preencher:
- *
- * req.user
- *
- * antes de qualquer controller ser executado.
- */
+// Todas as rotas exigem autenticação.
 router.use(protect)
 
-/**
- * ============================================================
- * CONVERSATIONS
- * ============================================================
- *
- * GET  /api/chat/conversations
- * POST /api/chat/conversations
- *
- * A listagem pode retornar:
- *
- * - conversas internas
- * - conversas WhatsApp
- *
- * O controle de acesso é realizado pelo chatService.
- *
- * ADMIN
- *   → todas
- *
- * BROKER
- *   → internas onde participa
- *   → WhatsApp onde assignedTo === usuário
- */
+// ==========================================================
+// CONVERSAS
+// ==========================================================
 
-/**
- * Lista conversas disponíveis para o usuário.
- */
+// Lista conversas internas e WhatsApp conforme as permissões.
 router.get('/conversations', getConversations)
 
-/**
- * Cria conversa interna.
- *
- * Conversas WhatsApp são criadas automaticamente
- * pela integração/webhook.
- */
+// Cria conversa interna.
 router.post('/conversations', createConversation)
 
-/**
- * ============================================================
- * BROKER CHANNEL
- * ============================================================
- *
- * Canal interno compartilhado entre corretores/admins.
- */
+// Cria canal compartilhado entre corretores.
 router.post('/broker-channel', createBrokerChannel)
 
-/**
- * ============================================================
- * CONVERSATION MESSAGES
- * ============================================================
- */
+// ==========================================================
+// MENSAGENS DA CONVERSA
+// ==========================================================
 
-/**
- * Lista mensagens de uma conversa.
- *
- * GET /api/chat/conversations/:id/messages
- *
- * O chatService valida se o usuário possui acesso:
- *
- * - admin
- * - participante da conversa interna
- * - responsável pela conversa WhatsApp
- */
-router.get('/conversations/:id/messages', getMessages)
+// Lista mensagens.
+// O nome do parâmetro deve corresponder ao controller.
+router.get('/conversations/:conversationId/messages', getMessages)
 
-/**
- * ============================================================
- * ENVIO DE MENSAGENS
- * ============================================================
- *
- * POST /api/chat/conversations/:id/messages
- *
- * O mesmo endpoint suporta:
- *
- * INTERNAL
- *   → chatService.sendMessage()
- *
- * WHATSAPP
- *   → chatService.sendWhatsAppMessage()
- *   → WA-AKG
- *
- * O controller identifica o canal através de:
- *
- * conversation.channel
- *
- * Portanto, o frontend não precisa conhecer
- * endpoints diferentes para cada canal.
- */
-router.post('/conversations/:id/messages', sendMessage)
+// Envia mensagem interna ou WhatsApp.
+router.post('/conversations/:conversationId/messages', sendMessage)
 
-/**
- * ============================================================
- * READ
- * ============================================================
- *
- * Marca uma conversa como lida.
- *
- * Funciona para:
- *
- * - chat interno
- * - WhatsApp
- *
- * A autorização é feita pelo chatService.
- */
-router.post('/conversations/:id/read', markAsRead)
+// ==========================================================
+// LEITURA
+// ==========================================================
 
-/**
- * ============================================================
- * USERS
- * ============================================================
- *
- * Pesquisa usuários para:
- *
- * - novas conversas
- * - grupos
- * - menções
- */
+// Marca a conversa como lida.
+// Mantemos POST para preservar compatibilidade com chamadas existentes.
+router.post('/conversations/:conversationId/read', markAsRead)
+
+// Marca uma mensagem individual como lida.
+router.patch('/messages/:messageId/read', markMessageAsRead)
+
+// ==========================================================
+// PARTICIPANTES
+// ==========================================================
+
+// Adiciona um corretor a um canal.
+router.post('/conversations/:conversationId/participants', addBrokerToChannel)
+
+// ==========================================================
+// USUÁRIOS
+// ==========================================================
+
+// Pesquisa usuários para iniciar conversas ou montar grupos.
 router.get('/users/search', searchUsers)
 
-/**
- * ============================================================
- * MESSAGES
- * ============================================================
- */
+// ==========================================================
+// MENSAGENS
+// ==========================================================
 
-/**
- * Exclui mensagem.
- *
- * A validação sobre o tipo de mensagem/conversa
- * permanece no chatService.
- */
-router.delete('/messages/:id', deleteMessage)
-
-/**
- * ============================================================
- * WHATSAPP
- * ============================================================
- *
- * Não precisamos criar uma rota separada para envio
- * de mensagens WhatsApp.
- *
- * O envio utiliza:
- *
- * POST /api/chat/conversations/:id/messages
- *
- * e o controller direciona automaticamente para
- * chatService.sendWhatsAppMessage() quando:
- *
- * conversation.channel === 'whatsapp'
- *
- * As rotas específicas da integração WA-AKG continuam
- * no whatsappRoutes.js, por exemplo:
- *
- * - integrações
- * - QR Code
- * - webhook
- * - teste de conexão
- * - configuração da integração
- */
+// Exclui uma mensagem.
+router.delete('/messages/:messageId', deleteMessage)
 
 export default router

@@ -1,721 +1,668 @@
+// src/controllers/chatController.js
+
+import mongoose from 'mongoose'
+
 import asyncHandler from '../middleware/asyncHandler.js'
 import * as chatService from '../service/chatService.js'
 import Conversation from '../models/Conversation.js'
 import AppError from '../utils/AppError.js'
+import { getSocketIO } from '../sockets/index.js'
 
-/**
- * ============================================================
- * HELPERS
- * ============================================================
- */
+// ==========================================================
+// HELPERS
+// ==========================================================
 
-/**
- * Verifica se o usuário possui privilégios administrativos.
- *
- * Mantemos compatibilidade com os dois formatos utilizados
- * no projeto:
- *
- * - isAdmin === true
- * - role === 'admin'
- */
 const isAdminUser = (user) => {
   return user?.isAdmin === true || user?.role === 'admin'
 }
 
-/**
- * Retorna o ID do usuário como string.
- */
 const getUserId = (user) => {
-  if (!user?._id) {
-    throw new AppError('Usuário não autenticado.', 401)
-  }
+  if (!user) return null
 
-  return user._id.toString()
+  return String(typeof user === 'object' && user._id ? user._id : user)
 }
 
-/**
- * Valida ObjectId do MongoDB.
- *
- * Evita que IDs inválidos cheguem ao service e gerem
- * CastError desnecessário.
- */
-const validateObjectId = (value, fieldName = 'ID') => {
-  if (!value) {
-    throw new AppError(`${fieldName} é obrigatório.`, 400)
-  }
-
-  if (!/^[a-f\d]{24}$/i.test(value.toString())) {
+const validateObjectId = (id, fieldName = 'ID') => {
+  if (!id || !mongoose.Types.ObjectId.isValid(String(id))) {
     throw new AppError(`${fieldName} inválido.`, 400)
   }
 
-  return value
+  return String(id)
 }
 
-/**
- * ============================================================
- * CONVERSATIONS
- * ============================================================
- */
+const getSocket = () => {
+  try {
+    return getSocketIO()
+  } catch (error) {
+    console.error('[ChatController] Socket.IO indisponível:', error.message)
 
-/**
- * GET /api/chat/conversations
- *
- * Lista as conversas que o usuário pode acessar.
- *
- * ADMIN:
- *   - todas as conversas internas
- *   - todas as conversas WhatsApp
- *
- * BROKER:
- *   - conversas internas onde participa
- *   - conversas WhatsApp atribuídas a ele
- */
+    return null
+  }
+}
+
+const emitToConversation = (conversationId, event, payload) => {
+  const io = getSocket()
+
+  if (!io) return
+
+  io.to(String(conversationId)).emit(event, payload)
+}
+
+const emitToUser = (userId, event, payload) => {
+  const io = getSocket()
+
+  if (!io || !userId) return
+
+  io.to(String(userId)).emit(event, payload)
+}
+
+const normalizeAttachment = (attachment) => {
+  if (!attachment) return null
+
+  if (typeof attachment !== 'object' || Array.isArray(attachment)) {
+    throw new AppError('O anexo informado é inválido.', 400)
+  }
+
+  return {
+    url: String(attachment.url || '').trim(),
+    name: String(attachment.name || '').trim(),
+    size: Math.max(0, Number(attachment.size) || 0),
+    mimeType: String(attachment.mimeType || '').trim(),
+  }
+}
+
+const validateMentions = (mentions) => {
+  if (mentions == null) return []
+
+  if (!Array.isArray(mentions)) {
+    throw new AppError('A lista de menções precisa ser um array.', 400)
+  }
+
+  return [
+    ...new Set(
+      mentions.map((mention) => {
+        const id =
+          typeof mention === 'object' && mention?._id
+            ? String(mention._id)
+            : String(mention)
+
+        return validateObjectId(id, 'ID da menção')
+      }),
+    ),
+  ]
+}
+
+const getConversationForSending = async (conversationId) => {
+  return Conversation.findOne({
+    _id: conversationId,
+    isActive: true,
+  })
+    .select(
+      [
+        'channel',
+        'type',
+        'participants',
+        'assignedTo',
+        'whatsappContact',
+        'whatsappIntegration',
+        'lead',
+        'name',
+      ].join(' '),
+    )
+    .populate('assignedTo', '_id name role')
+    .populate('lead', 'name assignedTo')
+}
+
+// ==========================================================
+// GET /api/chat/conversations
+// ==========================================================
+
 export const getConversations = asyncHandler(async (req, res) => {
-  getUserId(req.user)
+  const userId = validateObjectId(getUserId(req.user), 'ID do usuário')
 
-  const conversations = await chatService.getUserConversations(req.user)
+  const conversations = await chatService.getUserConversations(userId)
 
-  res.json({
+  return res.status(200).json({
     success: true,
+    count: conversations.length,
     data: conversations,
   })
 })
 
-/**
- * POST /api/chat/conversations
- *
- * Cria uma nova conversa interna.
- *
- * O usuário autenticado é automaticamente adicionado
- * aos participantes.
- *
- * Esta rota continua sendo exclusiva para o chat interno.
- */
-export const createConversation = asyncHandler(async (req, res) => {
-  const { participants = [], type = 'direct', name = '' } = req.body
+// ==========================================================
+// POST /api/chat/conversations
+// Cria conversas internas.
+// ==========================================================
 
-  const userId = getUserId(req.user)
+export const createConversation = asyncHandler(async (req, res) => {
+  const userId = validateObjectId(getUserId(req.user), 'ID do usuário')
+
+  const {
+    participants = [],
+    type = 'direct',
+    name = '',
+    avatar = '',
+  } = req.body || {}
 
   if (!Array.isArray(participants)) {
-    throw new AppError('Participantes inválidos.', 400)
+    throw new AppError(
+      'Os participantes precisam ser enviados em um array.',
+      400,
+    )
   }
 
-  /**
-   * Validar tipo da conversa.
-   */
-  const allowedTypes = ['direct', 'group', 'broker_channel']
-
-  if (!allowedTypes.includes(type)) {
+  if (!['direct', 'group', 'broker_channel'].includes(type)) {
     throw new AppError('Tipo de conversa inválido.', 400)
   }
 
-  /**
-   * A criação manual de conversa é interna.
-   */
-  const allParticipants = [...participants, userId]
-
-  /**
-   * Remove:
-   * - valores vazios
-   * - IDs duplicados
-   */
-  const uniqueParticipantMap = new Map()
-
-  allParticipants.forEach((participant) => {
-    if (!participant) {
-      return
-    }
-
-    const participantId = participant.toString()
-
-    if (!/^[a-f\d]{24}$/i.test(participantId)) {
-      throw new AppError(`Participante inválido: ${participantId}`, 400)
-    }
-
-    uniqueParticipantMap.set(participantId, participantId)
-  })
-
-  const uniqueParticipants = [...uniqueParticipantMap.values()]
-
-  /**
-   * Uma conversa direta precisa ter exatamente
-   * duas pessoas.
-   */
-  if (type === 'direct' && uniqueParticipants.length !== 2) {
+  if (type === 'broker_channel') {
     throw new AppError(
-      'Uma conversa direta precisa ter dois participantes.',
+      'Utilize a rota específica para criar um canal de corretores.',
+      400,
+    )
+  }
+
+  const participantIds = [
+    ...new Set(
+      [...participants, userId].map((participant) => {
+        const id =
+          typeof participant === 'object' && participant?._id
+            ? String(participant._id)
+            : String(participant)
+
+        return validateObjectId(id, 'ID do participante')
+      }),
+    ),
+  ]
+
+  if (type === 'direct' && participantIds.length !== 2) {
+    throw new AppError(
+      'Uma conversa direta precisa ter exatamente dois participantes.',
+      400,
+    )
+  }
+
+  if (type === 'group' && participantIds.length < 2) {
+    throw new AppError(
+      'Um grupo precisa ter pelo menos dois participantes.',
       400,
     )
   }
 
   const conversation = await chatService.createConversation({
-    participants: uniqueParticipants,
+    participants: participantIds,
+    createdBy: userId,
     type,
     name,
-    createdBy: req.user._id,
+    avatar,
+    isAdmin: isAdminUser(req.user),
   })
 
-  res.status(201).json({
+  const conversationId = String(conversation._id)
+
+  emitToConversation(conversationId, 'new_conversation', {
+    conversation,
+  })
+
+  // Notifica todos os participantes, inclusive o criador,
+  // para permitir que as listas de conversas sejam atualizadas.
+  for (const participant of conversation.participants || []) {
+    const participantId =
+      typeof participant === 'object' && participant?._id
+        ? String(participant._id)
+        : String(participant)
+
+    emitToUser(participantId, 'new_conversation', {
+      conversation,
+    })
+  }
+
+  return res.status(201).json({
     success: true,
+    message: 'Conversa criada com sucesso.',
     data: conversation,
   })
 })
 
-/**
- * ============================================================
- * MESSAGES
- * ============================================================
- */
+// ==========================================================
+// GET /api/chat/conversations/:conversationId/messages
+// ==========================================================
 
-/**
- * GET /api/chat/conversations/:id/messages
- *
- * Busca mensagens de uma conversa.
- *
- * A autorização é feita pelo chatService:
- *
- * - admin → acesso global
- * - WhatsApp → assignedTo
- * - interno → participants
- */
 export const getMessages = asyncHandler(async (req, res) => {
-  const { id } = req.params
-  const { limit, before } = req.query
+  const conversationId = validateObjectId(
+    req.params.conversationId,
+    'ID da conversa',
+  )
 
-  validateObjectId(id, 'ID da conversa')
+  const userId = validateObjectId(getUserId(req.user), 'ID do usuário')
 
-  const parsedLimit = limit ? Number.parseInt(limit, 10) : 50
+  const parsedLimit = Number(req.query.limit ?? 50)
 
-  if (Number.isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 100) {
-    throw new AppError('O limite deve estar entre 1 e 100.', 400)
+  if (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 100) {
+    throw new AppError('O limite precisa ser um número entre 1 e 100.', 400)
   }
 
-  const result = await chatService.getConversationMessages({
-    conversationId: id,
-    user: req.user,
+  const before = req.query.before || null
+
+  const messages = await chatService.getConversationMessages({
+    conversationId,
+    userId,
     limit: parsedLimit,
     before,
   })
 
-  res.json({
+  return res.status(200).json({
     success: true,
-    data: result,
+    count: messages.length,
+    data: messages,
   })
 })
 
-/**
- * POST /api/chat/conversations/:id/messages
- *
- * Envia mensagem.
- *
- * O mesmo endpoint atende os dois tipos de conversa:
- *
- * INTERNAL:
- *   → chatService.sendMessage()
- *
- * WHATSAPP:
- *   → chatService.sendWhatsAppMessage()
- *
- * Isso permite que o frontend continue utilizando
- * um único endpoint.
- */
-export const sendMessage = asyncHandler(async (req, res) => {
-  const { id } = req.params
+// ==========================================================
+// POST /api/chat/conversations/:conversationId/messages
+// Envio de mensagens internas e WhatsApp.
+// ==========================================================
 
-  validateObjectId(id, 'ID da conversa')
+export const sendMessage = asyncHandler(async (req, res) => {
+  console.log('[ChatController] Envio de mensagem:', {
+    params: req.params,
+    url: req.originalUrl,
+    userId: req.user?._id,
+  })
+
+  const conversationId = validateObjectId(
+    req.params.conversationId,
+    'ID da conversa',
+  )
+
+  const senderId = validateObjectId(getUserId(req.user), 'ID do remetente')
 
   const {
-    content,
+    content = '',
     type = 'text',
     attachment = null,
     replyTo = null,
     mentions = [],
-  } = req.body
+  } = req.body || {}
 
-  const userId = getUserId(req.user)
+  const normalizedContent = String(content || '').trim()
+  const normalizedType = String(type || 'text').toLowerCase()
+  const normalizedAttachment = normalizeAttachment(attachment)
+  const normalizedMentions = validateMentions(mentions)
 
-  /**
-   * ----------------------------------------------------------
-   * VALIDAÇÃO DO CONTEÚDO
-   * ----------------------------------------------------------
-   */
+  if (replyTo) {
+    validateObjectId(replyTo, 'ID da mensagem respondida')
+  }
 
-  const normalizedContent = typeof content === 'string' ? content.trim() : ''
-
-  /**
-   * ----------------------------------------------------------
-   * LOCALIZAR CONVERSA
-   * ----------------------------------------------------------
-   *
-   * Precisamos saber se a mensagem será enviada:
-   *
-   * - internamente
-   * - pelo WhatsApp
-   */
-  const conversation = await Conversation.findOne({
-    _id: id,
-    isActive: true,
-  })
-    .select(
-      'channel participants assignedTo whatsappContact whatsappIntegration lead',
-    )
-    .lean()
+  const conversation = await getConversationForSending(conversationId)
 
   if (!conversation) {
     throw new AppError('Conversa não encontrada.', 404)
   }
 
-  /**
-   * ----------------------------------------------------------
-   * VALIDAR MENTIONS
-   * ----------------------------------------------------------
-   */
+  // --------------------------------------------------------
+  // VALIDAÇÃO DO TIPO E DO CONTEÚDO
+  // --------------------------------------------------------
 
-  if (mentions !== undefined && mentions !== null && !Array.isArray(mentions)) {
-    throw new AppError('Mentions deve ser um array.', 400)
-  }
-
-  /**
-   * ----------------------------------------------------------
-   * WHATSAPP
-   * ----------------------------------------------------------
-   */
-
-  if (conversation.channel === 'whatsapp') {
-    /**
-     * WhatsApp atualmente trabalha somente com texto.
-     *
-     * Anexos poderão ser adicionados posteriormente através
-     * de um fluxo específico de mídia do WA-AKG.
-     */
-    if (attachment) {
-      throw new AppError(
-        'Envio de anexos pelo WhatsApp ainda não está disponível.',
-        400,
-      )
-    }
-
-    if (!normalizedContent) {
-      throw new AppError('Conteúdo da mensagem WhatsApp é obrigatório.', 400)
-    }
-
-    const message = await chatService.sendWhatsAppMessage({
-      conversationId: id,
-      senderId: req.user._id,
-      content: normalizedContent,
-      replyTo,
-      mentions: mentions || [],
-    })
-
-    if (!message?._id) {
-      throw new AppError('Não foi possível criar a mensagem WhatsApp.', 500)
-    }
-
-    /**
-     * --------------------------------------------------------
-     * SOCKET.IO — WHATSAPP
-     * --------------------------------------------------------
-     *
-     * A mensagem já foi:
-     *
-     * 1. enviada para o WA-AKG;
-     * 2. persistida no MongoDB.
-     *
-     * Agora notificamos os clientes conectados.
-     */
-    const io = req.app.get('io')
-
-    if (io) {
-      try {
-        /**
-         * Todos os clientes conectados à conversa
-         * recebem a nova mensagem.
-         */
-        io.to(id).emit('new_message', message)
-
-        /**
-         * Notificação para o responsável pela conversa.
-         *
-         * Não notificamos o próprio remetente.
-         */
-        const assignedTo = conversation.assignedTo?.toString()
-
-        if (assignedTo && assignedTo !== userId) {
-          io.to(`user_${assignedTo}`).emit('new_message_notification', {
-            conversationId: id,
-            channel: 'whatsapp',
-            message: {
-              _id: message._id,
-              content: message.content,
-              sender: message.sender,
-              senderType: message.senderType,
-              createdAt: message.createdAt,
-              type: message.type,
-              direction: message.direction,
-              status: message.status,
-            },
-          })
-        }
-      } catch (socketError) {
-        /**
-         * Socket.IO não deve impedir o sucesso da API.
-         */
-        console.error(
-          'Erro ao emitir evento Socket.IO WhatsApp:',
-          socketError.message,
-        )
-      }
-    }
-
-    return res.status(201).json({
-      success: true,
-      data: message,
-    })
-  }
-
-  /**
-   * ----------------------------------------------------------
-   * CHAT INTERNO
-   * ----------------------------------------------------------
-   */
-
-  if (conversation.channel !== 'internal') {
+  if (!['text', 'image', 'file'].includes(normalizedType)) {
     throw new AppError(
-      `Canal de conversa não suportado: ${conversation.channel || 'não informado'}.`,
+      'Tipo de mensagem inválido. Utilize text, image ou file.',
       400,
     )
   }
 
-  /**
-   * Attachment sozinho continua sendo permitido pelo
-   * service, mas mantemos a validação de content quando
-   * não houver attachment.
-   */
-  if (!normalizedContent && !attachment) {
-    throw new AppError('Conteúdo da mensagem é obrigatório.', 400)
+  if (
+    normalizedType === 'text' &&
+    !normalizedContent &&
+    !normalizedAttachment?.url
+  ) {
+    throw new AppError('Informe o conteúdo da mensagem.', 400)
+  }
+
+  if (normalizedType !== 'text' && !normalizedAttachment?.url) {
+    throw new AppError('Informe a URL do anexo para enviar a mídia.', 400)
+  }
+
+  if (normalizedAttachment && !normalizedAttachment.url) {
+    throw new AppError('A URL do anexo é obrigatória.', 400)
+  }
+
+  // --------------------------------------------------------
+  // ENVIO PELO WHATSAPP
+  // --------------------------------------------------------
+
+  if (conversation.channel === 'whatsapp') {
+    if (normalizedMentions.length > 0) {
+      throw new AppError(
+        'Menções do chat interno não estão disponíveis no WhatsApp.',
+        400,
+      )
+    }
+
+    if (replyTo) {
+      throw new AppError(
+        'Respostas a mensagens específicas do WhatsApp ainda não estão habilitadas.',
+        400,
+      )
+    }
+
+    const message = await chatService.sendWhatsAppMessage({
+      conversationId,
+      senderId,
+      content: normalizedContent,
+      type: normalizedType,
+      attachment: normalizedAttachment,
+      replyTo: null,
+      mentions: [],
+    })
+
+    // Só emitimos a mensagem depois que o serviço conclui
+    // o envio ao provedor e retorna a mensagem persistida.
+    emitToConversation(conversationId, 'new_message', {
+      conversationId,
+      message,
+    })
+
+    const assignedTo =
+      conversation.assignedTo?._id ||
+      conversation.assignedTo ||
+      conversation.lead?.assignedTo
+
+    if (assignedTo && String(assignedTo) !== senderId) {
+      emitToUser(assignedTo, 'new_message_notification', {
+        conversationId,
+        message,
+        leadId: conversation.lead?._id
+          ? String(conversation.lead._id)
+          : conversation.lead
+            ? String(conversation.lead)
+            : null,
+      })
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: 'Mensagem enviada pelo WhatsApp com sucesso.',
+      data: message,
+    })
+  }
+
+  // --------------------------------------------------------
+  // ENVIO PELO CHAT INTERNO
+  // --------------------------------------------------------
+
+  if (conversation.channel !== 'internal') {
+    throw new AppError('Canal de conversa inválido.', 400)
   }
 
   const message = await chatService.sendMessage({
-    conversationId: id,
-    senderId: req.user._id,
+    conversationId,
+    senderId,
     content: normalizedContent,
-    type,
-    attachment,
-    replyTo,
-    mentions: mentions || [],
+    type: normalizedType,
+    attachment: normalizedAttachment,
+    replyTo: replyTo || null,
+    mentions: normalizedMentions,
     isAdmin: isAdminUser(req.user),
   })
 
-  if (!message?._id) {
-    throw new AppError('Não foi possível criar a mensagem.', 500)
+  emitToConversation(conversationId, 'new_message', {
+    conversationId,
+    message,
+  })
+
+  const participantIds = (conversation.participants || []).map((participant) =>
+    typeof participant === 'object' && participant?._id
+      ? String(participant._id)
+      : String(participant),
+  )
+
+  for (const participantId of participantIds) {
+    if (participantId === senderId) continue
+
+    emitToUser(participantId, 'new_message_notification', {
+      conversationId,
+      message,
+    })
   }
 
-  /**
-   * ========================================================
-   * SOCKET.IO — CHAT INTERNO
-   * ========================================================
-   *
-   * A persistência já foi concluída.
-   *
-   * Se o Socket.IO falhar, não desfazemos a mensagem.
-   */
-  const io = req.app.get('io')
-
-  if (io) {
-    try {
-      const updatedConversation = await Conversation.findOne({
-        _id: id,
-        isActive: true,
-      })
-        .select('channel participants assignedTo')
-        .lean()
-
-      if (!updatedConversation) {
-        console.warn('Conversa não encontrada para Socket.IO:', id)
-      } else {
-        /**
-         * Evento principal.
-         *
-         * Todos os clientes conectados à sala da conversa
-         * recebem a mensagem.
-         */
-        io.to(id).emit('new_message', message)
-
-        /**
-         * ----------------------------------------------------
-         * CHAT INTERNO
-         * ----------------------------------------------------
-         *
-         * Notificamos os participantes.
-         */
-        if (updatedConversation.channel === 'internal') {
-          const participants = Array.isArray(updatedConversation.participants)
-            ? updatedConversation.participants.filter(Boolean)
-            : []
-
-          for (const participant of participants) {
-            const participantId = participant.toString()
-
-            /**
-             * Não notificar o próprio remetente.
-             */
-            if (participantId === userId) {
-              continue
-            }
-
-            io.to(`user_${participantId}`).emit('new_message_notification', {
-              conversationId: id,
-              channel: 'internal',
-              message: {
-                _id: message._id,
-                content: message.content,
-                sender: message.sender,
-                senderType: message.senderType,
-                createdAt: message.createdAt,
-                type: message.type,
-              },
-            })
-          }
-        }
-
-        /**
-         * ----------------------------------------------------
-         * WHATSAPP — BLOCO DEFENSIVO
-         * ----------------------------------------------------
-         *
-         * Normalmente este fluxo não será atingido porque
-         * conversas WhatsApp são tratadas acima.
-         */
-        if (updatedConversation.channel === 'whatsapp') {
-          const assignedTo = updatedConversation.assignedTo?.toString()
-
-          if (assignedTo && assignedTo !== userId) {
-            io.to(`user_${assignedTo}`).emit('new_message_notification', {
-              conversationId: id,
-              channel: 'whatsapp',
-              message: {
-                _id: message._id,
-                content: message.content,
-                sender: message.sender,
-                senderType: message.senderType,
-                createdAt: message.createdAt,
-                type: message.type,
-              },
-            })
-          }
-        }
-      }
-    } catch (socketError) {
-      /**
-       * Socket.IO não deve impedir o sucesso da API.
-       */
-      console.error('Erro ao emitir evento Socket.IO:', socketError.message)
-    }
-  }
-
-  res.status(201).json({
+  return res.status(201).json({
     success: true,
+    message: 'Mensagem enviada com sucesso.',
     data: message,
   })
 })
 
-/**
- * ============================================================
- * READ
- * ============================================================
- */
+// ==========================================================
+// PATCH /api/chat/conversations/:conversationId/read
+// Marca a conversa como lida.
+// ==========================================================
 
-/**
- * POST /api/chat/conversations/:id/read
- *
- * Marca todas as mensagens como lidas.
- *
- * A autorização agora considera:
- * - admin
- * - participant
- * - assignedTo para WhatsApp
- */
 export const markAsRead = asyncHandler(async (req, res) => {
-  const { id } = req.params
+  const conversationId = validateObjectId(
+    req.params.conversationId,
+    'ID da conversa',
+  )
 
-  validateObjectId(id, 'ID da conversa')
+  const userId = validateObjectId(getUserId(req.user), 'ID do usuário')
 
   const result = await chatService.markConversationAsRead({
-    conversationId: id,
-    user: req.user,
+    conversationId,
+    userId,
   })
 
-  /**
-   * Notifica os clientes da conversa que o usuário
-   * atualizou o estado de leitura.
-   */
-  const io = req.app.get('io')
+  emitToConversation(conversationId, 'conversation_read', {
+    conversationId,
+    userId,
+  })
 
-  if (io) {
-    try {
-      io.to(id).emit('conversation_read', {
-        conversationId: id,
-        userId: req.user._id,
-      })
-    } catch (socketError) {
-      console.warn('Erro ao emitir conversation_read:', socketError.message)
-    }
-  }
-
-  res.json({
+  return res.status(200).json({
     success: true,
+    message: 'Conversa marcada como lida.',
     data: result,
   })
 })
 
-/**
- * ============================================================
- * BROKER CHANNEL
- * ============================================================
- */
+// ==========================================================
+// PATCH /api/chat/messages/:messageId/read
+// Marca uma mensagem como lida.
+// ==========================================================
 
-/**
- * POST /api/chat/broker-channel
- *
- * Cria canal interno dos corretores.
- */
-export const createBrokerChannel = asyncHandler(async (req, res) => {
-  const { name } = req.body
+export const markMessageAsRead = asyncHandler(async (req, res) => {
+  const messageId = validateObjectId(req.params.messageId, 'ID da mensagem')
 
-  if (!name || typeof name !== 'string' || !name.trim()) {
-    throw new AppError('Nome do canal é obrigatório.', 400)
-  }
+  const userId = validateObjectId(getUserId(req.user), 'ID do usuário')
 
-  const channel = await chatService.createBrokerChannel({
-    name: name.trim(),
-    createdBy: req.user._id,
+  const result = await chatService.markMessageAsRead({
+    messageId,
+    userId,
   })
 
-  /**
-   * Atualiza Socket.IO para os participantes.
-   */
-  const io = req.app.get('io')
+  emitToConversation(result.conversationId, 'message_read', {
+    conversationId: result.conversationId,
+    messageId: result.messageId,
+    userId,
+  })
 
-  if (io) {
-    try {
-      const participants = Array.isArray(channel.participants)
-        ? channel.participants
-        : []
-
-      participants.forEach((participant) => {
-        const participantId =
-          participant?._id?.toString() || participant?.toString()
-
-        if (!participantId) {
-          return
-        }
-
-        io.to(`user_${participantId}`).emit('new_conversation', channel)
-      })
-    } catch (socketError) {
-      console.warn('Erro ao notificar criação do canal:', socketError.message)
-    }
-  }
-
-  res.status(201).json({
+  return res.status(200).json({
     success: true,
-    data: channel,
+    message: 'Mensagem marcada como lida.',
+    data: result,
   })
 })
 
-/**
- * ============================================================
- * USERS
- * ============================================================
- */
+// ==========================================================
+// POST /api/chat/broker-channels
+// ==========================================================
 
-/**
- * GET /api/chat/users/search
- *
- * Busca usuários para criação de conversas internas.
- */
+export const createBrokerChannel = asyncHandler(async (req, res) => {
+  const createdBy = validateObjectId(getUserId(req.user), 'ID do criador')
+
+  const { name = '', participants = [] } = req.body || {}
+
+  if (!Array.isArray(participants)) {
+    throw new AppError(
+      'Os participantes precisam ser enviados em um array.',
+      400,
+    )
+  }
+
+  const participantIds = [
+    ...new Set(
+      participants.map((participant) => {
+        const id =
+          typeof participant === 'object' && participant?._id
+            ? String(participant._id)
+            : String(participant)
+
+        return validateObjectId(id, 'ID do participante')
+      }),
+    ),
+  ]
+
+  const conversation = await chatService.createBrokerChannel({
+    name,
+    participants: participantIds,
+    createdBy,
+  })
+
+  const conversationId = String(conversation._id)
+
+  emitToConversation(conversationId, 'new_conversation', {
+    conversation,
+  })
+
+  for (const participant of conversation.participants || []) {
+    const participantId =
+      typeof participant === 'object' && participant?._id
+        ? String(participant._id)
+        : String(participant)
+
+    emitToUser(participantId, 'new_conversation', {
+      conversation,
+    })
+  }
+
+  return res.status(201).json({
+    success: true,
+    message: 'Canal de corretores criado com sucesso.',
+    data: conversation,
+  })
+})
+
+// ==========================================================
+// GET /api/chat/users/search
+// ==========================================================
+
 export const searchUsers = asyncHandler(async (req, res) => {
-  const { q, limit } = req.query
+  const userId = validateObjectId(getUserId(req.user), 'ID do usuário')
 
-  if (!q || typeof q !== 'string' || !q.trim()) {
-    return res.json({
+  const query = String(req.query.q || req.query.query || '').trim()
+
+  if (query.length < 2) {
+    return res.status(200).json({
       success: true,
+      count: 0,
       data: [],
     })
   }
 
-  const parsedLimit = limit ? Number.parseInt(limit, 10) : 10
+  const limit = Number(req.query.limit ?? 20)
 
-  if (Number.isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 50) {
-    throw new AppError('O limite deve estar entre 1 e 50.', 400)
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+    throw new AppError('O limite precisa ser um número entre 1 e 50.', 400)
   }
 
   const users = await chatService.searchUsers({
-    query: q.trim(),
-    userId: req.user._id,
-    limit: parsedLimit,
+    query,
+    userId,
+    limit,
   })
 
-  res.json({
+  return res.status(200).json({
     success: true,
+    count: users.length,
     data: users,
   })
 })
 
-/**
- * ============================================================
- * DELETE MESSAGE
- * ============================================================
- */
+// ==========================================================
+// DELETE /api/chat/messages/:messageId
+// ==========================================================
 
-/**
- * DELETE /api/chat/messages/:id
- *
- * Deleta uma mensagem do chat interno.
- */
 export const deleteMessage = asyncHandler(async (req, res) => {
-  const { id } = req.params
+  const messageId = validateObjectId(req.params.messageId, 'ID da mensagem')
 
-  validateObjectId(id, 'ID da mensagem')
+  const userId = validateObjectId(getUserId(req.user), 'ID do usuário')
 
   const result = await chatService.deleteMessage({
-    messageId: id,
-    userId: req.user._id,
+    messageId,
+    userId,
   })
 
-  /**
-   * Atualiza os clientes da conversa.
-   *
-   * Primeiro tentamos localizar a conversa antes
-   * da resposta HTTP.
-   */
-  const io = req.app.get('io')
+  emitToConversation(result.conversationId, 'message_deleted', {
+    conversationId: result.conversationId,
+    messageId: result.messageId,
+    deletedBy: userId,
+  })
 
-  if (io) {
-    try {
-      /**
-       * O service já executou a exclusão.
-       *
-       * Procuramos mensagens/conversa através do Message
-       * não está disponível aqui, então usamos o resultado
-       * quando o service fornecer conversationId.
-       *
-       * Mantemos compatibilidade caso o resultado ainda
-       * contenha apenas messageId.
-       */
-      if (result?.conversationId) {
-        io.to(result.conversationId.toString()).emit('message_deleted', {
-          messageId: id,
-          conversationId: result.conversationId,
-        })
-      }
-    } catch (socketError) {
-      console.warn('Erro ao emitir message_deleted:', socketError.message)
-    }
-  }
-
-  res.json({
+  return res.status(200).json({
     success: true,
+    message: 'Mensagem excluída com sucesso.',
     data: result,
   })
 })
+
+// ==========================================================
+// POST /api/chat/conversations/:conversationId/participants
+// Adiciona corretor a um canal.
+// ==========================================================
+
+export const addBrokerToChannel = asyncHandler(async (req, res) => {
+  const conversationId = validateObjectId(
+    req.params.conversationId,
+    'ID da conversa',
+  )
+
+  const brokerId = validateObjectId(req.body?.brokerId, 'ID do corretor')
+
+  const requesterId = validateObjectId(getUserId(req.user), 'ID do solicitante')
+
+  const conversation = await chatService.addBrokerToChannel({
+    conversationId,
+    brokerId,
+    requesterId,
+  })
+
+  emitToConversation(conversationId, 'conversation_updated', {
+    conversationId,
+    conversation,
+  })
+
+  emitToUser(brokerId, 'new_conversation', {
+    conversation,
+  })
+
+  return res.status(200).json({
+    success: true,
+    message: 'Corretor adicionado ao canal com sucesso.',
+    data: conversation,
+  })
+})
+
+// ==========================================================
+// EXPORT DEFAULT
+// ==========================================================
+
+export default {
+  getConversations,
+  createConversation,
+  getMessages,
+  sendMessage,
+  markAsRead,
+  markMessageAsRead,
+  createBrokerChannel,
+  searchUsers,
+  deleteMessage,
+  addBrokerToChannel,
+}

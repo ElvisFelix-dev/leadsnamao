@@ -73,13 +73,28 @@ export const getQrCode = asyncHandler(async (req, res) => {
 })
 
 export const receiveWebhook = asyncHandler(async (req, res) => {
+  console.info('[WA-AKG] Requisição de webhook recebida:', {
+    method: req.method,
+    path: req.originalUrl,
+    contentType: req.headers['content-type'] || null,
+    rawBodyBytes: Buffer.isBuffer(req.rawBody) ? req.rawBody.length : 0,
+    hasSignature: Boolean(req.headers['x-webhook-signature']),
+  })
+
   const result = await whatsappService.handleWebhook({
     rawBody: req.rawBody,
     body: req.body,
     signature: req.headers['x-webhook-signature'],
-
-    // Usa a mesma instância do Socket.IO registrada no Express.
     io: req.app.get('io'),
+  })
+
+  console.info('[WA-AKG] Webhook processado:', {
+    event: result?.event || null,
+    success: result?.success ?? false,
+    ignored: result?.ignored ?? false,
+    duplicate: result?.duplicate ?? false,
+    reason: result?.reason || null,
+    conversationId: result?.conversationId || null,
   })
 
   res.status(200).json({

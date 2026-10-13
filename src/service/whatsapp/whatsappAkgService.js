@@ -25,9 +25,11 @@ const ALLOWED_MEDIA_TYPES = ['image', 'file', 'gif']
 // ==========================================================
 
 const normalizeBaseUrl = (url) => {
+  // As rotas abaixo já incluem /api; aceite URL-base com ou sem esse sufixo.
   return String(url || '')
     .trim()
     .replace(/\/+$/, '')
+    .replace(/\/api$/i, '')
 }
 
 const normalizeId = (value) => {
@@ -493,27 +495,90 @@ export const getQrCode = async (integrationId) => {
     String(normalizedIntegrationId).trim(),
   )
 
-  const response = await requestProvider({
+  const sessionPath = `/api/sessions/${encodeURIComponent(integration.sessionId)}`
+
+  const sessionResponse = await requestProvider({
     integration,
     method: 'GET',
-    path: `/api/sessions/${encodeURIComponent(integration.sessionId)}`,
+    path: sessionPath,
   })
 
-  const session = response.data?.data ?? response.data
+  const session = sessionResponse.data?.data ?? sessionResponse.data ?? {}
+  const providerStatus = String(session?.status || 'unknown')
+  const normalizedStatus = providerStatus.toLowerCase()
 
-  return {
-    integrationId: String(integration._id),
-    integrationName: integration.name,
-    sessionId: integration.sessionId,
-    status: session?.status || 'unknown',
-    qr: session?.qr || session?.qrcode || null,
-    me: session?.me || null,
-    providerResponse: response.data,
+  const isConnected = ['connected', 'open', 'online'].includes(normalizedStatus)
+  const isDisconnected = [
+    'disconnected',
+    'close',
+    'closed',
+    'offline',
+    'stopped',
+  ].includes(normalizedStatus)
+
+  if (isConnected) {
+    await updateIntegrationStatus(integration._id, 'connected')
+
+    return {
+      integrationId: String(integration._id),
+      integrationName: integration.name,
+      sessionId: integration.sessionId,
+      status: 'CONNECTED',
+      qr: null,
+      base64: null,
+      me: session?.me || null,
+    }
+  }
+
+  if (isDisconnected) {
+    await updateIntegrationStatus(integration._id, 'disconnected')
+  }
+
+  try {
+    const qrResponse = await requestProvider({
+      integration,
+      method: 'GET',
+      path: `${sessionPath}/qr`,
+    })
+
+    const qrData = qrResponse.data?.data ?? qrResponse.data ?? {}
+    const rawBase64 =
+      qrData?.base64 || qrData?.qrCode || qrData?.qrcodeImage || null
+    const base64 = rawBase64
+      ? String(rawBase64).startsWith('data:')
+        ? String(rawBase64)
+        : `data:image/png;base64,${rawBase64}`
+      : null
+
+    return {
+      integrationId: String(integration._id),
+      integrationName: integration.name,
+      sessionId: integration.sessionId,
+      status: providerStatus.toUpperCase(),
+      qr: qrData?.qr || qrData?.code || session?.qr || session?.qrcode || null,
+      base64,
+      me: session?.me || null,
+    }
+  } catch (error) {
+    // A sessão pode estar inicializando; ausência temporária de QR não é fatal.
+    if ([400, 404].includes(Number(error?.statusCode))) {
+      return {
+        integrationId: String(integration._id),
+        integrationName: integration.name,
+        sessionId: integration.sessionId,
+        status: providerStatus.toUpperCase(),
+        qr: null,
+        base64: null,
+        me: session?.me || null,
+      }
+    }
+
+    throw error
   }
 }
 
 // ==========================================================
-// ASSINATURA DO WEBHOOK
+// // ASSINATURA DO WEBHOOK
 // ==========================================================
 
 export const verifyWebhookSignature = ({ rawBody, signature, secret }) => {

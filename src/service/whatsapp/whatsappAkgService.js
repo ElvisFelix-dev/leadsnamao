@@ -480,7 +480,18 @@ export const getIntegrationSecrets = async (integrationId) => {
 // ==========================================================
 
 export const getQrCode = async (integrationId) => {
-  const integration = await getIntegrationWithSecrets(integrationId)
+  const normalizedIntegrationId =
+    typeof integrationId === 'object' && integrationId !== null
+      ? integrationId.integrationId
+      : integrationId
+
+  if (!normalizedIntegrationId) {
+    throw new AppError('Informe o ID da integração WhatsApp.', 400)
+  }
+
+  const integration = await getIntegrationWithSecrets(
+    String(normalizedIntegrationId).trim(),
+  )
 
   const response = await requestProvider({
     integration,
@@ -489,7 +500,7 @@ export const getQrCode = async (integrationId) => {
   })
 
   return {
-    integrationId: integration._id,
+    integrationId: String(integration._id),
     integrationName: integration.name,
     sessionId: integration.sessionId,
     status: response.data?.status || 'unknown',

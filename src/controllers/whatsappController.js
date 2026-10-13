@@ -58,11 +58,13 @@ export const testSend = asyncHandler(async (req, res) => {
 })
 
 export const getQrCode = asyncHandler(async (req, res) => {
-  const { integrationId = null } = req.query
+  const integrationId = String(req.query.integrationId || '').trim()
 
-  const result = await whatsappService.getQrCode({
-    integrationId,
-  })
+  if (!integrationId) {
+    throw new AppError('Informe o ID da integração WhatsApp.', 400)
+  }
+
+  const result = await whatsappService.getQrCode(integrationId)
 
   res.status(200).json({
     success: true,

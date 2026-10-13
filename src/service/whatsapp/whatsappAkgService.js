@@ -499,13 +499,15 @@ export const getQrCode = async (integrationId) => {
     path: `/api/sessions/${encodeURIComponent(integration.sessionId)}`,
   })
 
+  const session = response.data?.data ?? response.data
+
   return {
     integrationId: String(integration._id),
     integrationName: integration.name,
     sessionId: integration.sessionId,
-    status: response.data?.status || 'unknown',
-    qr: response.data?.qr || response.data?.qrcode || null,
-    me: response.data?.me || null,
+    status: session?.status || 'unknown',
+    qr: session?.qr || session?.qrcode || null,
+    me: session?.me || null,
     providerResponse: response.data,
   }
 }

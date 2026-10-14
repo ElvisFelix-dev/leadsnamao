@@ -1139,6 +1139,48 @@ export const updateWebhookSecret = async ({ integrationId, webhookSecret }) => {
   return integration
 }
 
+export const prepareLeadWhatsAppConversation = async ({ lead }) => {
+  if (!lead?._id) {
+    throw new AppError('Lead inválido.', 400)
+  }
+
+  const phone = normalizePhone(lead.phoneNormalized || lead.phone)
+
+  if (!phone) {
+    throw new AppError('Este lead não possui um telefone válido.', 400)
+  }
+
+  // Busca uma integração WhatsApp ativa.
+  const integration = await getIntegrationWithSecrets()
+
+  const remoteJid = toJid(phone)
+
+  // Cria ou recupera o contato vinculado ao lead.
+  const contact = await upsertWhatsAppContact({
+    integrationId: String(integration._id),
+    remoteJid,
+    leadId: String(lead._id),
+    name: lead.name || '',
+    isGroup: false,
+    metadata: {
+      source: 'leads-na-mao-crm',
+    },
+  })
+
+  // Cria ou recupera a conversa vinculada ao contato e ao lead.
+  const conversation = await upsertWhatsAppConversation({
+    whatsappContactId: String(contact._id),
+    integrationId: String(integration._id),
+    leadId: String(lead._id),
+    assignedTo: lead.assignedTo
+      ? String(lead.assignedTo._id || lead.assignedTo)
+      : null,
+    name: lead.name || '',
+  })
+
+  return conversation
+}
+
 // ==========================================================
 // EXPORT DEFAULT
 // ==========================================================
@@ -1155,4 +1197,5 @@ export default {
   updateWebhookSecret,
   upsertWhatsAppContact,
   upsertWhatsAppConversation,
+  prepareLeadWhatsAppConversation,
 }

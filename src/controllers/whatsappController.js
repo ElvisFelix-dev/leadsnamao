@@ -1,3 +1,5 @@
+import mongoose from 'mongoose'
+import Lead from '../models/Lead.js'
 import asyncHandler from '../middleware/asyncHandler.js'
 import AppError from '../utils/AppError.js'
 import * as whatsappService from '../service/whatsapp/whatsappAkgService.js'
@@ -117,5 +119,46 @@ export const updateWebhookSecret = asyncHandler(async (req, res) => {
     success: true,
     message: 'Webhook secret atualizado com sucesso.',
     data: result,
+  })
+})
+
+export const prepareLeadConversation = asyncHandler(async (req, res) => {
+  const { leadId } = req.params
+
+  if (!mongoose.Types.ObjectId.isValid(String(leadId))) {
+    throw new AppError('ID do lead inválido.', 400)
+  }
+
+  const userId = String(req.user?._id || req.user?.id || '')
+
+  if (!userId) {
+    throw new AppError('Usuário não autenticado.', 401)
+  }
+
+  const isAdmin = req.user?.isAdmin === true || req.user?.role === 'admin'
+
+  const lead = await Lead.findOne({
+    _id: leadId,
+    isDeleted: { $ne: true },
+  }).select('_id name phone phoneNormalized assignedTo')
+
+  if (!lead) {
+    throw new AppError('Lead não encontrado.', 404)
+  }
+
+  // Um corretor só pode abrir a conversa de um lead
+  // atribuído a ele. Administradores podem acessar todos.
+  if (!isAdmin && String(lead.assignedTo || '') !== userId) {
+    throw new AppError('Você não tem permissão para acessar este lead.', 403)
+  }
+
+  const conversation = await whatsappService.prepareLeadWhatsAppConversation({
+    lead,
+  })
+
+  return res.status(200).json({
+    success: true,
+    message: 'Conversa WhatsApp preparada com sucesso.',
+    data: conversation,
   })
 })

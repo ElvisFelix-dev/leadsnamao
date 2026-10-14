@@ -8,6 +8,7 @@ import {
   getQrCode,
   receiveWebhook,
   updateWebhookSecret,
+  prepareLeadConversation,
 } from '../controllers/whatsappController.js'
 
 const router = express.Router()
@@ -33,6 +34,8 @@ router.post('/webhook', receiveWebhook)
  */
 
 router.use(protect)
+
+router.post('/leads/:leadId/conversation', prepareLeadConversation)
 
 router.post('/integrations', admin, createIntegration)
 

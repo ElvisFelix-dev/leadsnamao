@@ -668,7 +668,32 @@ export const handleWebhook = async ({
   })
 
   // --------------------------------------------------------
-  // BUSCA DA INTEGRAÇÃO
+  // TESTE DE WEBHOOK DA WA-AKG
+  // --------------------------------------------------------
+  // O teste automático da WA-AKG pode utilizar sessionId "test".
+  // Reconhecemos esse evento antes da busca pela integração real.
+  // Nenhum dado do CRM é criado ou alterado neste caminho.
+  //
+  // IMPORTANTE:
+  // Esse retorno confirma apenas o recebimento do teste HTTP.
+  // Ele não valida a assinatura HMAC do evento de teste.
+  // Eventos de sessões reais continuam passando pela validação
+  // da integração e pela verificação da assinatura.
+  // --------------------------------------------------------
+
+  if (String(sessionId).trim().toLowerCase() === 'test') {
+    console.info('[WA-AKG] Teste de webhook recebido e reconhecido.')
+
+    return {
+      success: true,
+      test: true,
+      ignored: true,
+      reason: 'Teste de webhook recebido. Nenhum dado foi alterado.',
+    }
+  }
+
+  // --------------------------------------------------------
+  // BUSCA DA INTEGRAÇÃO REAL
   // --------------------------------------------------------
 
   const integration = await WhatsAppIntegration.findOne({
@@ -690,7 +715,7 @@ export const handleWebhook = async ({
   }
 
   // --------------------------------------------------------
-  // VALIDAÇÃO DA ASSINATURA
+  // VALIDAÇÃO DA ASSINATURA HMAC
   // --------------------------------------------------------
 
   if (integration.webhookSecret) {
@@ -728,6 +753,7 @@ export const handleWebhook = async ({
 
     const fromMe = key.fromMe === true || data.fromMe === true
 
+    // Ignorar mensagens enviadas pela própria sessão.
     if (fromMe) {
       return {
         success: true,
@@ -799,12 +825,12 @@ export const handleWebhook = async ({
           phone,
           phoneNormalized,
 
-          // Valores compatíveis com o schema atual
+          // Valores compatíveis com o schema atual.
           source: 'manual',
           sourceType: 'manual',
           region: 'central',
 
-          // O lead será distribuído pelo fluxo existente
+          // O lead será distribuído pelo fluxo existente.
           status: LEAD_STATUS.NEW,
           stage: LEAD_STAGES.NEW,
           notes: 'Lead criado automaticamente pelo WhatsApp.',
@@ -818,7 +844,7 @@ export const handleWebhook = async ({
           name: leadName,
         })
       } catch (error) {
-        // Em caso de concorrência, tenta recuperar o lead existente.
+        // Em caso de concorrência, tenta recuperar o lead.
         if (error.code === 11000) {
           lead = await Lead.findOne({
             $or: [{ phoneNormalized }, { phone: phoneNormalized }, { phone }],

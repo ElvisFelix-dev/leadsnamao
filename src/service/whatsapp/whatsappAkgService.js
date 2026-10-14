@@ -671,6 +671,15 @@ export const handleWebhook = async ({
 
   const data = payload.data || payload
 
+  console.info('[WA-AKG] Diagnóstico da sessão:', {
+    receivedSessionId: sessionId,
+    payloadKeys: Object.keys(payload),
+    dataKeys:
+      payload.data && typeof payload.data === 'object'
+        ? Object.keys(payload.data)
+        : [],
+  })
+
   console.info('[WA-AKG] Webhook recebido:', {
     event,
     sessionId,

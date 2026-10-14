@@ -994,24 +994,47 @@ export const handleWebhook = async ({
     // NOTIFICAR FRONTEND VIA SOCKET.IO
     // ------------------------------------------------------
 
+    // ------------------------------------------------------
+    // NOTIFICAR FRONTEND VIA SOCKET.IO
+    // ------------------------------------------------------
+
     const io = requestIo || getSocketIO()
 
     if (io) {
       const conversationId = String(conversation._id)
       const assignedTo = normalizeId(conversation.assignedTo)
 
-      io.to(conversationId).emit('new_message', {
+      // O frontend espera receber a mensagem diretamente.
+      // Normalizamos os IDs para evitar problemas com ObjectId.
+      const messagePayload = {
+        ...(typeof savedMessage.toObject === 'function'
+          ? savedMessage.toObject()
+          : savedMessage),
+        conversation: conversationId,
         conversationId,
-        message: savedMessage,
-      })
+      }
 
+      // Atualiza os clientes conectados à sala da conversa.
+      io.to(conversationId).emit('new_message', messagePayload)
+
+      // A sala individual do usuário usa o prefixo user_.
       if (assignedTo) {
-        io.to(assignedTo).emit('new_message_notification', {
+        io.to(`user_${assignedTo}`).emit('new_message_notification', {
           conversationId,
-          message: savedMessage,
+          message: messagePayload,
           leadId: String(leadId),
         })
       }
+
+      console.info('[WA-AKG] Eventos Socket.IO emitidos:', {
+        conversationId,
+        assignedTo,
+        messageId: savedMessage?._id ? String(savedMessage._id) : null,
+        conversationRoom: conversationId,
+        userRoom: assignedTo ? `user_${assignedTo}` : null,
+      })
+    } else {
+      console.warn('[WA-AKG] Socket.IO indisponível para emitir nova mensagem.')
     }
 
     console.info('[WA-AKG] Mensagem processada:', {

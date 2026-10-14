@@ -621,6 +621,10 @@ export const handleWebhook = async ({
 }) => {
   let payload = body
 
+  // --------------------------------------------------------
+  // VALIDAÇÃO E LEITURA DO PAYLOAD
+  // --------------------------------------------------------
+
   if (rawBody) {
     try {
       payload =
@@ -640,13 +644,45 @@ export const handleWebhook = async ({
     payload.sessionId || payload.session?.id || payload.data?.sessionId
 
   if (!sessionId) {
+    console.error('[WA-AKG] Webhook recebido sem sessionId:', {
+      payloadKeys: Object.keys(payload),
+      dataKeys:
+        payload.data && typeof payload.data === 'object'
+          ? Object.keys(payload.data)
+          : [],
+    })
+
     throw new AppError('O webhook não informou o sessionId.', 400)
   }
+
+  // --------------------------------------------------------
+  // DIAGNÓSTICO DO SESSION ID
+  // Este log acontece antes da consulta ao MongoDB.
+  // --------------------------------------------------------
+
+  console.info('[WA-AKG] Diagnóstico da sessão:', {
+    receivedSessionId: sessionId,
+    payloadKeys: Object.keys(payload),
+    dataKeys:
+      payload.data && typeof payload.data === 'object'
+        ? Object.keys(payload.data)
+        : [],
+  })
+
+  // --------------------------------------------------------
+  // BUSCA DA INTEGRAÇÃO
+  // --------------------------------------------------------
 
   const integration = await WhatsAppIntegration.findOne({
     sessionId,
     enabled: true,
   }).select('+apiKey +webhookSecret')
+
+  console.info('[WA-AKG] Resultado da busca:', {
+    receivedSessionId: sessionId,
+    integrationFound: Boolean(integration),
+    integrationId: integration?._id ? String(integration._id) : null,
+  })
 
   if (!integration) {
     throw new AppError(
@@ -654,6 +690,10 @@ export const handleWebhook = async ({
       404,
     )
   }
+
+  // --------------------------------------------------------
+  // VALIDAÇÃO DA ASSINATURA
+  // --------------------------------------------------------
 
   if (integration.webhookSecret) {
     const isValid = verifyWebhookSignature({
@@ -670,15 +710,6 @@ export const handleWebhook = async ({
   const event = payload.event || payload.type || payload.data?.event || ''
 
   const data = payload.data || payload
-
-  console.info('[WA-AKG] Diagnóstico da sessão:', {
-    receivedSessionId: sessionId,
-    payloadKeys: Object.keys(payload),
-    dataKeys:
-      payload.data && typeof payload.data === 'object'
-        ? Object.keys(payload.data)
-        : [],
-  })
 
   console.info('[WA-AKG] Webhook recebido:', {
     event,
@@ -867,9 +898,6 @@ export const handleWebhook = async ({
   // --------------------------------------------------------
 
   if (event === 'message.sent' || event === 'messages.update') {
-    // O envio de mensagens pelo CRM já é persistido pelo
-    // chatService após a confirmação da API.
-    // Não criamos uma segunda mensagem neste evento.
     return {
       success: true,
       event,
@@ -909,6 +937,10 @@ export const handleWebhook = async ({
       status: providerStatus,
     }
   }
+
+  // --------------------------------------------------------
+  // EVENTO NÃO TRATADO
+  // --------------------------------------------------------
 
   return {
     success: true,

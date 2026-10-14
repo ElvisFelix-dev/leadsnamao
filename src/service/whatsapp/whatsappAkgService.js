@@ -12,6 +12,9 @@ import { normalizePhone } from '../../utils/phone.js'
 import { getSocketIO } from '../../sockets/index.js'
 import * as chatService from '../chatService.js'
 
+import { LEAD_STATUS } from '../../constants/leadStatus.js'
+import { LEAD_STAGES } from '../../constants/leadStages.js'
+
 // ==========================================================
 // CONFIGURAÇÕES
 // ==========================================================
@@ -655,11 +658,6 @@ export const handleWebhook = async ({
     throw new AppError('O webhook não informou o sessionId.', 400)
   }
 
-  // --------------------------------------------------------
-  // DIAGNÓSTICO DO SESSION ID
-  // Este log acontece antes da consulta ao MongoDB.
-  // --------------------------------------------------------
-
   console.info('[WA-AKG] Diagnóstico da sessão:', {
     receivedSessionId: sessionId,
     payloadKeys: Object.keys(payload),
@@ -746,7 +744,7 @@ export const handleWebhook = async ({
       }
     }
 
-    // Grupos não são convertidos automaticamente em leads.
+    // Não criar leads para mensagens de grupos.
     if (String(remoteJid).endsWith('@g.us')) {
       return {
         success: true,
@@ -755,22 +753,101 @@ export const handleWebhook = async ({
       }
     }
 
+    // ------------------------------------------------------
+    // EXTRAIR E NORMALIZAR O TELEFONE
+    // ------------------------------------------------------
+
     const phone = String(remoteJid).split('@')[0]
     const phoneNormalized = normalizePhone(phone)
 
-    const lead = await Lead.findOne({
-      $or: [{ phoneNormalized }, { phone: phoneNormalized }, { phone }],
-    })
+    if (!phoneNormalized) {
+      console.warn('[WA-AKG] Telefone inválido:', {
+        remoteJid,
+      })
 
-    if (!lead) {
       return {
         success: true,
         ignored: true,
-        reason: 'Nenhum lead correspondente ao telefone.',
+        reason: 'Não foi possível normalizar o telefone.',
       }
     }
 
+    // ------------------------------------------------------
+    // BUSCAR LEAD EXISTENTE
+    // ------------------------------------------------------
+
+    let lead = await Lead.findOne({
+      $or: [{ phoneNormalized }, { phone: phoneNormalized }, { phone }],
+      isDeleted: { $ne: true },
+    })
+
+    let leadCreated = false
+
+    if (!lead) {
+      const contactName = String(
+        data.pushName || data.notifyName || data.senderName || '',
+      ).trim()
+
+      const leadName = (
+        contactName || `Contato WhatsApp ${phoneNormalized}`
+      ).slice(0, 120)
+
+      try {
+        lead = await Lead.create({
+          name: leadName,
+          email: `whatsapp-${phoneNormalized}@leadsnamao.local`,
+          phone,
+          phoneNormalized,
+
+          // Valores compatíveis com o schema atual
+          source: 'manual',
+          sourceType: 'manual',
+          region: 'central',
+
+          // O lead será distribuído pelo fluxo existente
+          status: LEAD_STATUS.NEW,
+          stage: LEAD_STAGES.NEW,
+          notes: 'Lead criado automaticamente pelo WhatsApp.',
+        })
+
+        leadCreated = true
+
+        console.info('[WA-AKG] Novo lead criado:', {
+          leadId: String(lead._id),
+          phoneNormalized,
+          name: leadName,
+        })
+      } catch (error) {
+        // Em caso de concorrência, tenta recuperar o lead existente.
+        if (error.code === 11000) {
+          lead = await Lead.findOne({
+            $or: [{ phoneNormalized }, { phone: phoneNormalized }, { phone }],
+            isDeleted: { $ne: true },
+          })
+        }
+
+        if (!lead) {
+          console.error('[WA-AKG] Erro ao criar lead:', {
+            message: error.message,
+            name: error.name,
+            code: error.code,
+          })
+
+          throw error
+        }
+      }
+    } else {
+      console.info('[WA-AKG] Lead existente encontrado:', {
+        leadId: String(lead._id),
+        phoneNormalized,
+      })
+    }
+
     const leadId = lead._id
+
+    // ------------------------------------------------------
+    // CRIAR OU ATUALIZAR CONTATO DO WHATSAPP
+    // ------------------------------------------------------
 
     const contact = await upsertWhatsAppContact({
       integrationId: integration._id,
@@ -784,6 +861,10 @@ export const handleWebhook = async ({
       },
     })
 
+    // ------------------------------------------------------
+    // CRIAR OU RECUPERAR CONVERSA
+    // ------------------------------------------------------
+
     const conversation = await upsertWhatsAppConversation({
       whatsappContactId: contact._id,
       integrationId: integration._id,
@@ -791,6 +872,10 @@ export const handleWebhook = async ({
       assignedTo: lead.assignedTo || null,
       name: contact.name || lead.name || '',
     })
+
+    // ------------------------------------------------------
+    // IDENTIFICAR CONTEÚDO E ANEXOS
+    // ------------------------------------------------------
 
     const messageObject = data.message?.message || data.message || data
 
@@ -842,13 +927,21 @@ export const handleWebhook = async ({
         }
       : null
 
+    // ------------------------------------------------------
+    // SALVAR MENSAGEM
+    // ------------------------------------------------------
+
     const savedMessage = await chatService.receiveWhatsAppMessage({
       conversationId: conversation._id,
       whatsappContactId: contact._id,
       externalMessageId,
       content:
         content ||
-        (messageType === 'image' ? 'Imagem recebida' : 'Arquivo recebido'),
+        (messageType === 'image'
+          ? 'Imagem recebida'
+          : messageType === 'file'
+            ? 'Arquivo recebido'
+            : 'Mensagem recebida'),
       type: messageType,
       attachment,
     })
@@ -857,13 +950,23 @@ export const handleWebhook = async ({
       return {
         success: true,
         duplicate: true,
+        leadId: String(leadId),
+        leadCreated,
         conversationId: String(conversation._id),
       }
     }
 
+    // ------------------------------------------------------
+    // ATUALIZAR ÚLTIMA MENSAGEM DO CONTATO
+    // ------------------------------------------------------
+
     await WhatsAppContact.findByIdAndUpdate(contact._id, {
       lastMessageAt: new Date(),
     })
+
+    // ------------------------------------------------------
+    // NOTIFICAR FRONTEND VIA SOCKET.IO
+    // ------------------------------------------------------
 
     const io = requestIo || getSocketIO()
 
@@ -885,9 +988,19 @@ export const handleWebhook = async ({
       }
     }
 
+    console.info('[WA-AKG] Mensagem processada:', {
+      event,
+      leadId: String(leadId),
+      leadCreated,
+      conversationId: String(conversation._id),
+      messageId: savedMessage?._id ? String(savedMessage._id) : null,
+    })
+
     return {
       success: true,
       event,
+      leadId: String(leadId),
+      leadCreated,
       conversationId: String(conversation._id),
       messageId: savedMessage?._id ? String(savedMessage._id) : null,
     }

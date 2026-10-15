@@ -1,7 +1,4 @@
-// src/controllers/chatController.js
-
 import mongoose from 'mongoose'
-
 import asyncHandler from '../middleware/asyncHandler.js'
 import * as chatService from '../service/chatService.js'
 import Conversation from '../models/Conversation.js'
@@ -40,20 +37,33 @@ const getSocket = () => {
   }
 }
 
+// Emite para a sala da conversa.
 const emitToConversation = (conversationId, event, payload) => {
   const io = getSocket()
 
-  if (!io) return
+  if (!io || !conversationId) return
 
   io.to(String(conversationId)).emit(event, payload)
 }
 
+// Mantido para compatibilidade com o fluxo existente do WhatsApp.
+// Não alterar sem verificar também a implementação do webhook.
 const emitToUser = (userId, event, payload) => {
   const io = getSocket()
 
   if (!io || !userId) return
 
   io.to(String(userId)).emit(event, payload)
+}
+
+// Notificações para usuários do chat interno.
+// O chatSocket.js utiliza salas no formato user_${userId}.
+const emitToInternalUser = (userId, event, payload) => {
+  const io = getSocket()
+
+  if (!io || !userId) return
+
+  io.to(`user_${String(userId)}`).emit(event, payload)
 }
 
 const normalizeAttachment = (attachment) => {
@@ -204,15 +214,14 @@ export const createConversation = asyncHandler(async (req, res) => {
     conversation,
   })
 
-  // Notifica todos os participantes, inclusive o criador,
-  // para permitir que as listas de conversas sejam atualizadas.
+  // Atualiza a lista de conversas de cada participante.
   for (const participant of conversation.participants || []) {
     const participantId =
       typeof participant === 'object' && participant?._id
         ? String(participant._id)
         : String(participant)
 
-    emitToUser(participantId, 'new_conversation', {
+    emitToInternalUser(participantId, 'new_conversation', {
       conversation,
     })
   }
@@ -300,10 +309,7 @@ export const sendMessage = asyncHandler(async (req, res) => {
     throw new AppError('Conversa não encontrada.', 404)
   }
 
-  // --------------------------------------------------------
-  // VALIDAÇÃO DO TIPO E DO CONTEÚDO
-  // --------------------------------------------------------
-
+  // Validação do tipo e do conteúdo.
   if (!['text', 'image', 'file'].includes(normalizedType)) {
     throw new AppError(
       'Tipo de mensagem inválido. Utilize text, image ou file.',
@@ -328,7 +334,7 @@ export const sendMessage = asyncHandler(async (req, res) => {
   }
 
   // --------------------------------------------------------
-  // ENVIO PELO WHATSAPP
+  // WHATSAPP — fluxo preservado
   // --------------------------------------------------------
 
   if (conversation.channel === 'whatsapp') {
@@ -356,8 +362,6 @@ export const sendMessage = asyncHandler(async (req, res) => {
       mentions: [],
     })
 
-    // Só emitimos a mensagem depois que o serviço conclui
-    // o envio ao provedor e retorna a mensagem persistida.
     emitToConversation(conversationId, 'new_message', {
       conversationId,
       message,
@@ -368,6 +372,7 @@ export const sendMessage = asyncHandler(async (req, res) => {
       conversation.assignedTo ||
       conversation.lead?.assignedTo
 
+    // Mantém o emissor original do fluxo WhatsApp.
     if (assignedTo && String(assignedTo) !== senderId) {
       emitToUser(assignedTo, 'new_message_notification', {
         conversationId,
@@ -388,7 +393,7 @@ export const sendMessage = asyncHandler(async (req, res) => {
   }
 
   // --------------------------------------------------------
-  // ENVIO PELO CHAT INTERNO
+  // CHAT INTERNO
   // --------------------------------------------------------
 
   if (conversation.channel !== 'internal') {
@@ -406,6 +411,7 @@ export const sendMessage = asyncHandler(async (req, res) => {
     isAdmin: isAdminUser(req.user),
   })
 
+  // Mensagem em tempo real para os sockets na sala da conversa.
   emitToConversation(conversationId, 'new_message', {
     conversationId,
     message,
@@ -417,10 +423,11 @@ export const sendMessage = asyncHandler(async (req, res) => {
       : String(participant),
   )
 
+  // Notificação individual para os outros participantes.
   for (const participantId of participantIds) {
     if (participantId === senderId) continue
 
-    emitToUser(participantId, 'new_message_notification', {
+    emitToInternalUser(participantId, 'new_message_notification', {
       conversationId,
       message,
     })
@@ -435,7 +442,6 @@ export const sendMessage = asyncHandler(async (req, res) => {
 
 // ==========================================================
 // PATCH /api/chat/conversations/:conversationId/read
-// Marca a conversa como lida.
 // ==========================================================
 
 export const markAsRead = asyncHandler(async (req, res) => {
@@ -465,7 +471,6 @@ export const markAsRead = asyncHandler(async (req, res) => {
 
 // ==========================================================
 // PATCH /api/chat/messages/:messageId/read
-// Marca uma mensagem como lida.
 // ==========================================================
 
 export const markMessageAsRead = asyncHandler(async (req, res) => {
@@ -538,7 +543,7 @@ export const createBrokerChannel = asyncHandler(async (req, res) => {
         ? String(participant._id)
         : String(participant)
 
-    emitToUser(participantId, 'new_conversation', {
+    emitToInternalUser(participantId, 'new_conversation', {
       conversation,
     })
   }
@@ -639,7 +644,7 @@ export const addBrokerToChannel = asyncHandler(async (req, res) => {
     conversation,
   })
 
-  emitToUser(brokerId, 'new_conversation', {
+  emitToInternalUser(brokerId, 'new_conversation', {
     conversation,
   })
 

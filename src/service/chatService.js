@@ -872,7 +872,9 @@ export const createBrokerChannel = async ({
     throw new AppError('O criador do canal é obrigatório.', 400)
   }
 
-  const creator = await User.findById(createdBy).select('_id role isAdmin')
+  const creator = await User.findById(createdBy).select(
+    '_id role isAdmin isActive',
+  )
 
   if (!creator) {
     throw new AppError('Usuário criador não encontrado.', 404)
@@ -885,7 +887,8 @@ export const createBrokerChannel = async ({
     )
   }
 
-  const uniqueParticipants = [
+  // Busca os participantes informados, além do criador.
+  const requestedIds = [
     ...new Set(
       [...participants, createdBy]
         .filter(Boolean)
@@ -893,13 +896,35 @@ export const createBrokerChannel = async ({
     ),
   ]
 
+  if (requestedIds.some((id) => !mongoose.Types.ObjectId.isValid(id))) {
+    throw new AppError('Um ou mais participantes são inválidos.', 400)
+  }
+
+  // Por padrão, canais de corretores incluem todos os corretores
+  // e administradores ativos, não apenas quem criou o canal.
+  const eligibleUsers = await User.find({
+    isActive: { $ne: false },
+    $or: [{ role: 'broker' }, { role: 'admin' }, { isAdmin: true }],
+  }).select('_id role isAdmin isActive')
+
+  const eligibleIds = new Set(eligibleUsers.map((user) => String(user._id)))
+
+  // Mantém o criador e os participantes elegíveis explicitamente
+  // selecionados, sem duplicações.
+  const uniqueParticipants = [
+    ...new Set([
+      ...eligibleUsers.map((user) => String(user._id)),
+      ...requestedIds.filter((id) => eligibleIds.has(id)),
+    ]),
+  ]
+
+  if (!uniqueParticipants.includes(String(creator._id))) {
+    uniqueParticipants.push(String(creator._id))
+  }
+
   const users = await User.find({
     _id: { $in: uniqueParticipants },
   }).select('_id role isAdmin')
-
-  if (users.length !== uniqueParticipants.length) {
-    throw new AppError('Um ou mais participantes não foram encontrados.', 404)
-  }
 
   const invalidParticipants = users.filter(
     (user) => user.role !== 'broker' && !isAdminUser(user),
@@ -914,10 +939,12 @@ export const createBrokerChannel = async ({
 
   if (uniqueParticipants.length < 2) {
     throw new AppError(
-      'O canal precisa ter pelo menos dois participantes.',
+      'Não existem participantes suficientes para criar o canal. Cadastre ou ative pelo menos mais um corretor.',
       400,
     )
   }
+
+  const unreadCounts = new Map(uniqueParticipants.map((id) => [id, 0]))
 
   const conversation = await Conversation.create({
     participants: uniqueParticipants,
@@ -927,7 +954,7 @@ export const createBrokerChannel = async ({
     lastMessage: '',
     lastMessageAt: null,
     lastMessageFrom: null,
-    unreadCounts: new Map(),
+    unreadCounts,
     isActive: true,
     isBrokerChannel: true,
     createdBy: creator._id,

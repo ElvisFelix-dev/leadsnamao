@@ -1,6 +1,7 @@
 import mongoose from 'mongoose'
 
 import Lead from '../models/Lead.js'
+import { notifyManagers, notifyUsers } from './notifications/notificationService.js'
 import Property from '../models/Property.js'
 import User from '../models/User.js'
 
@@ -442,6 +443,73 @@ const buildLeadData = ({
 }
 
 // ======================================================
+// NOTIFICAÇÕES DE NOVOS LEADS
+// ======================================================
+
+export const notifyLeadCreated = async (leadLike, { pendingDistribution, assignedTo: assignedToOverride } = {}) => {
+  const lead = leadLike?.toObject ? leadLike.toObject() : leadLike
+  const leadId = lead?._id || lead?.id
+  if (!leadId) return
+
+  const leadName = lead.name || 'Novo lead'
+  const link = `/leads/${leadId}`
+
+  console.info(`[LeadService] Evento de novo lead iniciado: leadId=${leadId}`)
+
+  try {
+    await notifyManagers({
+      type: 'lead.new',
+      title: 'Novo lead recebido',
+      message: `O lead ${leadName} foi recebido no CRM.`,
+      link,
+      entityType: 'Lead',
+      entityId: leadId,
+      priority: 'normal',
+      dedupeKey: `lead-new:${leadId}`,
+    })
+    console.info(`[LeadService] Processamento da notificação de novo lead concluído: leadId=${leadId}`)
+  } catch (error) {
+    console.error('[LeadService] Não foi possível notificar gestores sobre novo lead:', error.message)
+  }
+
+  const assignedToId = assignedToOverride?._id || assignedToOverride || lead.assignedTo?._id || lead.assignedTo
+  if (assignedToId) {
+    try {
+      await notifyUsers([assignedToId], {
+        type: 'lead.assigned',
+        title: 'Novo lead atribuído',
+        message: `O lead ${leadName} está sob sua responsabilidade.`,
+        link,
+        entityType: 'Lead',
+        entityId: leadId,
+        priority: 'high',
+        dedupeKey: `lead-assigned:${leadId}:${assignedToId}`,
+      })
+    } catch (error) {
+      console.error('[LeadService] Não foi possível notificar corretor do lead:', error.message)
+    }
+  }
+
+  const isPending = pendingDistribution ?? (lead.awaitingAssignment === true || !assignedToId)
+  if (isPending) {
+    try {
+      await notifyManagers({
+        type: 'lead.pending_distribution',
+        title: 'Lead aguardando distribuição',
+        message: `O lead ${leadName} ainda precisa ser distribuído.`,
+        link,
+        entityType: 'Lead',
+        entityId: leadId,
+        priority: 'high',
+        dedupeKey: `lead-pending-distribution:${leadId}`,
+      })
+    } catch (error) {
+      console.error('[LeadService] Não foi possível notificar lead pendente:', error.message)
+    }
+  }
+}
+
+// ======================================================
 // CREATE
 // ======================================================
 
@@ -455,6 +523,7 @@ export const createLead = async (data) => {
   const lead = new Lead(payload)
 
   await lead.save()
+  await notifyLeadCreated(lead)
 
   return populateLead(lead)
 }
@@ -472,6 +541,7 @@ export const publicCreateLead = async (data) => {
       sourceType: data.sourceType || 'company_site',
     }),
   )
+  await notifyLeadCreated(lead)
 
   return populateLead(lead)
 }
@@ -488,6 +558,7 @@ export const createLeadFromSource = async (data, source = 'manual') => {
       sourceType: data.sourceType || source,
     }),
   )
+  await notifyLeadCreated(lead)
 
   return populateLead(lead)
 }
@@ -983,6 +1054,7 @@ export const createBrokerHotsiteLead = async (data) => {
   })
 
   await lead.save()
+  await notifyLeadCreated(lead, { pendingDistribution: false, assignedTo: broker._id })
   await populateLead(lead)
 
   return normalizeLead(lead)

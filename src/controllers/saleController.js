@@ -1,3 +1,4 @@
+import { notifyManagers, notifyUsers } from '../service/notifications/notificationService.js'
 /*
 |--------------------------------------------------------------------------
 | SALE CONTROLLER
@@ -371,6 +372,35 @@ export const completeSaleController = async (req, res) => {
 
       notes,
     })
+
+    try {
+      const sellerBrokerId = sale?.sellerBroker?._id || sale?.sellerBroker
+      const saleLabel = sale?.saleNumber || String(sale?._id || saleId)
+      await Promise.all([
+        notifyUsers([sellerBrokerId], {
+          type: 'sale.completed',
+          title: 'Venda concluída',
+          message: `A venda ${saleLabel} foi concluída com sucesso.`,
+          link: `/sales/${sale?._id || saleId}`,
+          entityType: 'Sale',
+          entityId: sale?._id || saleId,
+          priority: 'high',
+          dedupeKey: `sale-completed-broker:${sale?._id || saleId}`,
+        }),
+        notifyManagers({
+          type: 'sale.completed',
+          title: 'Venda concluída',
+          message: `A venda ${saleLabel} foi concluída com sucesso.`,
+          link: `/sales/${sale?._id || saleId}`,
+          entityType: 'Sale',
+          entityId: sale?._id || saleId,
+          priority: 'high',
+          dedupeKey: `sale-completed-manager:${sale?._id || saleId}`,
+        }),
+      ])
+    } catch (notificationError) {
+      console.error('[SaleController] Falha ao criar notificação de venda concluída:', notificationError.message)
+    }
 
     return res.status(200).json({
       success: true,

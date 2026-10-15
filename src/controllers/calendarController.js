@@ -1,3 +1,4 @@
+import { notifyManagers, notifyUsers } from '../service/notifications/notificationService.js'
 import {
   createCalendarEvent,
   getCalendarEvents,
@@ -87,6 +88,37 @@ export const createCalendarEventController = async (req, res) => {
       body: req.body,
       user: req.user,
     })
+
+    try {
+      const brokerId = event?.broker?._id || event?.broker
+      const eventTitle = event?.title || 'Compromisso agendado'
+      const eventDate = event?.date ? new Date(event.date).toLocaleString('pt-BR') : ''
+      const link = `/calendar/${event?._id}`
+      await Promise.all([
+        notifyUsers([brokerId], {
+          type: 'calendar.event_created',
+          title: 'Compromisso agendado',
+          message: `${eventTitle}${eventDate ? ` — ${eventDate}` : ''}.`,
+          link,
+          entityType: 'Visit',
+          entityId: event?._id,
+          priority: 'normal',
+          dedupeKey: `calendar-event-broker:${event?._id}`,
+        }),
+        notifyManagers({
+          type: 'calendar.event_created',
+          title: 'Novo compromisso na agenda',
+          message: `${eventTitle}${eventDate ? ` — ${eventDate}` : ''}.`,
+          link,
+          entityType: 'Visit',
+          entityId: event?._id,
+          priority: 'normal',
+          dedupeKey: `calendar-event-manager:${event?._id}`,
+        }),
+      ])
+    } catch (notificationError) {
+      console.error('[CalendarController] Falha ao criar notificação de compromisso:', notificationError.message)
+    }
 
     return res.status(201).json({
       success: true,

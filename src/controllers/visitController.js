@@ -1,3 +1,4 @@
+import { notifyManagers, notifyUsers } from '../service/notifications/notificationService.js'
 import asyncHandler from '../middleware/asyncHandler.js'
 
 import { createVisitService } from '../service/visit/createVisitService.js'
@@ -22,6 +23,36 @@ export const createVisit = asyncHandler(async (req, res) => {
     body: req.body,
     user: req.user,
   })
+
+  try {
+    const brokerId = visit?.broker?._id || visit?.broker
+    const visitTitle = visit?.title || 'Visita agendada'
+    const visitDate = visit?.date ? new Date(visit.date).toLocaleString('pt-BR') : ''
+    await Promise.all([
+      notifyUsers([brokerId], {
+        type: 'visit.scheduled',
+        title: 'Nova visita agendada',
+        message: `${visitTitle}${visitDate ? ` — ${visitDate}` : ''}.`,
+        link: `/visits/${visit?._id}`,
+        entityType: 'Visit',
+        entityId: visit?._id,
+        priority: 'normal',
+        dedupeKey: `visit-scheduled-broker:${visit?._id}`,
+      }),
+      notifyManagers({
+        type: 'visit.scheduled',
+        title: 'Visita agendada',
+        message: `${visitTitle}${visitDate ? ` — ${visitDate}` : ''}.`,
+        link: `/visits/${visit?._id}`,
+        entityType: 'Visit',
+        entityId: visit?._id,
+        priority: 'normal',
+        dedupeKey: `visit-scheduled-manager:${visit?._id}`,
+      }),
+    ])
+  } catch (notificationError) {
+    console.error('[VisitController] Falha ao criar notificação de visita:', notificationError.message)
+  }
 
   res.status(201).json({
     success: true,

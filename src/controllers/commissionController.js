@@ -1,3 +1,4 @@
+import { notifyManagers, notifyUsers } from '../service/notifications/notificationService.js'
 import Commission from '../models/Commission.js'
 import CommissionService from '../service/commissionService.js'
 
@@ -199,6 +200,40 @@ export const payCommission = async (req, res, next) => {
     if (paymentProof) {
       commission.paymentProof = paymentProof
       await commission.save()
+    }
+
+    try {
+      const fullCommission = await Commission.findById(commission._id)
+        .populate('sellerBroker', 'name')
+        .populate('capturerBroker', 'name')
+        .populate('sale', 'saleNumber')
+      const beneficiaries = [fullCommission?.sellerBroker?._id, fullCommission?.capturerBroker?._id].filter(Boolean)
+      const amount = Number(fullCommission?.totalAmount || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+      const saleLabel = fullCommission?.sale?.saleNumber || String(fullCommission?.sale?._id || '')
+      await Promise.all([
+        notifyUsers(beneficiaries, {
+          type: 'commission.paid',
+          title: 'Comissão paga',
+          message: `Sua comissão de ${amount} foi marcada como paga${saleLabel ? ` (venda ${saleLabel})` : ''}.`,
+          link: `/commissions/${commission._id}`,
+          entityType: 'Commission',
+          entityId: commission._id,
+          priority: 'high',
+          dedupeKey: `commission-paid:${commission._id}`,
+        }),
+        notifyManagers({
+          type: 'commission.paid',
+          title: 'Comissão paga',
+          message: `Uma comissão de ${amount} foi marcada como paga${saleLabel ? ` (venda ${saleLabel})` : ''}.`,
+          link: `/commissions/${commission._id}`,
+          entityType: 'Commission',
+          entityId: commission._id,
+          priority: 'normal',
+          dedupeKey: `commission-paid-manager:${commission._id}`,
+        }),
+      ])
+    } catch (notificationError) {
+      console.error('[CommissionController] Falha ao criar notificação de pagamento:', notificationError.message)
     }
 
     res.json({

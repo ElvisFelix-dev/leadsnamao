@@ -18,7 +18,7 @@ import {
   reassignLead,
 } from '../service/leadDistributionService.js'
 
-import { createBrokerHotsiteLead } from '../service/leadService.js'
+import { createBrokerHotsiteLead, notifyLeadCreated } from '../service/leadService.js'
 
 import { getUserById } from '../service/users/userService.js'
 
@@ -132,6 +132,11 @@ export const createLead = asyncHandler(async (req, res) => {
       createdBy: req.user?._id,
     })
 
+    await notifyLeadCreated(distribution.lead || lead, {
+      pendingDistribution: !distribution.assignedTo,
+      assignedTo: distribution.assignedTo?._id || distribution.assignedTo,
+    })
+
     console.log('============================================')
     console.log('📌 DISTRIBUIÇÃO AUTOMÁTICA CONCLUÍDA')
     console.log('Lead:', distribution.lead?._id || lead._id)
@@ -169,6 +174,7 @@ export const createLead = asyncHandler(async (req, res) => {
     })
   } catch (error) {
     console.error('⚠️ Erro na distribuição automática do lead:', error.message)
+    await notifyLeadCreated(lead, { pendingDistribution: true })
 
     // O lead continua criado e poderá ser processado posteriormente
     return res.status(201).json({

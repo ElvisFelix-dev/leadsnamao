@@ -28,8 +28,10 @@ import orchestratorRoutes from './routes/orchestratorRoutes.js'
 import webhookRoutes from './routes/webhookRoutes.js'
 import chatRoutes from './routes/chatRoutes.js' // 🔥 CHAT
 import whatsappRoutes from './routes/whatsappRoutes.js'
+import notificationRoutes from './routes/notificationRoutes.js'
 
 import './jobs/processLeadQueue.js'
+import { processVisitReminders } from './jobs/processVisitReminders.js'
 
 // Importação de middlewares
 import errorMiddleware from './middleware/errorMiddleware.js'
@@ -117,6 +119,7 @@ app.get('/test-server', (req, res) => {
 // ROTAS DA API
 // ============================================
 app.use('/api/users', userRoutes)
+app.use('/api/notifications', notificationRoutes)
 app.use('/api/brokers', brokerRoutes)
 app.use('/api/properties', propertyRoutes)
 app.use('/api/leads', leadRoutes)
@@ -235,6 +238,13 @@ const startServer = async () => {
     }
   })
   console.log('⏰ MongoDB Ping agendado para cada 6 horas.')
+
+  // Lembretes de visitas/compromissos: verifica a cada 5 minutos.
+  cron.schedule('*/5 * * * *', async () => {
+    if (mongoose.connection.readyState !== 1) return
+    await processVisitReminders()
+  })
+  console.log('⏰ Lembretes de visitas agendados para verificação a cada 5 minutos.')
 
   // ============================================
   // INICIA O SERVIDOR

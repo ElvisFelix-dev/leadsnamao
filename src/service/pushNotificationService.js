@@ -1,28 +1,33 @@
 import webpush from 'web-push'
 import User from '../models/User.js'
 
-const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY
-const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY
-const VAPID_SUBJECT =
-  process.env.VAPID_SUBJECT || 'mailto:contato@leadsnamao.com.br'
+let configuredPublicKey = null
+let configuredPrivateKey = null
 
-if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
-  console.warn('[PushNotificationService] VAPID keys não configuradas.')
-} else {
-  webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY)
-}
+const getVapidConfig = () => ({
+  publicKey: process.env.VAPID_PUBLIC_KEY,
+  privateKey: process.env.VAPID_PRIVATE_KEY,
+  subject: process.env.VAPID_SUBJECT || 'mailto:contato@leadsnamao.com.br',
+})
 
-/**
- * Envia uma notificação push para uma subscription específica.
- */
-export async function sendPushNotification(subscription, payload = {}) {
-  if (!subscription?.endpoint) {
-    throw new Error('Subscription push inválida.')
-  }
-
-  if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
+const ensureVapidConfigured = () => {
+  const { publicKey, privateKey, subject } = getVapidConfig()
+  if (!publicKey || !privateKey) {
     throw new Error('VAPID_PUBLIC_KEY e VAPID_PRIVATE_KEY não configuradas.')
   }
+  if (configuredPublicKey !== publicKey || configuredPrivateKey !== privateKey) {
+    webpush.setVapidDetails(subject, publicKey, privateKey)
+    configuredPublicKey = publicKey
+    configuredPrivateKey = privateKey
+  }
+  return { publicKey, privateKey }
+}
+
+export async function sendPushNotification(subscription, payload = {}) {
+  if (!subscription?.endpoint || !subscription?.keys?.p256dh || !subscription?.keys?.auth) {
+    throw new Error('Subscription push inválida.')
+  }
+  ensureVapidConfigured()
 
   const notificationPayload = JSON.stringify({
     title: payload.title || 'Leads Na Mão',
@@ -34,188 +39,134 @@ export async function sendPushNotification(subscription, payload = {}) {
     data: payload.data || {},
   })
 
-  try {
-    await webpush.sendNotification(subscription, notificationPayload)
-
-    return {
-      success: true,
-    }
-  } catch (error) {
-    console.error('[PushNotificationService] Erro ao enviar push:', error)
-
-    throw error
-  }
+  await webpush.sendNotification(subscription, notificationPayload)
+  return { success: true }
 }
 
-/**
- * Envia uma notificação para um usuário específico.
- */
 export async function sendPushToUser(userId, payload = {}) {
-  if (!userId) {
-    throw new Error('userId é obrigatório.')
+  if (!userId) throw new Error('userId é obrigatório.')
+
+  const user = await User.findById(userId).select('_id pushSubscriptions')
+  if (!user) throw new Error('Usuário não encontrado.')
+
+  const subscriptions = user.getPushSubscriptions
+    ? user.getPushSubscriptions()
+    : (user.pushSubscriptions || []).filter(
+        (item) => item?.endpoint && item?.keys?.p256dh && item?.keys?.auth,
+      )
+
+  if (!subscriptions.length) {
+    return { success: false, skipped: true, reason: 'USER_WITHOUT_PUSH_SUBSCRIPTION' }
   }
 
-  const user = await User.findById(userId).select('pushSubscription')
+  let sent = 0
+  let failed = 0
+  let removed = 0
 
-  if (!user) {
-    throw new Error('Usuário não encontrado.')
-  }
-
-  if (!user.pushSubscriptions?.endpoint) {
-    return {
-      success: false,
-      skipped: true,
-      reason: 'USER_WITHOUT_PUSH_SUBSCRIPTION',
-    }
-  }
-
-  try {
-    await sendPushNotification(user.pushSubscriptions, payload)
-
-    return {
-      success: true,
-      userId: user._id,
-    }
-  } catch (error) {
-    /**
-     * 404 / 410 normalmente indicam que a subscription
-     * deixou de ser válida.
-     *
-     * Nesse caso removemos a subscription do usuário.
-     */
-    if (error.statusCode === 404 || error.statusCode === 410) {
-      await User.findByIdAndUpdate(userId, {
-        $unset: {
-          pushSubscription: 1,
-        },
-      })
-
-      return {
-        success: false,
-        skipped: true,
-        reason: 'INVALID_PUSH_SUBSCRIPTION',
+  for (const subscription of subscriptions) {
+    try {
+      await sendPushNotification(subscription, payload)
+      sent += 1
+      if (user.touchPushSubscription) {
+        // Atualização de atividade sem interromper o envio se falhar.
+        await user.touchPushSubscription(subscription.endpoint).catch(() => {})
+      }
+    } catch (error) {
+      if (error.statusCode === 404 || error.statusCode === 410) {
+        if (user.removePushSubscription) {
+          await user.removePushSubscription(subscription.endpoint).catch(() => {})
+        } else {
+          user.pushSubscriptions = (user.pushSubscriptions || []).filter(
+            (item) => item.endpoint !== subscription.endpoint,
+          )
+          await user.save().catch(() => {})
+        }
+        removed += 1
+      } else {
+        failed += 1
+        console.error('[PushNotificationService] Erro ao enviar push:', error.message)
       }
     }
+  }
 
-    throw error
+  return {
+    success: sent > 0 && failed === 0,
+    userId: String(user._id),
+    sent,
+    failed,
+    removed,
+    skipped: sent === 0 && failed === 0,
+    ...(sent === 0 && failed === 0 ? { reason: 'NO_VALID_PUSH_SUBSCRIPTION' } : {}),
   }
 }
 
-/**
- * Envia uma notificação para vários usuários.
- */
 export async function sendPushToUsers(userIds = [], payload = {}) {
   if (!Array.isArray(userIds) || userIds.length === 0) {
-    return {
-      success: true,
-      sent: 0,
-      failed: 0,
-      skipped: 0,
-    }
+    return { success: true, sent: 0, failed: 0, skipped: 0 }
   }
 
-  const users = await User.find({
-    _id: { $in: userIds },
-    'pushSubscription.endpoint': {
-      $exists: true,
-    },
-  }).select('_id pushSubscription')
-
+  const ids = [...new Set(userIds.map((id) => String(id?._id || id)).filter(Boolean))]
+  const results = await Promise.allSettled(ids.map((id) => sendPushToUser(id, payload)))
   let sent = 0
   let failed = 0
   let skipped = 0
 
-  for (const user of users) {
-    try {
-      const result = await sendPushToUser(user._id, payload)
-
-      if (result.success) {
-        sent++
-      } else {
-        skipped++
-      }
-    } catch (error) {
-      failed++
-
-      console.error(
-        `[PushNotificationService] Erro ao enviar para ${user._id}:`,
-        error,
-      )
-    }
+  for (const result of results) {
+    if (result.status === 'rejected') failed += 1
+    else if (result.value.sent > 0) sent += result.value.sent
+    else skipped += 1
   }
 
-  skipped += userIds.length - users.length
-
-  return {
-    success: failed === 0,
-    sent,
-    failed,
-    skipped,
-  }
+  return { success: failed === 0, sent, failed, skipped }
 }
 
-/**
- * Salva/atualiza a subscription push do usuário.
- */
 export async function savePushSubscription(userId, subscription) {
-  if (!userId) {
-    throw new Error('userId é obrigatório.')
-  }
-
-  if (!subscription?.endpoint) {
+  if (!userId) throw new Error('userId é obrigatório.')
+  if (!subscription?.endpoint || !subscription?.keys?.p256dh || !subscription?.keys?.auth) {
     throw new Error('Subscription push inválida.')
   }
 
-  const user = await User.findByIdAndUpdate(
-    userId,
-    {
-      $set: {
-        pushSubscription: subscription,
-      },
-    },
-    {
-      new: true,
-      runValidators: true,
-    },
-  ).select('_id pushSubscription')
+  const user = await User.findById(userId)
+  if (!user) throw new Error('Usuário não encontrado.')
 
-  if (!user) {
-    throw new Error('Usuário não encontrado.')
+  if (typeof user.addPushSubscription === 'function') {
+    await user.addPushSubscription(subscription)
+  } else {
+    user.pushSubscriptions = user.pushSubscriptions || []
+    const index = user.pushSubscriptions.findIndex((item) => item.endpoint === subscription.endpoint)
+    const data = {
+      endpoint: subscription.endpoint,
+      expirationTime: subscription.expirationTime ?? null,
+      keys: { p256dh: subscription.keys.p256dh, auth: subscription.keys.auth },
+      lastUsedAt: new Date(),
+    }
+    if (index >= 0) user.pushSubscriptions[index] = { ...user.pushSubscriptions[index].toObject?.(), ...data }
+    else user.pushSubscriptions.push({ ...data, createdAt: new Date() })
+    await user.save()
   }
 
-  return user
+  return User.findById(userId).select('_id pushSubscriptions')
 }
 
-/**
- * Remove a subscription push do usuário.
- */
-export async function removePushSubscription(userId) {
-  if (!userId) {
-    throw new Error('userId é obrigatório.')
+export async function removePushSubscription(userId, endpoint) {
+  if (!userId) throw new Error('userId é obrigatório.')
+  const user = await User.findById(userId)
+  if (!user) throw new Error('Usuário não encontrado.')
+
+  if (typeof user.removePushSubscription === 'function') {
+    await user.removePushSubscription(endpoint)
+  } else {
+    user.pushSubscriptions = (user.pushSubscriptions || []).filter(
+      (subscription) => endpoint && subscription.endpoint !== endpoint,
+    )
+    await user.save()
   }
 
-  await User.findByIdAndUpdate(userId, {
-    $unset: {
-      pushSubscription: 1,
-    },
-  })
-
-  return {
-    success: true,
-  }
+  return { success: true }
 }
 
-/**
- * Retorna a chave pública VAPID.
- *
- * O frontend precisa dela para executar:
- *
- * pushManager.subscribe(...)
- */
 export function getVapidPublicKey() {
-  if (!VAPID_PUBLIC_KEY) {
-    throw new Error('VAPID_PUBLIC_KEY não configurada.')
-  }
-
-  return VAPID_PUBLIC_KEY
+  const { publicKey, privateKey } = getVapidConfig()
+  if (!publicKey || !privateKey) throw new Error('Chaves VAPID não configuradas.')
+  return publicKey
 }

@@ -1,3 +1,4 @@
+import { notifyManagers, notifyUsers } from '../service/notifications/notificationService.js'
 import proposalService from '../service/proposalService.js'
 
 /*
@@ -8,6 +9,10 @@ import proposalService from '../service/proposalService.js'
 
 const getUser = (req) => {
   return req.user
+}
+
+const notifyWithoutBlocking = async (callback, label) => {
+  try { await callback() } catch (error) { console.error(`[ProposalController] ${label}:`, error.message) }
 }
 
 const sendSuccess = ({
@@ -132,6 +137,17 @@ export const submitProposal = async (req, res) => {
       user: getUser(req),
     })
 
+    await notifyWithoutBlocking(() => notifyManagers({
+      type: 'proposal.pending_approval',
+      title: 'Proposta aguardando aprovação',
+      message: `A proposta ${proposal.proposalNumber || proposal._id} precisa da análise do gestor.`,
+      link: `/proposals/${proposal._id}`,
+      entityType: 'Proposal',
+      entityId: proposal._id,
+      priority: 'high',
+      dedupeKey: `proposal-pending-approval:${proposal._id}`,
+    }), 'Falha ao notificar aprovação pendente')
+
     return sendSuccess({
       res,
       statusCode: 200,
@@ -163,6 +179,17 @@ export const approveProposal = async (req, res) => {
       comment: req.body?.comment || '',
     })
 
+    await notifyWithoutBlocking(() => notifyUsers([proposal.broker?._id || proposal.broker], {
+      type: 'proposal.approved',
+      title: 'Proposta aprovada',
+      message: `A proposta ${proposal.proposalNumber || proposal._id} foi aprovada pelo gestor.`,
+      link: `/proposals/${proposal._id}`,
+      entityType: 'Proposal',
+      entityId: proposal._id,
+      priority: 'high',
+      dedupeKey: `proposal-approved:${proposal._id}`,
+    }), 'Falha ao notificar proposta aprovada')
+
     return sendSuccess({
       res,
       statusCode: 200,
@@ -193,6 +220,17 @@ export const rejectProposal = async (req, res) => {
       user: getUser(req),
       reason: req.body?.reason,
     })
+
+    await notifyWithoutBlocking(() => notifyUsers([proposal.broker?._id || proposal.broker], {
+      type: 'proposal.rejected',
+      title: 'Proposta rejeitada',
+      message: `A proposta ${proposal.proposalNumber || proposal._id} foi rejeitada pelo gestor.`,
+      link: `/proposals/${proposal._id}`,
+      entityType: 'Proposal',
+      entityId: proposal._id,
+      priority: 'high',
+      dedupeKey: `proposal-rejected:${proposal._id}`,
+    }), 'Falha ao notificar proposta rejeitada')
 
     return sendSuccess({
       res,

@@ -127,10 +127,46 @@ const buildPaginationResponse = ({ page, limit, total }) => {
 */
 
 const populateProposal = (query) => {
-  return query.populate(PROPOSAL_POPULATE).populate({
-    path: 'property',
-    model: Property,
-  })
+  const userFields = [
+    'name',
+    'fullName',
+    'email',
+    'phone',
+    'telephone',
+    'mobile',
+    'whatsapp',
+    'position',
+    'jobTitle',
+    'title',
+    'role',
+    'cargo',
+    'avatar',
+    'avatarUrl',
+    'photo',
+    'photoUrl',
+    'profileImage',
+    'profilePicture',
+    'picture',
+    'image',
+    'imageUrl',
+  ].join(' ')
+
+  return query
+    .populate(PROPOSAL_POPULATE)
+    .populate({
+      path: 'broker',
+      model: User,
+      select: userFields,
+    })
+    .populate({
+      path: 'createdBy',
+      model: User,
+      select: userFields,
+    })
+    .populate({
+      path: 'property',
+      model: Property,
+    })
 }
 
 /*

@@ -18,7 +18,10 @@ import {
   reassignLead,
 } from '../service/leadDistributionService.js'
 
-import { createBrokerHotsiteLead, notifyLeadCreated } from '../service/leadService.js'
+import {
+  createBrokerHotsiteLead,
+  notifyLeadCreated,
+} from '../service/leadService.js'
 
 import { getUserById } from '../service/users/userService.js'
 

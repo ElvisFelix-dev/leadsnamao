@@ -4,6 +4,7 @@ import Lead from '../models/Lead.js'
 import User from '../models/User.js'
 import Property from '../models/Property.js'
 import AppError from '../utils/AppError.js'
+import { scheduleLeadFollowUps } from './leadFollowUpScheduler.js'
 
 /* ============================================================
    CONFIGURAÇÕES
@@ -26,6 +27,28 @@ const DISTRIBUTION_CONFIG = {
   },
 }
 
+/**
+ * Inicia a sequência somente depois de o lead estar atribuído.
+ * Falhas no follow-up não desfazem uma distribuição já concluída.
+ */
+async function scheduleFollowUpsAfterAssignment(lead) {
+  if (!lead?._id || !lead.assignedTo || lead.stage !== 'novo_lead') return
+
+  try {
+    const result = await scheduleLeadFollowUps({ leadId: lead._id })
+    if (result?.skipped) {
+      console.info(
+        `[LeadDistribution] Follow-up não agendado para ${lead._id}: ${result.reason}`,
+      )
+    }
+  } catch (error) {
+    console.error(
+      `[LeadDistribution] Erro ao agendar follow-up do lead ${lead._id}:`,
+      error.message,
+    )
+  }
+}
+
 /* ============================================================
    FUNÇÃO PRINCIPAL - DISTRIBUIR LEAD
 ============================================================ */
@@ -36,10 +59,6 @@ export async function autoDistributeLead(leadData) {
   try {
     const { leadId, propertyId, region, type, createdBy } = leadData
 
-    // ============================================
-    // 1. Validar leadId
-    // ============================================
-
     if (!leadId) {
       throw new AppError('ID do lead é obrigatório para distribuição.', 400)
     }
@@ -48,15 +67,7 @@ export async function autoDistributeLead(leadData) {
       throw new AppError('ID do lead inválido.', 400)
     }
 
-    // ============================================
-    // 2. Iniciar transação
-    // ============================================
-
     session.startTransaction()
-
-    // ============================================
-    // 3. Buscar o lead
-    // ============================================
 
     const lead = await Lead.findById(leadId).session(session)
 
@@ -64,9 +75,25 @@ export async function autoDistributeLead(leadData) {
       throw new AppError('Lead não encontrado.', 404)
     }
 
-    // ============================================
-    // 4. Verificar se já foi distribuído
-    // ============================================
+    if (lead.followUpAutomation?.status === 'active') {
+      console.log(`Lead ${leadId} mantido sem distribuição: follow-up ativo.`)
+
+      await session.abortTransaction()
+
+      return {
+        success: false,
+        message: 'Lead aguardando resposta durante follow-up ativo.',
+        lead,
+        assignedTo: null,
+        inQueue: false,
+        followUpActive: true,
+        matchMethod: null,
+      }
+    }
+
+    /* ============================================
+       4. Verificar se já foi distribuído
+    ============================================ */
 
     if (lead.isDistributed || lead.assignedTo) {
       console.log(`⚠️ Lead ${leadId} já foi distribuído.`)
@@ -83,15 +110,35 @@ export async function autoDistributeLead(leadData) {
       }
     }
 
-    // ============================================
-    // 5. Determinar região e tipo
-    // ============================================
+    /* ============================================
+       4.1. Proteger leads em follow-up ativo
+    ============================================ */
+
+    if (lead.followUpAutomation?.status === 'active') {
+      console.log(
+        `⏸️ Lead ${leadId} mantido sem distribuição: follow-up ativo.`,
+      )
+
+      await session.abortTransaction()
+
+      return {
+        success: false,
+        message: 'Lead aguardando resposta durante follow-up ativo.',
+        lead,
+        assignedTo: null,
+        inQueue: false,
+        followUpActive: true,
+        matchMethod: null,
+      }
+    }
+
+    /* ============================================
+       5. Determinar região e tipo
+    ============================================ */
 
     let leadRegion = region || lead.region || null
     let leadType = type || null
 
-    // Se o próprio lead possui uma propriedade,
-    // usamos ela caso propertyId não tenha sido enviado.
     const resolvedPropertyId = propertyId || lead.property || null
 
     if (resolvedPropertyId) {
@@ -100,18 +147,16 @@ export async function autoDistributeLead(leadData) {
 
       if (property) {
         leadRegion = property.location?.region || leadRegion
-
         leadType = property.type || leadType
       }
     }
 
     console.log(`📍 Região definida: ${leadRegion || 'não informada'}`)
-
     console.log(`🏠 Tipo definido: ${leadType || 'não informado'}`)
 
-    // ============================================
-    // 6. Encontrar o melhor corretor
-    // ============================================
+    /* ============================================
+       6. Encontrar o melhor corretor
+    ============================================ */
 
     const assignedBroker = await findBestBroker({
       region: leadRegion,
@@ -119,36 +164,24 @@ export async function autoDistributeLead(leadData) {
       session,
     })
 
-    // ============================================
-    // 7. Nenhum corretor disponível
-    // ============================================
+    /* ============================================
+       7. Nenhum corretor disponível
+    ============================================ */
 
     if (!assignedBroker) {
       console.log('⚠️ Nenhum corretor disponível para distribuição.')
 
-      /**
-       * A transação atual não será utilizada
-       * para colocar o lead na fila.
-       */
       await session.abortTransaction()
 
-      /**
-       * Como a transação foi encerrada, fazemos
-       * o update fora da sessão.
-       */
       const queuedLead = await Lead.findByIdAndUpdate(
         leadId,
         {
           $set: {
             awaitingAssignment: true,
-
             'distribution.status': 'queue',
-
             'distribution.lastAttemptAt': new Date(),
-
             'distribution.isAutoDistributed': false,
           },
-
           $inc: {
             'distribution.attempts': 1,
           },
@@ -162,22 +195,17 @@ export async function autoDistributeLead(leadData) {
 
       return {
         success: false,
-
         message: 'Nenhum corretor disponível. Lead em fila de espera.',
-
         lead: queuedLead || lead,
-
         assignedTo: null,
-
         inQueue: true,
-
         matchMethod: null,
       }
     }
 
-    // ============================================
-    // 8. Atribuir lead ao corretor
-    // ============================================
+    /* ============================================
+       8. Atribuir lead ao corretor
+    ============================================ */
 
     await assignLeadToBroker({
       leadId,
@@ -186,9 +214,9 @@ export async function autoDistributeLead(leadData) {
       method: assignedBroker.matchMethod,
     })
 
-    // ============================================
-    // 9. Atualizar lead
-    // ============================================
+    /* ============================================
+       9. Atualizar lead
+    ============================================ */
 
     const now = new Date()
 
@@ -197,32 +225,19 @@ export async function autoDistributeLead(leadData) {
       {
         $set: {
           assignedTo: assignedBroker._id,
-
           isDistributed: true,
-
           distributedAt: now,
-
           awaitingAssignment: false,
-
           assignmentType: assignedBroker.matchMethod,
-
           assignedAt: now,
-
           'distribution.method': assignedBroker.matchMethod,
-
           'distribution.status': 'success',
-
           'distribution.isAutoDistributed': true,
-
           'distribution.distributedAt': now,
-
           'distribution.matchScore': assignedBroker.matchScore || 0,
-
           'distribution.region': leadRegion || null,
-
           'distribution.lastAttemptAt': now,
         },
-
         $inc: {
           'distribution.attempts': 1,
         },
@@ -233,10 +248,6 @@ export async function autoDistributeLead(leadData) {
       },
     ).populate('assignedTo', 'name email phone position')
 
-    // ============================================
-    // 10. Validar atualização
-    // ============================================
-
     if (!updatedLead) {
       throw new AppError(
         'Não foi possível atualizar o lead após a distribuição.',
@@ -244,17 +255,17 @@ export async function autoDistributeLead(leadData) {
       )
     }
 
-    // ============================================
-    // 11. Confirmar transação
-    // ============================================
+    /* ============================================
+       10. Confirmar transação
+    ============================================ */
 
     await session.commitTransaction()
 
     console.log(`✅ Lead ${leadId} distribuído para ${assignedBroker.name}`)
 
-    // ============================================
-    // 12. Registrar histórico
-    // ============================================
+    /* ============================================
+       11. Registrar histórico
+    ============================================ */
 
     try {
       await addAssignmentHistory({
@@ -266,43 +277,25 @@ export async function autoDistributeLead(leadData) {
         matchScore: assignedBroker.matchScore || 0,
       })
     } catch (historyError) {
-      /**
-       * O lead já foi distribuído e a transação
-       * já foi confirmada.
-       *
-       * Portanto, erro no histórico não desfaz
-       * a distribuição.
-       */
       console.error(
         `⚠️ Lead ${leadId} distribuído, mas houve erro ao registrar histórico:`,
         historyError.message,
       )
     }
 
-    // ============================================
-    // 13. Retorno
-    // ============================================
+    // A sequência começa somente depois de confirmar a atribuição.
+    await scheduleFollowUpsAfterAssignment(updatedLead)
 
     return {
       success: true,
-
       message: 'Lead distribuído com sucesso.',
-
       lead: updatedLead,
-
       assignedTo: updatedLead.assignedTo || null,
-
       broker: assignedBroker,
-
       matchMethod: assignedBroker.matchMethod,
-
       inQueue: false,
     }
   } catch (error) {
-    // ============================================
-    // Rollback
-    // ============================================
-
     if (session.inTransaction()) {
       await session.abortTransaction()
     }
@@ -311,10 +304,6 @@ export async function autoDistributeLead(leadData) {
 
     throw error
   } finally {
-    // ============================================
-    // Encerrar sessão
-    // ============================================
-
     await session.endSession()
   }
 }
@@ -330,10 +319,6 @@ async function findBestBroker({ region, type, session }) {
     }, tipo: ${type || 'não informado'}`,
   )
 
-  // ============================================
-  // Buscar corretores ativos
-  // ============================================
-
   let brokers = await User.find({
     role: 'broker',
     isActive: true,
@@ -344,10 +329,6 @@ async function findBestBroker({ region, type, session }) {
     .lean()
 
   console.log(`📊 Total de corretores encontrados: ${brokers.length}`)
-
-  // ============================================
-  // Fallback
-  // ============================================
 
   if (brokers.length === 0) {
     console.log('⚠️ Nenhum corretor encontrado com brokerSettings.isActive.')
@@ -365,7 +346,6 @@ async function findBestBroker({ region, type, session }) {
 
   if (brokers.length === 0) {
     console.log('⚠️ Nenhum corretor ativo encontrado.')
-
     return null
   }
 
@@ -377,10 +357,6 @@ async function findBestBroker({ region, type, session }) {
 ============================================================ */
 
 async function selectBestBroker(brokers, region) {
-  // ============================================
-  // 1. Filtrar capacidade
-  // ============================================
-
   const availableBrokers = brokers.filter((broker) => {
     const activeLeads = broker.leadCounters?.activeLeads || 0
 
@@ -393,7 +369,6 @@ async function selectBestBroker(brokers, region) {
 
   if (availableBrokers.length === 0) {
     console.log('⚠️ Todos os corretores estão com capacidade máxima.')
-
     return null
   }
 
@@ -401,14 +376,9 @@ async function selectBestBroker(brokers, region) {
     `✅ ${availableBrokers.length} corretores com capacidade disponível.`,
   )
 
-  // ============================================
-  // 2. Prioridade por região
-  // ============================================
-
   if (region) {
     const specializedBrokers = availableBrokers.filter((broker) => {
       const regions = broker.brokerSettings?.specializedRegions || []
-
       return regions.includes(region)
     })
 
@@ -421,17 +391,11 @@ async function selectBestBroker(brokers, region) {
 
       return {
         ...bestSpecialized,
-
         matchMethod: 'specialized',
-
         matchScore: 100,
       }
     }
   }
-
-  // ============================================
-  // 3. Round-robin
-  // ============================================
 
   const roundRobinBroker = getNextInQueue(availableBrokers)
 
@@ -442,16 +406,10 @@ async function selectBestBroker(brokers, region) {
 
     return {
       ...roundRobinBroker,
-
       matchMethod: 'round_robin',
-
       matchScore: 50,
     }
   }
-
-  // ============================================
-  // 4. Menor número de leads
-  // ============================================
 
   const brokerWithLeastLeads = getBrokerWithLeastLeads(availableBrokers)
 
@@ -459,9 +417,7 @@ async function selectBestBroker(brokers, region) {
 
   return {
     ...brokerWithLeastLeads,
-
     matchMethod: 'automatic',
-
     matchScore: 30,
   }
 }
@@ -473,7 +429,6 @@ async function selectBestBroker(brokers, region) {
 function getBrokerWithLeastLeads(brokers) {
   return brokers.reduce((min, broker) => {
     const currentLeads = broker.leadCounters?.activeLeads || 0
-
     const minLeads = min.leadCounters?.activeLeads || 0
 
     return currentLeads < minLeads ? broker : min
@@ -487,7 +442,6 @@ function getBrokerWithLeastLeads(brokers) {
 function getNextInQueue(brokers) {
   const sorted = [...brokers].sort((a, b) => {
     const posA = a.leadCounters?.leadQueuePosition || 0
-
     const posB = b.leadCounters?.leadQueuePosition || 0
 
     return posA - posB
@@ -505,10 +459,6 @@ async function assignLeadToBroker({ leadId, brokerId, session, method }) {
     throw new AppError('Lead e corretor são obrigatórios para atribuição.', 400)
   }
 
-  // ============================================
-  // Verificar corretor
-  // ============================================
-
   const broker = await User.findOne({
     _id: brokerId,
     role: 'broker',
@@ -521,21 +471,14 @@ async function assignLeadToBroker({ leadId, brokerId, session, method }) {
     throw new AppError('Corretor não encontrado ou inativo.', 404)
   }
 
-  // ============================================
-  // Atualizar métricas do corretor
-  // ============================================
-
   await User.findByIdAndUpdate(
     brokerId,
     {
       $inc: {
         'leadCounters.totalAssigned': 1,
-
         'leadCounters.activeLeads': 1,
-
         'leadCounters.leadQueuePosition': 1,
       },
-
       $set: {
         'leadCounters.lastLeadReceivedAt': new Date(),
       },
@@ -564,7 +507,7 @@ async function addAssignmentHistory({
 }) {
   if (!leadId || !brokerId) {
     console.error(
-      '❌ Não foi possível registrar histórico: leadId ou brokerId ausente.',
+      '❌ Não foi possível registrar histórico: leadId ou corretor ausente.',
     )
 
     return
@@ -574,24 +517,16 @@ async function addAssignmentHistory({
     $push: {
       assignmentHistory: {
         to: brokerId,
-
         from: null,
-
         type: method,
-
         changedBy: userId || null,
-
         distributionMethod: method,
-
         region: region || '',
-
         matchScore: matchScore || 0,
-
         isAuto:
           method === 'automatic' ||
           method === 'round_robin' ||
           method === 'specialized',
-
         createdAt: new Date(),
       },
     },
@@ -604,29 +539,33 @@ async function addAssignmentHistory({
 
 export async function processPendingLeads() {
   /**
-   * IMPORTANTE:
-   *
    * Não abrimos uma transação aqui.
    *
-   * autoDistributeLead() já possui sua própria
-   * transação. Abrir outra transação aqui e chamar
-   * autoDistributeLead() dentro dela poderia causar
-   * conflitos entre sessões/transações.
+   * autoDistributeLead() já possui sua própria transação.
+   * Abrir outra transação poderia causar conflitos.
    */
 
   try {
     const pendingLeads = await Lead.find({
       isDistributed: false,
 
-      assignedTo: {
-        $exists: false,
+      // Compatibilidade com documentos sem assignedTo
+      // e documentos que possuem assignedTo: null.
+      $or: [{ assignedTo: { $exists: false } }, { assignedTo: null }],
+
+      // Não distribuir enquanto a sequência estiver ativa.
+      'followUpAutomation.status': {
+        $ne: 'active',
       },
 
       'distribution.attempts': {
         $lt: DISTRIBUTION_CONFIG.maxAttempts,
       },
 
-      isDeleted: false,
+      // Inclui documentos antigos sem isDeleted.
+      isDeleted: {
+        $ne: true,
+      },
 
       status: {
         $nin: ['convertido', 'perdido', 'arquivado'],
@@ -645,54 +584,46 @@ export async function processPendingLeads() {
     for (const lead of pendingLeads) {
       try {
         let region = lead.region || null
-
         let type = null
 
-        // ============================================
-        // Buscar propriedade
-        // ============================================
+        /* ============================================
+           Buscar propriedade
+        ============================================ */
 
         if (lead.property) {
           const property = await Property.findById(lead.property)
 
           if (property) {
             region = property.location?.region || region
-
             type = property.type || null
           }
         }
 
-        // ============================================
-        // Distribuir
-        // ============================================
+        /* ============================================
+           Distribuir
+        ============================================ */
 
         const result = await autoDistributeLead({
           leadId: lead._id,
-
           propertyId: lead.property || null,
-
           region,
-
           type,
-
           createdBy: null,
         })
 
         results.push({
           leadId: lead._id,
-
           success: result.success,
-
           assignedTo: result.assignedTo?._id || null,
-
           inQueue: result.inQueue || false,
+          followUpActive: result.followUpActive || false,
         })
       } catch (error) {
         console.error(`❌ Erro ao distribuir lead ${lead._id}:`, error)
 
-        // ============================================
-        // Registrar erro
-        // ============================================
+        /* ============================================
+           Registrar erro
+        ============================================ */
 
         try {
           await Lead.findByIdAndUpdate(lead._id, {
@@ -702,7 +633,6 @@ export async function processPendingLeads() {
 
             $set: {
               'distribution.lastAttemptAt': new Date(),
-
               'distribution.errorMessage': error.message,
             },
           })
@@ -715,24 +645,26 @@ export async function processPendingLeads() {
 
         results.push({
           leadId: lead._id,
-
           success: false,
-
           error: error.message,
         })
       }
     }
 
-    // ============================================
-    // Estatísticas
-    // ============================================
+    /* ============================================
+       Estatísticas
+    ============================================ */
 
     const successCount = results.filter((result) => result.success).length
 
     const queueCount = results.filter((result) => result.inQueue).length
 
     const errorCount = results.filter(
-      (result) => !result.success && !result.inQueue,
+      (result) => !result.success && !result.inQueue && !result.followUpActive,
+    ).length
+
+    const followUpCount = results.filter(
+      (result) => result.followUpActive,
     ).length
 
     console.log(
@@ -740,20 +672,16 @@ export async function processPendingLeads() {
     )
 
     console.log(`⏳ ${queueCount} leads enviados para fila.`)
-
+    console.log(`⏸️ ${followUpCount} leads protegidos por follow-up.`)
     console.log(`❌ ${errorCount} leads apresentaram erro.`)
 
     return {
       success: true,
-
       totalProcessed: pendingLeads.length,
-
       distributed: successCount,
-
       queued: queueCount,
-
+      followUpActive: followUpCount,
       errors: errorCount,
-
       results,
     }
   } catch (error) {
@@ -771,9 +699,9 @@ export async function reassignLead(leadId, reason, userId) {
   const session = await mongoose.startSession()
 
   try {
-    // ============================================
-    // Validar leadId
-    // ============================================
+    /* ============================================
+       Validar leadId
+    ============================================ */
 
     if (!leadId) {
       throw new AppError('ID do lead é obrigatório.', 400)
@@ -783,15 +711,15 @@ export async function reassignLead(leadId, reason, userId) {
       throw new AppError('ID do lead inválido.', 400)
     }
 
-    // ============================================
-    // Iniciar transação
-    // ============================================
+    /* ============================================
+       Iniciar transação
+    ============================================ */
 
     session.startTransaction()
 
-    // ============================================
-    // Buscar lead
-    // ============================================
+    /* ============================================
+       Buscar lead
+    ============================================ */
 
     const lead = await Lead.findById(leadId).session(session)
 
@@ -799,9 +727,9 @@ export async function reassignLead(leadId, reason, userId) {
       throw new AppError('Lead não encontrado.', 404)
     }
 
-    // ============================================
-    // Remover corretor anterior
-    // ============================================
+    /* ============================================
+       Remover corretor anterior
+    ============================================ */
 
     const previousBroker = lead.assignedTo
 
@@ -819,37 +747,30 @@ export async function reassignLead(leadId, reason, userId) {
       )
     }
 
-    // ============================================
-    // Resetar lead
-    // ============================================
+    /* ============================================
+       Resetar lead
+    ============================================ */
 
     lead.assignedTo = null
-
     lead.isDistributed = false
-
     lead.distributedAt = null
-
     lead.awaitingAssignment = true
-
     lead.assignmentType = 'manual'
 
     lead.distribution.status = 'pending'
-
     lead.distribution.isAutoDistributed = false
-
     lead.distribution.attempts = (lead.distribution.attempts || 0) + 1
 
     lead.distribution.lastAttemptAt = new Date()
-
     lead.distribution.reason = reason || 'Reatribuição manual'
 
     await lead.save({
       session,
     })
 
-    // ============================================
-    // Commit
-    // ============================================
+    /* ============================================
+       Confirmar transação
+    ============================================ */
 
     await session.commitTransaction()
 
@@ -860,31 +781,23 @@ export async function reassignLead(leadId, reason, userId) {
     )
 
     /**
-     * IMPORTANTE:
-     *
-     * A sessão anterior precisa ser encerrada
-     * antes de iniciar a nova distribuição.
+     * Encerrar a sessão anterior antes de iniciar
+     * a nova distribuição.
      */
+
     await session.endSession()
 
-    // ============================================
-    // Redistribuir
-    // ============================================
+    /* ============================================
+       Redistribuir
+    ============================================ */
 
     return await autoDistributeLead({
       leadId,
-
       propertyId: lead.property || null,
-
       region: lead.region || null,
-
       createdBy: userId || null,
     })
   } catch (error) {
-    // ============================================
-    // Rollback
-    // ============================================
-
     if (session.inTransaction()) {
       await session.abortTransaction()
     }
@@ -893,19 +806,13 @@ export async function reassignLead(leadId, reason, userId) {
 
     throw error
   } finally {
-    /**
-     * Caso a sessão ainda esteja aberta,
-     * garantimos o encerramento.
-     */
-    if (session) {
-      try {
-        await session.endSession()
-      } catch (sessionError) {
-        console.error(
-          '⚠️ Erro ao encerrar sessão de reatribuição:',
-          sessionError.message,
-        )
-      }
+    try {
+      await session.endSession()
+    } catch (sessionError) {
+      console.error(
+        '⚠️ Erro ao encerrar sessão de reatribuição:',
+        sessionError.message,
+      )
     }
   }
 }

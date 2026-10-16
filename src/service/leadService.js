@@ -1,7 +1,12 @@
 import mongoose from 'mongoose'
 
+import { scheduleLeadFollowUps } from './leadFollowUpScheduler.js'
+
 import Lead from '../models/Lead.js'
-import { notifyManagers, notifyUsers } from './notifications/notificationService.js'
+import {
+  notifyManagers,
+  notifyUsers,
+} from './notifications/notificationService.js'
 import Property from '../models/Property.js'
 import User from '../models/User.js'
 
@@ -446,7 +451,10 @@ const buildLeadData = ({
 // NOTIFICAÇÕES DE NOVOS LEADS
 // ======================================================
 
-export const notifyLeadCreated = async (leadLike, { pendingDistribution, assignedTo: assignedToOverride } = {}) => {
+export const notifyLeadCreated = async (
+  leadLike,
+  { pendingDistribution, assignedTo: assignedToOverride } = {},
+) => {
   const lead = leadLike?.toObject ? leadLike.toObject() : leadLike
   const leadId = lead?._id || lead?.id
   if (!leadId) return
@@ -467,12 +475,21 @@ export const notifyLeadCreated = async (leadLike, { pendingDistribution, assigne
       priority: 'normal',
       dedupeKey: `lead-new:${leadId}`,
     })
-    console.info(`[LeadService] Processamento da notificação de novo lead concluído: leadId=${leadId}`)
+    console.info(
+      `[LeadService] Processamento da notificação de novo lead concluído: leadId=${leadId}`,
+    )
   } catch (error) {
-    console.error('[LeadService] Não foi possível notificar gestores sobre novo lead:', error.message)
+    console.error(
+      '[LeadService] Não foi possível notificar gestores sobre novo lead:',
+      error.message,
+    )
   }
 
-  const assignedToId = assignedToOverride?._id || assignedToOverride || lead.assignedTo?._id || lead.assignedTo
+  const assignedToId =
+    assignedToOverride?._id ||
+    assignedToOverride ||
+    lead.assignedTo?._id ||
+    lead.assignedTo
   if (assignedToId) {
     try {
       await notifyUsers([assignedToId], {
@@ -486,11 +503,15 @@ export const notifyLeadCreated = async (leadLike, { pendingDistribution, assigne
         dedupeKey: `lead-assigned:${leadId}:${assignedToId}`,
       })
     } catch (error) {
-      console.error('[LeadService] Não foi possível notificar corretor do lead:', error.message)
+      console.error(
+        '[LeadService] Não foi possível notificar corretor do lead:',
+        error.message,
+      )
     }
   }
 
-  const isPending = pendingDistribution ?? (lead.awaitingAssignment === true || !assignedToId)
+  const isPending =
+    pendingDistribution ?? (lead.awaitingAssignment === true || !assignedToId)
   if (isPending) {
     try {
       await notifyManagers({
@@ -504,8 +525,37 @@ export const notifyLeadCreated = async (leadLike, { pendingDistribution, assigne
         dedupeKey: `lead-pending-distribution:${leadId}`,
       })
     } catch (error) {
-      console.error('[LeadService] Não foi possível notificar lead pendente:', error.message)
+      console.error(
+        '[LeadService] Não foi possível notificar lead pendente:',
+        error.message,
+      )
     }
+  }
+}
+
+/**
+ * Agenda follow-ups apenas para leads no estágio inicial que já tenham
+ * um corretor atribuído. O status não é usado como critério de elegibilidade.
+ */
+const scheduleFollowUpsSafely = async (leadLike) => {
+  const lead = leadLike?.toObject ? leadLike.toObject() : leadLike
+
+  if (!lead?._id) return
+  if (lead.stage !== LEAD_STAGES.NEW) return
+  if (!lead.assignedTo) return
+
+  try {
+    const result = await scheduleLeadFollowUps({ leadId: lead._id })
+    if (result?.skipped) {
+      console.info(
+        `[LeadService] Follow-up não agendado para ${lead._id}: ${result.reason}`,
+      )
+    }
+  } catch (error) {
+    console.error(
+      `[LeadService] Erro ao agendar follow-up do lead ${lead._id}:`,
+      error.message,
+    )
   }
 }
 
@@ -523,6 +573,7 @@ export const createLead = async (data) => {
   const lead = new Lead(payload)
 
   await lead.save()
+  await scheduleFollowUpsSafely(lead)
   await notifyLeadCreated(lead)
 
   return populateLead(lead)
@@ -541,6 +592,8 @@ export const publicCreateLead = async (data) => {
       sourceType: data.sourceType || 'company_site',
     }),
   )
+
+  await scheduleFollowUpsSafely(lead)
   await notifyLeadCreated(lead)
 
   return populateLead(lead)
@@ -558,6 +611,8 @@ export const createLeadFromSource = async (data, source = 'manual') => {
       sourceType: data.sourceType || source,
     }),
   )
+
+  await scheduleFollowUpsSafely(lead)
   await notifyLeadCreated(lead)
 
   return populateLead(lead)
@@ -840,6 +895,9 @@ export const updateLead = async ({ leadId, userId, isAdmin, data }) => {
     try {
       await lead.save()
       console.log('✅ Lead atualizado com sucesso')
+      // Se a atribuição foi feita/alterada e o lead continua no estágio inicial,
+      // tenta iniciar a sequência sem bloquear a atualização do CRM.
+      await scheduleFollowUpsSafely(lead)
     } catch (saveError) {
       console.error('💥 ERRO NO SAVE:', {
         name: saveError.name,
@@ -881,6 +939,17 @@ export const assignLeads = async ({ leadIds, userId }) => {
     { _id: { $in: leadIds } },
     { $set: { assignedTo: userId } },
   )
+
+  // Atribuição em lote: agendar apenas os leads que ainda estão no estágio inicial.
+  const assignedLeads = await Lead.find({
+    _id: { $in: leadIds },
+    assignedTo: userId,
+    stage: LEAD_STAGES.NEW,
+  })
+
+  for (const lead of assignedLeads) {
+    await scheduleFollowUpsSafely(lead)
+  }
 
   return {
     modifiedCount: result.modifiedCount,
@@ -1054,7 +1123,11 @@ export const createBrokerHotsiteLead = async (data) => {
   })
 
   await lead.save()
-  await notifyLeadCreated(lead, { pendingDistribution: false, assignedTo: broker._id })
+  await scheduleFollowUpsSafely(lead)
+  await notifyLeadCreated(lead, {
+    pendingDistribution: false,
+    assignedTo: broker._id,
+  })
   await populateLead(lead)
 
   return normalizeLead(lead)

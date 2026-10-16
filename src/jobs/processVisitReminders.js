@@ -1,6 +1,9 @@
 import Visit from '../models/Visit.js'
 import { VISIT_STATUS } from '../constants/visitStatus.js'
-import { notifyManagers, notifyUsers } from '../service/notifications/notificationService.js'
+import {
+  notifyManagers,
+  notifyUsers,
+} from '../service/notifications/notificationService.js'
 
 let isRunning = false
 
@@ -21,7 +24,10 @@ export const processVisitReminders = async () => {
 
     let processed = 0
     for (const visit of visits) {
-      const minutesBefore = Math.max(0, Number(visit.reminder?.minutesBefore ?? 30))
+      const minutesBefore = Math.max(
+        0,
+        Number(visit.reminder?.minutesBefore ?? 30),
+      )
       const remainingMs = new Date(visit.date).getTime() - now.getTime()
       if (remainingMs > minutesBefore * 60 * 1000) continue
 
@@ -50,7 +56,10 @@ export const processVisitReminders = async () => {
 
     return { processed, checked: visits.length }
   } catch (error) {
-    console.error('[VisitReminders] Erro ao processar lembretes:', error.message)
+    console.error(
+      '[VisitReminders] Erro ao processar lembretes:',
+      error.message,
+    )
     return { processed: 0, error: error.message }
   } finally {
     isRunning = false

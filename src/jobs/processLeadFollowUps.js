@@ -1,0 +1,575 @@
+import LeadFollowUp from '../models/LeadFollowUp.js'
+import Lead from '../models/Lead.js'
+import Conversation from '../models/Conversation.js'
+import Message from '../models/Message.js'
+
+import { sendWhatsAppMessage } from '../service/chatService.js'
+import { autoDistributeLead } from '../service/leadDistributionService.js'
+
+import { LEAD_STATUS } from '../constants/leadStatus.js'
+import { LEAD_STAGES } from '../constants/leadStages.js'
+
+// ============================================================
+// CONFIGURAÇÕES
+// ============================================================
+
+const BATCH_SIZE = 20
+
+const TERMINAL_STATUSES = [LEAD_STATUS.CONVERTED, LEAD_STATUS.LOST]
+const TERMINAL_STAGES = [LEAD_STAGES.WON, LEAD_STAGES.LOST]
+
+// A simulação permanece ativada por padrão.
+const isDryRun = () =>
+  String(process.env.LEAD_FOLLOWUPS_DRY_RUN || 'true')
+    .trim()
+    .toLowerCase() !== 'false'
+
+// ============================================================
+// CONTROLE DE ESTADOS
+// ============================================================
+
+const cancelFollowUp = async (followUp, reason) => {
+  await LeadFollowUp.updateOne(
+    {
+      _id: followUp._id,
+      status: 'processing',
+    },
+    {
+      $set: {
+        status: 'cancelled',
+        cancelledAt: new Date(),
+        cancelReason: reason,
+        processingAt: null,
+        lastError: '',
+      },
+    },
+  )
+}
+
+const releaseFollowUp = async (followUp, errorMessage = '') => {
+  await LeadFollowUp.updateOne(
+    {
+      _id: followUp._id,
+      status: 'processing',
+    },
+    {
+      $set: {
+        status: 'pending',
+        processingAt: null,
+        lastError: errorMessage,
+      },
+    },
+  )
+}
+
+const failFollowUp = async (followUp, error) => {
+  const message = String(error?.message || error || 'Erro desconhecido')
+
+  await LeadFollowUp.updateOne(
+    {
+      _id: followUp._id,
+      status: 'processing',
+    },
+    {
+      $set: {
+        status: 'failed',
+        processingAt: null,
+        lastError: message,
+      },
+      $inc: {
+        attempts: 1,
+      },
+    },
+  )
+}
+
+// ============================================================
+// RESERVAR O PRÓXIMO FOLLOW-UP
+// ============================================================
+
+const claimNextFollowUp = async () => {
+  const now = new Date()
+
+  const candidate = await LeadFollowUp.findOne({
+    status: 'pending',
+    scheduledAt: { $lte: now },
+  })
+    .sort({
+      scheduledAt: 1,
+      createdAt: 1,
+    })
+    .select('_id')
+    .lean()
+
+  if (!candidate) {
+    return null
+  }
+
+  return LeadFollowUp.findOneAndUpdate(
+    {
+      _id: candidate._id,
+      status: 'pending',
+      scheduledAt: { $lte: now },
+    },
+    {
+      $set: {
+        status: 'processing',
+        processingAt: now,
+      },
+    },
+    {
+      new: true,
+    },
+  )
+}
+
+// ============================================================
+// VALIDAR LEAD, CONVERSA E INTEGRAÇÃO
+// ============================================================
+
+const getLeadAndConversation = async (followUp) => {
+  const lead = await Lead.findById(followUp.lead)
+    .select(
+      'name phone phoneNormalized status stage assignedTo lastContactAt followUpAutomation sourceType isDistributed property region',
+    )
+    .populate('assignedTo', '_id name role isAdmin')
+    .lean()
+
+  if (!lead) {
+    return {
+      reason: 'Lead inexistente ou excluído.',
+    }
+  }
+
+  if (
+    TERMINAL_STATUSES.includes(lead.status) ||
+    TERMINAL_STAGES.includes(lead.stage)
+  ) {
+    return {
+      reason: 'Lead convertido ou perdido; follow-up cancelado.',
+    }
+  }
+
+  const conversation = await Conversation.findOne({
+    channel: 'whatsapp',
+    lead: lead._id,
+    whatsappIntegration: followUp.integration,
+    isActive: true,
+  })
+    .populate('whatsappContact')
+    .populate('whatsappIntegration')
+    .populate('assignedTo', '_id name role isAdmin')
+    .lean()
+
+  if (!conversation) {
+    return {
+      error:
+        'Não foi encontrada uma conversa WhatsApp ativa para este lead e integração.',
+    }
+  }
+
+  const contact = conversation.whatsappContact
+  const integration = conversation.whatsappIntegration
+
+  if (!contact || contact.isActive === false) {
+    return {
+      error: 'Contato WhatsApp ausente ou inativo.',
+    }
+  }
+
+  if (!integration || integration.enabled !== true) {
+    return {
+      error: 'Integração WhatsApp desativada ou inexistente.',
+    }
+  }
+
+  if (integration.status !== 'connected') {
+    return {
+      error: 'A integração WhatsApp não está conectada.',
+    }
+  }
+
+  // Em simulação, um lead pode permanecer sem corretor.
+  // No envio real, a validação do remetente ocorre antes do envio.
+  const sender = conversation.assignedTo || lead.assignedTo || null
+
+  return {
+    lead,
+    conversation,
+    sender,
+  }
+}
+
+// ============================================================
+// VERIFICAR SE O LEAD RESPONDEU
+// ============================================================
+
+const hasLeadReplied = async (followUp, conversation) => {
+  const inboundReply = await Message.exists({
+    conversation: conversation._id,
+    direction: 'inbound',
+    senderType: 'whatsapp_contact',
+    isDeleted: { $ne: true },
+    createdAt: {
+      $gte: followUp.createdAt,
+    },
+  })
+
+  return Boolean(inboundReply)
+}
+
+// ============================================================
+// CANCELAR SEQUÊNCIA E LIBERAR DISTRIBUIÇÃO APÓS RESPOSTA
+// ============================================================
+
+const handleLeadReply = async (lead, reason) => {
+  const now = new Date()
+
+  // A condição impede que dois ciclos processem a mesma transição.
+  const updatedLead = await Lead.findOneAndUpdate(
+    {
+      _id: lead._id,
+      'followUpAutomation.status': 'active',
+    },
+    {
+      $set: {
+        'followUpAutomation.status': 'replied',
+        'followUpAutomation.repliedAt': now,
+      },
+    },
+    {
+      new: true,
+    },
+  )
+
+  // Cancela os itens ainda não enviados da sequência.
+  await LeadFollowUp.updateMany(
+    {
+      lead: lead._id,
+      status: {
+        $in: ['pending', 'processing', 'simulated', 'failed'],
+      },
+    },
+    {
+      $set: {
+        status: 'cancelled',
+        cancelledAt: now,
+        cancelReason: reason,
+        processingAt: null,
+      },
+    },
+  )
+
+  // Só a transição active -> replied inicia a distribuição.
+  if (!updatedLead) {
+    return {
+      distributed: false,
+      alreadyHandled: true,
+    }
+  }
+
+  // Preserva leads já atribuídos e leads captados pelo hotsite.
+  if (
+    updatedLead.assignedTo ||
+    updatedLead.isDistributed ||
+    updatedLead.sourceType === 'broker_hotsite'
+  ) {
+    return {
+      distributed: false,
+      alreadyHandled: false,
+    }
+  }
+
+  try {
+    const distributionResult = await autoDistributeLead({
+      leadId: updatedLead._id,
+      propertyId: updatedLead.property || null,
+      region: updatedLead.region || null,
+      createdBy: null,
+    })
+
+    return {
+      distributed: Boolean(distributionResult?.success),
+      distributionResult,
+    }
+  } catch (error) {
+    // A resposta fica registrada mesmo que a distribuição falhe.
+    // A fila normal de pendências poderá tentar novamente.
+    console.error(
+      `[LeadFollowUp] Resposta registrada, mas a distribuição falhou para ${lead._id}:`,
+      error.message,
+    )
+
+    return {
+      distributed: false,
+      distributionError: error.message,
+    }
+  }
+}
+
+// ============================================================
+// CONCLUIR SEQUÊNCIA NO D10
+// ============================================================
+
+const completeSequenceIfD10 = async (leadId, step) => {
+  if (step !== 'D10') {
+    return
+  }
+
+  await Lead.updateOne(
+    {
+      _id: leadId,
+      'followUpAutomation.status': 'active',
+    },
+    {
+      $set: {
+        'followUpAutomation.status': 'completed',
+        'followUpAutomation.completedAt': new Date(),
+      },
+    },
+  )
+
+  // Sem resposta, o lead permanece para acompanhamento administrativo.
+  // Não chamamos autoDistributeLead aqui.
+  console.log(
+    `[LeadFollowUp] Sequência D10 concluída para ${leadId}; manter para acompanhamento administrativo.`,
+  )
+}
+
+// ============================================================
+// PROCESSAR UM FOLLOW-UP
+// ============================================================
+
+const processOneFollowUp = async (followUp) => {
+  try {
+    const result = await getLeadAndConversation(followUp)
+
+    if (result.reason) {
+      await cancelFollowUp(followUp, result.reason)
+
+      return {
+        status: 'cancelled',
+        reason: result.reason,
+      }
+    }
+
+    if (result.error) {
+      // Permite nova tentativa quando a integração voltar.
+      await releaseFollowUp(followUp, result.error)
+
+      return {
+        status: 'pending',
+        reason: result.error,
+      }
+    }
+
+    const { lead, conversation, sender } = result
+
+    // Se o cliente respondeu, cancela a sequência inteira.
+    const replied = await hasLeadReplied(followUp, conversation)
+
+    if (replied) {
+      const reason = 'O lead respondeu durante a sequência de follow-up.'
+
+      const replyResult = await handleLeadReply(lead, reason)
+
+      // Protege também o registro que está sendo processado.
+      await cancelFollowUp(followUp, reason)
+
+      return {
+        status: 'cancelled',
+        reason,
+        distributed: replyResult.distributed,
+      }
+    }
+
+    const message = String(followUp.message || '').trim()
+
+    if (!message) {
+      const error = new Error('O texto do follow-up está vazio.')
+
+      await failFollowUp(followUp, error)
+
+      return {
+        status: 'failed',
+        reason: error.message,
+      }
+    }
+
+    // --------------------------------------------------------
+    // MODO DE SIMULAÇÃO
+    // --------------------------------------------------------
+
+    if (isDryRun()) {
+      console.log('[LeadFollowUp][SIMULAÇÃO]', {
+        followUpId: String(followUp._id),
+        leadId: String(lead._id),
+        leadName: lead.name,
+        step: followUp.step,
+        scheduledAt: followUp.scheduledAt,
+        conversationId: String(conversation._id),
+        integrationId: String(followUp.integration),
+        message,
+      })
+
+      // Não envia mensagem e não registra como enviada.
+      await LeadFollowUp.updateOne(
+        {
+          _id: followUp._id,
+          status: 'processing',
+        },
+        {
+          $set: {
+            status: 'simulated',
+            processingAt: null,
+            lastError: '',
+          },
+        },
+      )
+
+      await completeSequenceIfD10(lead._id, followUp.step)
+
+      return {
+        status: 'simulated',
+      }
+    }
+
+    // --------------------------------------------------------
+    // ENVIO REAL PELO SERVIÇO OFICIAL DO CHAT
+    // --------------------------------------------------------
+
+    if (!sender?._id) {
+      const errorMessage =
+        'Envio real bloqueado: não há corretor responsável para autorizar o envio pelo chat.'
+
+      await releaseFollowUp(followUp, errorMessage)
+
+      return {
+        status: 'pending',
+        reason: errorMessage,
+      }
+    }
+
+    await sendWhatsAppMessage({
+      conversationId: String(conversation._id),
+      senderId: String(sender._id),
+      content: message,
+      type: 'text',
+      attachment: null,
+      replyTo: null,
+      mentions: [],
+    })
+
+    // Registra o sucesso somente após o serviço de envio retornar.
+    await LeadFollowUp.updateOne(
+      {
+        _id: followUp._id,
+        status: 'processing',
+      },
+      {
+        $set: {
+          status: 'sent',
+          sentAt: new Date(),
+          processingAt: null,
+          lastError: '',
+        },
+        $inc: {
+          attempts: 1,
+        },
+      },
+    )
+
+    console.log('[LeadFollowUp] Mensagem enviada:', {
+      followUpId: String(followUp._id),
+      leadId: String(lead._id),
+      step: followUp.step,
+    })
+
+    await completeSequenceIfD10(lead._id, followUp.step)
+
+    return {
+      status: 'sent',
+    }
+  } catch (error) {
+    console.error('[LeadFollowUp] Erro ao processar acompanhamento:', {
+      followUpId: String(followUp._id),
+      message: error.message,
+    })
+
+    try {
+      await failFollowUp(followUp, error)
+    } catch (updateError) {
+      console.error(
+        '[LeadFollowUp] Falha ao atualizar estado:',
+        updateError.message,
+      )
+    }
+
+    return {
+      status: 'failed',
+      reason: error.message,
+    }
+  }
+}
+
+// ============================================================
+// EXECUÇÃO DO LOTE
+// ============================================================
+
+let isRunning = false
+
+export const processLeadFollowUps = async () => {
+  if (isRunning) {
+    return {
+      skipped: true,
+      reason: 'Processamento já em andamento neste processo.',
+    }
+  }
+
+  isRunning = true
+
+  const summary = {
+    processed: 0,
+    simulated: 0,
+    sent: 0,
+    cancelled: 0,
+    failed: 0,
+    pending: 0,
+  }
+
+  try {
+    for (let index = 0; index < BATCH_SIZE; index += 1) {
+      const followUp = await claimNextFollowUp()
+
+      if (!followUp) {
+        break
+      }
+
+      summary.processed += 1
+
+      const result = await processOneFollowUp(followUp)
+
+      if (result.status === 'simulated') {
+        summary.simulated += 1
+      } else if (result.status === 'sent') {
+        summary.sent += 1
+      } else if (result.status === 'cancelled') {
+        summary.cancelled += 1
+      } else if (result.status === 'failed') {
+        summary.failed += 1
+      } else if (result.status === 'pending') {
+        summary.pending += 1
+      }
+    }
+
+    if (summary.processed > 0) {
+      console.log('[LeadFollowUp] Resumo:', summary)
+    }
+
+    return summary
+  } finally {
+    isRunning = false
+  }
+}
+
+export default processLeadFollowUps

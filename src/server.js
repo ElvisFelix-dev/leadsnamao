@@ -32,6 +32,7 @@ import notificationRoutes from './routes/notificationRoutes.js'
 
 import './jobs/processLeadQueue.js'
 import { processVisitReminders } from './jobs/processVisitReminders.js'
+import { processLeadFollowUps } from './jobs/processLeadFollowUps.js'
 
 // Importação de middlewares
 import errorMiddleware from './middleware/errorMiddleware.js'
@@ -223,28 +224,71 @@ const startServer = async () => {
   // ============================================
   // TAREFAS AGENDADAS (CRON)
   // ============================================
+
+  // Ping do MongoDB a cada 6 horas.
   cron.schedule('0 */6 * * *', async () => {
     try {
-      if (mongoose.connection.readyState === 1) {
-        await mongoose.connection.db.admin().ping()
-        console.log(
-          `🏓 MongoDB Ping executado em ${new Date().toLocaleString('pt-BR')}`,
-        )
-      } else {
+      if (mongoose.connection.readyState !== 1) {
         console.warn('⚠️ MongoDB não está conectado para executar ping')
+        return
       }
+
+      await mongoose.connection.db.admin().ping()
+
+      console.log(
+        `🏓 MongoDB Ping executado em ${new Date().toLocaleString('pt-BR')}`,
+      )
     } catch (err) {
       console.error('❌ Erro ao executar MongoDB Ping:', err.message)
     }
   })
+
   console.log('⏰ MongoDB Ping agendado para cada 6 horas.')
 
-  // Lembretes de visitas/compromissos: verifica a cada 5 minutos.
+  // Lembretes de visitas/compromissos: a cada 5 minutos.
   cron.schedule('*/5 * * * *', async () => {
     if (mongoose.connection.readyState !== 1) return
-    await processVisitReminders()
+
+    try {
+      const result = await processVisitReminders()
+
+      if (result?.error) {
+        console.error(
+          '[VisitReminders] Processamento concluído com erro:',
+          result.error,
+        )
+      }
+    } catch (err) {
+      console.error('[VisitReminders] Erro inesperado no cron:', err.message)
+    }
   })
-  console.log('⏰ Lembretes de visitas agendados para verificação a cada 5 minutos.')
+
+  console.log(
+    '⏰ Lembretes de visitas agendados para verificação a cada 5 minutos.',
+  )
+
+  // Follow-ups: a cada 5 minutos.
+  // O processador deve manter LEAD_FOLLOWUPS_DRY_RUN=true
+  // enquanto estivermos validando o comportamento.
+  cron.schedule('*/5 * * * *', async () => {
+    if (mongoose.connection.readyState !== 1) {
+      console.warn('[LeadFollowUp] MongoDB indisponível; execução ignorada.')
+      return
+    }
+
+    try {
+      const result = await processLeadFollowUps()
+
+      console.log('[LeadFollowUp] Resultado do cron:', result)
+    } catch (err) {
+      console.error(
+        '[LeadFollowUp] Erro no processamento agendado:',
+        err.message,
+      )
+    }
+  })
+
+  console.log('⏰ Follow-ups agendados para verificação a cada 5 minutos.')
 
   // ============================================
   // INICIA O SERVIDOR

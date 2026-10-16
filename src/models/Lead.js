@@ -274,6 +274,27 @@ const leadSchema = new mongoose.Schema(
       index: true,
     },
 
+    followUpAutomation: {
+      status: {
+        type: String,
+        enum: ['inactive', 'active', 'replied', 'completed', 'cancelled'],
+        default: 'inactive',
+        index: true,
+      },
+      startedAt: {
+        type: Date,
+        default: null,
+      },
+      repliedAt: {
+        type: Date,
+        default: null,
+      },
+      completedAt: {
+        type: Date,
+        default: null,
+      },
+    },
+
     /*
     |--------------------------------------------------------------------------
     | ORIGEM

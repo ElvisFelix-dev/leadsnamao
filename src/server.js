@@ -1,4 +1,3 @@
-// src/server.js
 import express from 'express'
 import mongoose from 'mongoose'
 import dotenv from 'dotenv'
@@ -6,7 +5,9 @@ import cors from 'cors'
 import cron from 'node-cron'
 import { createServer } from 'http'
 
-// Importação das rotas
+// ============================================
+// IMPORTAÇÃO DAS ROTAS
+// ============================================
 import userRoutes from './routes/userRoutes.js'
 import brokerRoutes from './routes/brokerRoutes.js'
 import propertyRoutes from './routes/propertyRoutes.js'
@@ -26,27 +27,29 @@ import conversationRoutes from './routes/conversationRoutes.js'
 import commissonRoutes from './routes/commissionRoutes.js'
 import orchestratorRoutes from './routes/orchestratorRoutes.js'
 import webhookRoutes from './routes/webhookRoutes.js'
-import chatRoutes from './routes/chatRoutes.js' // 🔥 CHAT
+import chatRoutes from './routes/chatRoutes.js'
 import whatsappRoutes from './routes/whatsappRoutes.js'
 import notificationRoutes from './routes/notificationRoutes.js'
 
+// ============================================
+// JOBS
+// ============================================
 import './jobs/processLeadQueue.js'
 import { processVisitReminders } from './jobs/processVisitReminders.js'
 import { processLeadFollowUps } from './jobs/processLeadFollowUps.js'
 
-// Importação de middlewares
+// ============================================
+// MIDDLEWARES E SOCKET.IO
+// ============================================
 import errorMiddleware from './middleware/errorMiddleware.js'
-
-// Importação do Socket.io
 import { setupSocketIO } from './sockets/index.js'
-
-// 🔥 IMPORTAR SETUP DO CHAT SOCKET
 import { setupChatSocket } from './sockets/chatSocket.js'
 
-// Configuração de ambiente
+// ============================================
+// CONFIGURAÇÃO DE AMBIENTE
+// ============================================
 dotenv.config()
 
-// Validação de variáveis de ambiente OBRIGATÓRIAS
 const requiredEnv = ['MONGODB_URI', 'JWT_SECRET', 'WEBHOOK_VERIFY_TOKEN']
 
 const missingEnv = requiredEnv.filter((key) => !process.env[key])
@@ -55,9 +58,7 @@ if (missingEnv.length > 0) {
   console.error(
     `❌ Variáveis de ambiente obrigatórias faltando: ${missingEnv.join(', ')}`,
   )
-  console.error(
-    '⚠️ O servidor NÃO vai iniciar até que todas sejam configuradas!',
-  )
+  console.error('⚠️ O servidor não será iniciado.')
   process.exit(1)
 }
 
@@ -66,23 +67,23 @@ if (missingEnv.length > 0) {
 // ============================================
 const app = express()
 
-// Configuração de CORS dinâmico
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean)
   : ['http://localhost:3333', 'http://localhost:5173']
 
 const corsOptions = {
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true)
-
-    if (
-      allowedOrigins.indexOf(origin) !== -1 ||
-      process.env.NODE_ENV === 'development'
-    ) {
-      callback(null, true)
-    } else {
-      callback(new Error('❌ Não permitido pelo CORS'))
+  origin(origin, callback) {
+    if (!origin || process.env.NODE_ENV === 'development') {
+      return callback(null, true)
     }
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true)
+    }
+
+    return callback(new Error('❌ Não permitido pelo CORS'))
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   credentials: true,
@@ -90,30 +91,43 @@ const corsOptions = {
 }
 
 app.use(cors(corsOptions))
+
 app.use(
   express.json({
+    limit: '10mb',
     verify: (req, res, buf) => {
       req.rawBody = Buffer.from(buf)
     },
   }),
 )
+
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
 // ============================================
 // ROTAS PÚBLICAS
 // ============================================
 app.get('/health', (req, res) => {
-  res.status(200).json({
-    status: 'OK',
+  const readyState = mongoose.connection.readyState
+
+  const states = {
+    0: 'desconectado',
+    1: 'conectado',
+    2: 'conectando',
+    3: 'desconectando',
+  }
+
+  const isConnected = readyState === 1
+
+  res.status(isConnected ? 200 : 503).json({
+    status: isConnected ? 'OK' : 'DEGRADED',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    mongodb:
-      mongoose.connection.readyState === 1 ? 'conectado' : 'desconectado',
+    mongodb: states[readyState] || 'desconhecido',
   })
 })
 
 app.get('/test-server', (req, res) => {
-  res.send('🚀 Lead na Mão server running! ✅')
+  res.send('🚀 Leads Na Mão server running! ✅')
 })
 
 // ============================================
@@ -136,18 +150,10 @@ app.use('/api/proposals', proposalRoutes)
 app.use('/api/sales', saleRoutes)
 app.use('/api/calendar', calendarRoutes)
 app.use('/api/whatsapp', whatsappRoutes)
-
-// 🔥 ROTAS DE CONVERSA (JÁ EXISTENTES)
 app.use('/api/conversations', conversationRoutes)
-
-// 🔥 ROTAS DE CHAT (NOVAS)
 app.use('/api/chat', chatRoutes)
-
-// 🔥 ROTAS DE COMISSÃO E ORCHESTRATOR
 app.use('/api/commissions', commissonRoutes)
 app.use('/api/orchestrator', orchestratorRoutes)
-
-// 🔥 WEBHOOKS
 app.use('/api/webhooks', webhookRoutes)
 
 // ============================================
@@ -156,98 +162,135 @@ app.use('/api/webhooks', webhookRoutes)
 app.use(errorMiddleware)
 
 // ============================================
+// ESTADO DA CONEXÃO MONGODB
+// ============================================
+let connectionPromise = null
+let initialConnectionLogged = false
+let wasDisconnected = false
+
+// Registra os listeners uma única vez.
+// Não registre estes eventos dentro de connectDB().
+mongoose.connection.on('disconnected', () => {
+  if (!wasDisconnected) {
+    console.warn(
+      '⚠️ MongoDB desconectado. Aguardando recuperação da conexão...',
+    )
+  }
+
+  wasDisconnected = true
+})
+
+mongoose.connection.on('reconnected', () => {
+  wasDisconnected = false
+  console.log('🔄 MongoDB reconectado com sucesso!')
+})
+
+mongoose.connection.on('error', (err) => {
+  console.error('❌ Erro na conexão MongoDB:', err.message)
+})
+
+// ============================================
 // CONEXÃO COM MONGODB
 // ============================================
-const connectDB = async (retries = 5, delay = 5000) => {
-  try {
-    await mongoose.connect(process.env.MONGODB_URI, {
-      serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000,
-      maxPoolSize: 10,
-      minPoolSize: 2,
-    })
+const connectDB = async (maxRetries = 5, delay = 5000) => {
+  // Impede duas chamadas simultâneas de connectDB().
+  if (connectionPromise) {
+    return connectionPromise
+  }
 
-    console.log('📊 Conectado ao MongoDB com sucesso!')
-
-    mongoose.connection.on('disconnected', () => {
-      console.warn('⚠️ MongoDB desconectado. Tentando reconectar...')
-      setTimeout(() => connectDB(1, 1000), 1000)
-    })
-
-    mongoose.connection.on('error', (err) => {
-      console.error('❌ Erro na conexão MongoDB:', err.message)
-    })
-
-    mongoose.connection.on('reconnected', () => {
-      console.log('🔄 MongoDB reconectado com sucesso!')
-    })
-
+  // Se o Mongoose já estiver conectado, não conecta novamente.
+  if (mongoose.connection.readyState === 1) {
     return true
-  } catch (err) {
-    console.error(
-      `❌ Falha ao conectar ao MongoDB (tentativa ${retries}):`,
-      err.message,
-    )
+  }
 
-    if (retries > 0) {
-      console.log(`⏳ Tentando novamente em ${delay / 1000} segundos...`)
-      await new Promise((resolve) => setTimeout(resolve, delay))
-      return connectDB(retries - 1, delay)
-    } else {
-      console.error(
-        '❌ Número máximo de tentativas excedido. Servidor NÃO vai iniciar.',
-      )
-      process.exit(1)
+  connectionPromise = (async () => {
+    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+      try {
+        await mongoose.connect(process.env.MONGODB_URI, {
+          serverSelectionTimeoutMS: 10000,
+          socketTimeoutMS: 45000,
+          maxPoolSize: 10,
+          minPoolSize: 0,
+        })
+
+        wasDisconnected = false
+
+        if (!initialConnectionLogged) {
+          console.log('📊 Conectado ao MongoDB com sucesso!')
+          initialConnectionLogged = true
+        }
+
+        return true
+      } catch (err) {
+        console.error(
+          `❌ Falha ao conectar ao MongoDB (tentativa ${attempt + 1}/${maxRetries + 1}):`,
+          err.message,
+        )
+
+        if (attempt < maxRetries) {
+          console.log(
+            `⏳ Nova tentativa de conexão em ${delay / 1000} segundos...`,
+          )
+
+          await new Promise((resolve) => setTimeout(resolve, delay))
+        }
+      }
     }
+
+    throw new Error(
+      'Número máximo de tentativas de conexão com o MongoDB excedido.',
+    )
+  })()
+
+  try {
+    return await connectionPromise
+  } finally {
+    connectionPromise = null
   }
 }
 
 // ============================================
-// INICIALIZAÇÃO DO SERVIDOR
+// TAREFAS AGENDADAS
 // ============================================
-const startServer = async () => {
-  await connectDB()
+let cronJobsStarted = false
 
-  const httpServer = createServer(app)
+const startCronJobs = () => {
+  // Evita registrar os mesmos crons mais de uma vez.
+  if (cronJobsStarted) {
+    return
+  }
 
-  // ============================================
-  // 🔥 CONFIGURAÇÃO DO SOCKET.IO COM CHAT
-  // ============================================
-  const io = setupSocketIO(httpServer)
+  cronJobsStarted = true
 
-  // 🔥 CONFIGURAR SOCKET DO CHAT
-  setupChatSocket(io)
-
-  // Disponibiliza io para as rotas
-  app.set('io', io)
-
-  // ============================================
-  // TAREFAS AGENDADAS (CRON)
-  // ============================================
-
-  // Ping do MongoDB a cada 6 horas.
+  // ------------------------------------------
+  // PING DO MONGODB: A CADA 6 HORAS
+  // ------------------------------------------
   cron.schedule('0 */6 * * *', async () => {
-    try {
-      if (mongoose.connection.readyState !== 1) {
-        console.warn('⚠️ MongoDB não está conectado para executar ping')
-        return
-      }
+    if (mongoose.connection.readyState !== 1) {
+      console.warn('[MongoDB Ping] Banco indisponível; ping ignorado.')
+      return
+    }
 
+    try {
       await mongoose.connection.db.admin().ping()
 
       console.log(
         `🏓 MongoDB Ping executado em ${new Date().toLocaleString('pt-BR')}`,
       )
     } catch (err) {
-      console.error('❌ Erro ao executar MongoDB Ping:', err.message)
+      console.error('[MongoDB Ping] Erro:', err.message)
     }
   })
 
-  console.log('⏰ MongoDB Ping agendado para cada 6 horas.')
+  console.log('⏰ MongoDB Ping agendado a cada 6 horas.')
 
-  // Lembretes de visitas/compromissos: a cada 5 minutos.
+  // ------------------------------------------
+  // LEMBRETES DE VISITAS: A CADA 5 MINUTOS
+  // ------------------------------------------
   cron.schedule('*/5 * * * *', async () => {
-    if (mongoose.connection.readyState !== 1) return
+    if (mongoose.connection.readyState !== 1) {
+      return
+    }
 
     try {
       const result = await processVisitReminders()
@@ -263,13 +306,11 @@ const startServer = async () => {
     }
   })
 
-  console.log(
-    '⏰ Lembretes de visitas agendados para verificação a cada 5 minutos.',
-  )
+  console.log('⏰ Lembretes de visitas agendados a cada 5 minutos.')
 
-  // Follow-ups: a cada 5 minutos.
-  // O processador deve manter LEAD_FOLLOWUPS_DRY_RUN=true
-  // enquanto estivermos validando o comportamento.
+  // ------------------------------------------
+  // FOLLOW-UPS: A CADA 5 MINUTOS
+  // ------------------------------------------
   cron.schedule('*/5 * * * *', async () => {
     if (mongoose.connection.readyState !== 1) {
       console.warn('[LeadFollowUp] MongoDB indisponível; execução ignorada.')
@@ -288,51 +329,109 @@ const startServer = async () => {
     }
   })
 
-  console.log('⏰ Follow-ups agendados para verificação a cada 5 minutos.')
-
-  // ============================================
-  // INICIA O SERVIDOR
-  // ============================================
-  const PORT = process.env.PORT || 3333
-
-  httpServer.listen(PORT, () => {
-    console.log(`🚀 Servidor rodando em http://localhost:${PORT}`)
-    console.log(`🌍 Ambiente: ${process.env.NODE_ENV || 'development'}`)
-    console.log(
-      `📊 MongoDB: ${mongoose.connection.readyState === 1 ? 'Conectado ✅' : 'Desconectado ❌'}`,
-    )
-    console.log(`💬 Chat Socket: ${io ? 'Ativo ✅' : 'Inativo ❌'}`)
-  })
-
-  // Tratamento de encerramento gracioso
-  const gracefulShutdown = () => {
-    console.log('🛑 Recebido sinal de encerramento. Finalizando conexões...')
-
-    httpServer.close(async () => {
-      console.log('🛑 Servidor HTTP fechado')
-
-      try {
-        await mongoose.connection.close()
-        console.log('📊 Conexão MongoDB fechada')
-        process.exit(0)
-      } catch (err) {
-        console.error('❌ Erro ao fechar MongoDB:', err.message)
-        process.exit(1)
-      }
-    })
-
-    setTimeout(() => {
-      console.error(
-        '⏰ Tempo limite de encerramento excedido. Forçando saída...',
-      )
-      process.exit(1)
-    }, 10000)
-  }
-
-  process.on('SIGTERM', gracefulShutdown)
-  process.on('SIGINT', gracefulShutdown)
+  console.log('⏰ Follow-ups agendados a cada 5 minutos.')
 }
 
+// ============================================
+// INICIALIZAÇÃO DO SERVIDOR
+// ============================================
+let httpServer
+let isShuttingDown = false
+let shutdownTimeout
+
+const startServer = async () => {
+  // O servidor HTTP só inicia após a conexão inicial.
+  await connectDB()
+
+  httpServer = createServer(app)
+
+  const io = setupSocketIO(httpServer)
+  setupChatSocket(io)
+
+  app.set('io', io)
+
+  // Registra os crons uma única vez por processo.
+  startCronJobs()
+
+  const PORT = process.env.PORT || 3333
+
+  await new Promise((resolve, reject) => {
+    const onError = (err) => {
+      httpServer.off('listening', onListening)
+      reject(err)
+    }
+
+    const onListening = () => {
+      httpServer.off('error', onError)
+      resolve()
+    }
+
+    httpServer.once('error', onError)
+    httpServer.once('listening', onListening)
+    httpServer.listen(PORT)
+  })
+
+  console.log(`🚀 Servidor rodando na porta ${PORT}`)
+  console.log(`🌍 Ambiente: ${process.env.NODE_ENV || 'development'}`)
+  console.log('📊 MongoDB: Conectado ✅')
+  console.log(`💬 Chat Socket: ${io ? 'Ativo ✅' : 'Inativo ❌'}`)
+}
+
+// ============================================
+// ENCERRAMENTO GRACIOSO
+// ============================================
+const gracefulShutdown = async (signal) => {
+  if (isShuttingDown) {
+    return
+  }
+
+  isShuttingDown = true
+
+  console.log(`🛑 Sinal ${signal} recebido. Encerrando o servidor...`)
+
+  // Evita que o processo fique preso indefinidamente.
+  shutdownTimeout = setTimeout(() => {
+    console.error('⏰ Tempo limite de encerramento excedido. Forçando saída...')
+    process.exit(1)
+  }, 15000)
+
+  shutdownTimeout.unref()
+
+  try {
+    if (httpServer?.listening) {
+      await new Promise((resolve, reject) => {
+        httpServer.close((err) => {
+          if (err) return reject(err)
+          resolve()
+        })
+      })
+
+      console.log('🛑 Servidor HTTP fechado.')
+    }
+
+    // Encerra a conexão sem disparar outra tentativa manual.
+    if (mongoose.connection.readyState !== 0) {
+      await mongoose.connection.close()
+      console.log('📊 Conexão MongoDB fechada.')
+    }
+
+    if (shutdownTimeout) {
+      clearTimeout(shutdownTimeout)
+    }
+
+    process.exit(0)
+  } catch (err) {
+    console.error('❌ Erro durante o encerramento:', err.message)
+    process.exit(1)
+  }
+}
+
+process.once('SIGTERM', () => gracefulShutdown('SIGTERM'))
+process.once('SIGINT', () => gracefulShutdown('SIGINT'))
+
+// ============================================
+// TRATAMENTO DE ERRO NA INICIALIZAÇÃO
+// ============================================
 startServer().catch((err) => {
   console.error('❌ Erro fatal ao iniciar servidor:', err.message)
   process.exit(1)

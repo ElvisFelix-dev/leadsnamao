@@ -460,7 +460,7 @@ export const notifyLeadCreated = async (
   if (!leadId) return
 
   const leadName = lead.name || 'Novo lead'
-  const link = `/leads/${leadId}`
+  const link = `/leads-details/${leadId}`
 
   console.info(`[LeadService] Evento de novo lead iniciado: leadId=${leadId}`)
 

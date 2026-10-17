@@ -301,20 +301,55 @@ export async function createSiteLead(req, res) {
         req.body.referrer || req.headers.referer || req.headers.referrer || '',
     }
 
-    const result = await captureSiteLead(leadData)
+    // 1. Capturar o lead pelo site
+    const captureResult = await captureSiteLead(leadData)
 
-    const distribution = await tryDistributeLead(result, {
-      region: result.region || leadData.region || 'central',
-      createdBy: req.user?._id,
-    })
+    // O serviço retorna { created, duplicate, lead, ... }
+    // Precisamos usar o documento do lead, não o objeto externo.
+    const lead = captureResult?.lead || captureResult
 
-    return res.status(201).json({
+    // 2. Validar o ID antes de tentar distribuir
+    if (!lead?._id) {
+      console.error('[LeadCapture] Captura sem ID de lead:', captureResult)
+
+      throw new Error('A captura foi concluída sem retornar o ID do lead.')
+    }
+
+    let distribution
+
+    // 3. Não redistribuir contatos duplicados
+    if (captureResult?.duplicate === true || captureResult?.created === false) {
+      const assignedTo = lead.assignedTo || null
+
+      distribution = {
+        success: !!assignedTo,
+        assignedTo,
+        inQueue: !assignedTo,
+        message:
+          captureResult.message ||
+          'Este contato já foi registrado recentemente.',
+      }
+    } else {
+      // 4. Distribuir usando o documento correto
+      distribution = await tryDistributeLead(lead, {
+        region: lead.region || leadData.region || 'central',
+        createdBy: req.user?._id,
+      })
+    }
+
+    // 5. Responder ao frontend
+    const isDuplicate =
+      captureResult?.duplicate === true || captureResult?.created === false
+
+    return res.status(isDuplicate ? 200 : 201).json({
       success: true,
-      message: distribution.success
-        ? 'Solicitação recebida e distribuída com sucesso.'
-        : 'Solicitação recebida, aguardando distribuição.',
+      message:
+        captureResult.message ||
+        (distribution.success
+          ? 'Solicitação recebida e distribuída com sucesso.'
+          : 'Solicitação recebida, aguardando distribuição.'),
       data: {
-        lead: result,
+        lead,
         distribution: {
           success: distribution.success,
           assignedTo: distribution.assignedTo || null,

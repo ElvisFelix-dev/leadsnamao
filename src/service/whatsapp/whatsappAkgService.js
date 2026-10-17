@@ -1,22 +1,34 @@
 // src/service/whatsapp/whatsappAkgService.js
 
 import axios from 'axios'
+
 import crypto from 'crypto'
 
 import WhatsAppIntegration from '../../models/WhatsAppIntegration.js'
+
 import WhatsAppContact from '../../models/WhatsAppContact.js'
+
 import Conversation from '../../models/Conversation.js'
+import Message from '../../models/Message.js'
+
 import Lead from '../../models/Lead.js'
+
 import AppError from '../../utils/AppError.js'
+
 import { normalizePhone } from '../../utils/phone.js'
+
 import { getSocketIO } from '../../sockets/index.js'
+
 import * as chatService from '../chatService.js'
 
 import { LEAD_STATUS } from '../../constants/leadStatus.js'
+
 import { LEAD_STAGES } from '../../constants/leadStages.js'
 
 // ==========================================================
+
 // CONFIGURAÇÕES
+
 // ==========================================================
 
 const REQUEST_TIMEOUT = 20000
@@ -24,14 +36,19 @@ const REQUEST_TIMEOUT = 20000
 const ALLOWED_MEDIA_TYPES = ['image', 'file', 'gif']
 
 // ==========================================================
+
 // HELPERS
+
 // ==========================================================
 
 const normalizeBaseUrl = (url) => {
   // As rotas abaixo já incluem /api; aceite URL-base com ou sem esse sufixo.
+
   return String(url || '')
     .trim()
+
     .replace(/\/+$/, '')
+
     .replace(/\/api$/i, '')
 }
 
@@ -66,6 +83,7 @@ const validateHttpsUrl = (url) => {
   if (parsedUrl.protocol !== 'https:') {
     throw new AppError(
       'A mídia precisa estar disponível por uma URL HTTPS.',
+
       400,
     )
   }
@@ -113,7 +131,9 @@ const getIntegrationWithSecrets = async (integrationId = null) => {
   }
 
   const integration = await WhatsAppIntegration.findOne(query)
+
     .select('+apiKey +webhookSecret')
+
     .lean()
 
   if (!integration) {
@@ -123,6 +143,7 @@ const getIntegrationWithSecrets = async (integrationId = null) => {
   if (!integration.baseUrl || !integration.sessionId) {
     throw new AppError(
       'A integração não possui baseUrl ou sessionId configurado.',
+
       400,
     )
   }
@@ -133,6 +154,7 @@ const getIntegrationWithSecrets = async (integrationId = null) => {
 const getRequestHeaders = (integration) => {
   const headers = {
     'Content-Type': 'application/json',
+
     Accept: 'application/json',
   }
 
@@ -151,6 +173,7 @@ const updateIntegrationStatus = async (integrationId, status) => {
   } catch (error) {
     console.error(
       '[WA-AKG] Erro ao atualizar status da integração:',
+
       error.message,
     )
   }
@@ -158,8 +181,11 @@ const updateIntegrationStatus = async (integrationId, status) => {
 
 const requestProvider = async ({
   integration,
+
   method = 'POST',
+
   path,
+
   data,
 }) => {
   const baseUrl = normalizeBaseUrl(integration.baseUrl)
@@ -171,9 +197,13 @@ const requestProvider = async ({
   try {
     return await axios({
       method,
+
       url: `${baseUrl}${path}`,
+
       data,
+
       headers: getRequestHeaders(integration),
+
       timeout: REQUEST_TIMEOUT,
     })
   } catch (error) {
@@ -181,13 +211,17 @@ const requestProvider = async ({
 
     console.error('[WA-AKG] Erro na requisição:', {
       method,
+
       path,
+
       status: error?.response?.status,
+
       message,
     })
 
     throw new AppError(
       `Falha na comunicação com o WhatsApp: ${message}`,
+
       error?.response?.status >= 400 && error?.response?.status < 600
         ? error.response.status
         : 502,
@@ -196,20 +230,28 @@ const requestProvider = async ({
 }
 
 // ==========================================================
+
 // CONTATOS WHATSAPP
+
 // ==========================================================
 
 export const upsertWhatsAppContact = async ({
   integrationId,
+
   remoteJid,
+
   leadId,
+
   name = '',
+
   isGroup = false,
+
   metadata = {},
 }) => {
   if (!integrationId || !remoteJid || !leadId) {
     throw new AppError(
       'integrationId, remoteJid e leadId são obrigatórios.',
+
       400,
     )
   }
@@ -225,24 +267,37 @@ export const upsertWhatsAppContact = async ({
   const contact = await WhatsAppContact.findOneAndUpdate(
     {
       integration: integrationId,
+
       remoteJid: normalizedJid,
     },
+
     {
       $set: {
         lead: leadId,
+
         phone,
+
         phoneNormalized,
+
         name: name || undefined,
+
         isGroup,
+
         lastMessageAt: new Date(),
+
         isActive: true,
+
         metadata,
       },
     },
+
     {
       new: true,
+
       upsert: true,
+
       setDefaultsOnInsert: true,
+
       runValidators: true,
     },
   )
@@ -251,31 +306,41 @@ export const upsertWhatsAppContact = async ({
 }
 
 // ==========================================================
+
 // CONVERSAS WHATSAPP
+
 // ==========================================================
 
 export const upsertWhatsAppConversation = async ({
   whatsappContactId,
+
   integrationId,
+
   leadId,
+
   assignedTo = null,
+
   name = '',
 }) => {
   if (!whatsappContactId || !integrationId || !leadId) {
     throw new AppError(
       'Contato, integração e lead são obrigatórios para criar a conversa.',
+
       400,
     )
   }
 
   let conversation = await Conversation.findOne({
     channel: 'whatsapp',
+
     whatsappContact: whatsappContactId,
+
     isActive: true,
   })
 
   if (conversation) {
     conversation.whatsappIntegration = integrationId
+
     conversation.lead = leadId
 
     if (assignedTo) {
@@ -293,18 +358,31 @@ export const upsertWhatsAppConversation = async ({
 
   conversation = await Conversation.create({
     participants: [],
+
     channel: 'whatsapp',
+
     type: 'direct',
+
     name: name || '',
+
     lastMessage: '',
+
     lastMessageAt: null,
+
     lastMessageFrom: null,
+
     unreadCounts: new Map(),
+
     isActive: true,
+
     whatsappContact: whatsappContactId,
+
     whatsappIntegration: integrationId,
+
     lead: leadId,
+
     assignedTo,
+
     metadata: {
       provider: 'wa-akg',
     },
@@ -314,7 +392,9 @@ export const upsertWhatsAppConversation = async ({
 }
 
 // ==========================================================
+
 // INTEGRAÇÕES
+
 // ==========================================================
 
 export const createIntegration = async (payload) => {
@@ -325,18 +405,25 @@ export const createIntegration = async (payload) => {
 
 export const listIntegrations = async () => {
   return WhatsAppIntegration.find()
+
     .select('-apiKey -webhookSecret')
+
     .sort({ createdAt: -1 })
+
     .lean()
 }
 
 // ==========================================================
+
 // ENVIO DE TEXTO
+
 // ==========================================================
 
 export const sendTextMessage = async ({
   integrationId = null,
+
   phone,
+
   message,
 }) => {
   const text = String(message || '').trim()
@@ -346,15 +433,19 @@ export const sendTextMessage = async ({
   }
 
   const integration = await getIntegrationWithSecrets(integrationId)
+
   const jid = toJid(phone)
 
   try {
     const response = await requestProvider({
       integration,
+
       method: 'POST',
+
       path: `/api/messages/${encodeURIComponent(
         integration.sessionId,
       )}/${encodeURIComponent(jid)}/send`,
+
       data: {
         message: {
           text,
@@ -366,67 +457,92 @@ export const sendTextMessage = async ({
 
     return {
       integrationId: integration._id,
+
       integrationName: integration.name,
+
       sessionId: integration.sessionId,
+
       phone,
+
       jid,
+
       providerResponse: response.data,
     }
   } catch (error) {
     await updateIntegrationStatus(integration._id, 'error')
+
     throw error
   }
 }
 
 // ==========================================================
+
 // ENVIO DE IMAGENS, GIFS E ARQUIVOS
+
 // ==========================================================
 
 export const sendMediaMessage = async ({
   integrationId = null,
+
   phone,
+
   mediaUrl,
+
   mediaType = 'image',
+
   caption = '',
+
   fileName = '',
+
   mimeType = '',
 }) => {
   const normalizedMediaType = String(mediaType || 'image')
     .trim()
+
     .toLowerCase()
 
   if (!ALLOWED_MEDIA_TYPES.includes(normalizedMediaType)) {
     throw new AppError(
       'Tipo de mídia inválido. Utilize image, gif ou file.',
+
       400,
     )
   }
 
   const validatedUrl = validateHttpsUrl(mediaUrl)
+
   const normalizedCaption = String(caption || '').trim()
 
   const integration = await getIntegrationWithSecrets(integrationId)
+
   const jid = toJid(phone)
 
   let mediaPayload
 
   if (normalizedMediaType === 'image' || normalizedMediaType === 'gif') {
     // O GIF é enviado pelo formato de imagem.
+
     // A animação depende do suporte do provedor.
+
     mediaPayload = {
       image: {
         url: validatedUrl,
       },
+
       ...(normalizedCaption ? { caption: normalizedCaption } : {}),
     }
   } else {
     // Documento/arquivo.
+
     mediaPayload = {
       document: {
         url: validatedUrl,
+
         ...(fileName ? { fileName: String(fileName).trim() } : {}),
+
         ...(mimeType ? { mimetype: String(mimeType).trim() } : {}),
       },
+
       ...(normalizedCaption ? { caption: normalizedCaption } : {}),
     }
   }
@@ -434,10 +550,13 @@ export const sendMediaMessage = async ({
   try {
     const response = await requestProvider({
       integration,
+
       method: 'POST',
+
       path: `/api/messages/${encodeURIComponent(
         integration.sessionId,
       )}/${encodeURIComponent(jid)}/send`,
+
       data: {
         message: mediaPayload,
       },
@@ -447,22 +566,32 @@ export const sendMediaMessage = async ({
 
     return {
       integrationId: integration._id,
+
       integrationName: integration.name,
+
       sessionId: integration.sessionId,
+
       phone,
+
       jid,
+
       mediaType: normalizedMediaType,
+
       mediaUrl: validatedUrl,
+
       providerResponse: response.data,
     }
   } catch (error) {
     await updateIntegrationStatus(integration._id, 'error')
+
     throw error
   }
 }
 
 // ==========================================================
+
 // CONSULTA DE SEGREDOS
+
 // ==========================================================
 
 export const getIntegrationSecrets = async (integrationId) => {
@@ -476,12 +605,15 @@ export const getIntegrationSecrets = async (integrationId) => {
 
   return {
     apiKey: integration.apiKey,
+
     webhookSecret: integration.webhookSecret,
   }
 }
 
 // ==========================================================
+
 // QR CODE / STATUS DA SESSÃO
+
 // ==========================================================
 
 export const getQrCode = async (integrationId) => {
@@ -502,20 +634,29 @@ export const getQrCode = async (integrationId) => {
 
   const sessionResponse = await requestProvider({
     integration,
+
     method: 'GET',
+
     path: sessionPath,
   })
 
   const session = sessionResponse.data?.data ?? sessionResponse.data ?? {}
+
   const providerStatus = String(session?.status || 'unknown')
+
   const normalizedStatus = providerStatus.toLowerCase()
 
   const isConnected = ['connected', 'open', 'online'].includes(normalizedStatus)
+
   const isDisconnected = [
     'disconnected',
+
     'close',
+
     'closed',
+
     'offline',
+
     'stopped',
   ].includes(normalizedStatus)
 
@@ -524,11 +665,17 @@ export const getQrCode = async (integrationId) => {
 
     return {
       integrationId: String(integration._id),
+
       integrationName: integration.name,
+
       sessionId: integration.sessionId,
+
       status: 'CONNECTED',
+
       qr: null,
+
       base64: null,
+
       me: session?.me || null,
     }
   }
@@ -540,13 +687,17 @@ export const getQrCode = async (integrationId) => {
   try {
     const qrResponse = await requestProvider({
       integration,
+
       method: 'GET',
+
       path: `${sessionPath}/qr`,
     })
 
     const qrData = qrResponse.data?.data ?? qrResponse.data ?? {}
+
     const rawBase64 =
       qrData?.base64 || qrData?.qrCode || qrData?.qrcodeImage || null
+
     const base64 = rawBase64
       ? String(rawBase64).startsWith('data:')
         ? String(rawBase64)
@@ -555,23 +706,36 @@ export const getQrCode = async (integrationId) => {
 
     return {
       integrationId: String(integration._id),
+
       integrationName: integration.name,
+
       sessionId: integration.sessionId,
+
       status: providerStatus.toUpperCase(),
+
       qr: qrData?.qr || qrData?.code || session?.qr || session?.qrcode || null,
+
       base64,
+
       me: session?.me || null,
     }
   } catch (error) {
     // A sessão pode estar inicializando; ausência temporária de QR não é fatal.
+
     if ([400, 404].includes(Number(error?.statusCode))) {
       return {
         integrationId: String(integration._id),
+
         integrationName: integration.name,
+
         sessionId: integration.sessionId,
+
         status: providerStatus.toUpperCase(),
+
         qr: null,
+
         base64: null,
+
         me: session?.me || null,
       }
     }
@@ -581,7 +745,9 @@ export const getQrCode = async (integrationId) => {
 }
 
 // ==========================================================
-// // ASSINATURA DO WEBHOOK
+
+// ASSINATURA DO WEBHOOK
+
 // ==========================================================
 
 export const verifyWebhookSignature = ({ rawBody, signature, secret }) => {
@@ -591,15 +757,20 @@ export const verifyWebhookSignature = ({ rawBody, signature, secret }) => {
 
   const receivedSignature = String(signature)
     .trim()
+
     .replace(/^sha256=/i, '')
 
   const expectedSignature = crypto
+
     .createHmac('sha256', secret)
+
     .update(rawBody)
+
     .digest('hex')
 
   try {
     const received = Buffer.from(receivedSignature, 'hex')
+
     const expected = Buffer.from(expectedSignature, 'hex')
 
     if (received.length === 0 || received.length !== expected.length) {
@@ -613,19 +784,26 @@ export const verifyWebhookSignature = ({ rawBody, signature, secret }) => {
 }
 
 // ==========================================================
+
 // WEBHOOK WA-AKG
+
 // ==========================================================
 
 export const handleWebhook = async ({
   rawBody,
+
   body,
+
   signature,
+
   io: requestIo = null,
 }) => {
   let payload = body
 
   // --------------------------------------------------------
+
   // VALIDAÇÃO E LEITURA DO PAYLOAD
+
   // --------------------------------------------------------
 
   if (rawBody) {
@@ -649,6 +827,7 @@ export const handleWebhook = async ({
   if (!sessionId) {
     console.error('[WA-AKG] Webhook recebido sem sessionId:', {
       payloadKeys: Object.keys(payload),
+
       dataKeys:
         payload.data && typeof payload.data === 'object'
           ? Object.keys(payload.data)
@@ -660,7 +839,9 @@ export const handleWebhook = async ({
 
   console.info('[WA-AKG] Diagnóstico da sessão:', {
     receivedSessionId: sessionId,
+
     payloadKeys: Object.keys(payload),
+
     dataKeys:
       payload.data && typeof payload.data === 'object'
         ? Object.keys(payload.data)
@@ -668,17 +849,29 @@ export const handleWebhook = async ({
   })
 
   // --------------------------------------------------------
+
   // TESTE DE WEBHOOK DA WA-AKG
+
   // --------------------------------------------------------
+
   // O teste automático da WA-AKG pode utilizar sessionId "test".
+
   // Reconhecemos esse evento antes da busca pela integração real.
+
   // Nenhum dado do CRM é criado ou alterado neste caminho.
+
   //
+
   // IMPORTANTE:
+
   // Esse retorno confirma apenas o recebimento do teste HTTP.
+
   // Ele não valida a assinatura HMAC do evento de teste.
+
   // Eventos de sessões reais continuam passando pela validação
+
   // da integração e pela verificação da assinatura.
+
   // --------------------------------------------------------
 
   if (String(sessionId).trim().toLowerCase() === 'test') {
@@ -686,42 +879,55 @@ export const handleWebhook = async ({
 
     return {
       success: true,
+
       test: true,
+
       ignored: true,
+
       reason: 'Teste de webhook recebido. Nenhum dado foi alterado.',
     }
   }
 
   // --------------------------------------------------------
+
   // BUSCA DA INTEGRAÇÃO REAL
+
   // --------------------------------------------------------
 
   const integration = await WhatsAppIntegration.findOne({
     sessionId,
+
     enabled: true,
   }).select('+apiKey +webhookSecret')
 
   console.info('[WA-AKG] Resultado da busca:', {
     receivedSessionId: sessionId,
+
     integrationFound: Boolean(integration),
+
     integrationId: integration?._id ? String(integration._id) : null,
   })
 
   if (!integration) {
     throw new AppError(
       'Não existe integração ativa para esta sessão WhatsApp.',
+
       404,
     )
   }
 
   // --------------------------------------------------------
+
   // VALIDAÇÃO DA ASSINATURA HMAC
+
   // --------------------------------------------------------
 
   if (integration.webhookSecret) {
     const isValid = verifyWebhookSignature({
       rawBody,
+
       signature,
+
       secret: integration.webhookSecret,
     })
 
@@ -736,11 +942,14 @@ export const handleWebhook = async ({
 
   console.info('[WA-AKG] Webhook recebido:', {
     event,
+
     sessionId,
   })
 
   // --------------------------------------------------------
+
   // MENSAGEM RECEBIDA
+
   // --------------------------------------------------------
 
   if (event === 'message.received' || event === 'messages.upsert') {
@@ -754,10 +963,13 @@ export const handleWebhook = async ({
     const fromMe = key.fromMe === true || data.fromMe === true
 
     // Ignorar mensagens enviadas pela própria sessão.
+
     if (fromMe) {
       return {
         success: true,
+
         ignored: true,
+
         reason: 'Mensagem enviada pela própria sessão.',
       }
     }
@@ -765,25 +977,33 @@ export const handleWebhook = async ({
     if (!remoteJid) {
       return {
         success: true,
+
         ignored: true,
+
         reason: 'Mensagem sem remoteJid.',
       }
     }
 
     // Não criar leads para mensagens de grupos.
+
     if (String(remoteJid).endsWith('@g.us')) {
       return {
         success: true,
+
         ignored: true,
+
         reason: 'Mensagem de grupo ignorada.',
       }
     }
 
     // ------------------------------------------------------
+
     // EXTRAIR E NORMALIZAR O TELEFONE
+
     // ------------------------------------------------------
 
     const phone = String(remoteJid).split('@')[0]
+
     const phoneNormalized = normalizePhone(phone)
 
     if (!phoneNormalized) {
@@ -793,17 +1013,22 @@ export const handleWebhook = async ({
 
       return {
         success: true,
+
         ignored: true,
+
         reason: 'Não foi possível normalizar o telefone.',
       }
     }
 
     // ------------------------------------------------------
+
     // BUSCAR LEAD EXISTENTE
+
     // ------------------------------------------------------
 
     let lead = await Lead.findOne({
       $or: [{ phoneNormalized }, { phone: phoneNormalized }, { phone }],
+
       isDeleted: { $ne: true },
     })
 
@@ -821,18 +1046,27 @@ export const handleWebhook = async ({
       try {
         lead = await Lead.create({
           name: leadName,
+
           email: `whatsapp-${phoneNormalized}@leadsnamao.local`,
+
           phone,
+
           phoneNormalized,
 
           // Valores compatíveis com o schema atual.
+
           source: 'manual',
+
           sourceType: 'manual',
+
           region: 'central',
 
           // O lead será distribuído pelo fluxo existente.
+
           status: LEAD_STATUS.NEW,
+
           stage: LEAD_STAGES.NEW,
+
           notes: 'Lead criado automaticamente pelo WhatsApp.',
         })
 
@@ -840,14 +1074,18 @@ export const handleWebhook = async ({
 
         console.info('[WA-AKG] Novo lead criado:', {
           leadId: String(lead._id),
+
           phoneNormalized,
+
           name: leadName,
         })
       } catch (error) {
         // Em caso de concorrência, tenta recuperar o lead.
+
         if (error.code === 11000) {
           lead = await Lead.findOne({
             $or: [{ phoneNormalized }, { phone: phoneNormalized }, { phone }],
+
             isDeleted: { $ne: true },
           })
         }
@@ -855,7 +1093,9 @@ export const handleWebhook = async ({
         if (!lead) {
           console.error('[WA-AKG] Erro ao criar lead:', {
             message: error.message,
+
             name: error.name,
+
             code: error.code,
           })
 
@@ -865,6 +1105,7 @@ export const handleWebhook = async ({
     } else {
       console.info('[WA-AKG] Lead existente encontrado:', {
         leadId: String(lead._id),
+
         phoneNormalized,
       })
     }
@@ -872,35 +1113,50 @@ export const handleWebhook = async ({
     const leadId = lead._id
 
     // ------------------------------------------------------
+
     // CRIAR OU ATUALIZAR CONTATO DO WHATSAPP
+
     // ------------------------------------------------------
 
     const contact = await upsertWhatsAppContact({
       integrationId: integration._id,
+
       remoteJid,
+
       leadId,
+
       name:
         data.pushName || data.notifyName || data.senderName || lead.name || '',
+
       isGroup: false,
+
       metadata: {
         provider: 'wa-akg',
       },
     })
 
     // ------------------------------------------------------
+
     // CRIAR OU RECUPERAR CONVERSA
+
     // ------------------------------------------------------
 
     const conversation = await upsertWhatsAppConversation({
       whatsappContactId: contact._id,
+
       integrationId: integration._id,
+
       leadId,
+
       assignedTo: lead.assignedTo || null,
+
       name: contact.name || lead.name || '',
     })
 
     // ------------------------------------------------------
+
     // IDENTIFICAR CONTEÚDO E ANEXOS
+
     // ------------------------------------------------------
 
     const messageObject = data.message?.message || data.message || data
@@ -943,8 +1199,11 @@ export const handleWebhook = async ({
     const attachment = attachmentUrl
       ? {
           url: attachmentUrl,
+
           name: data.fileName || documentMessage?.fileName || '',
+
           size: Number(data.fileSize || 0),
+
           mimeType:
             data.mimeType ||
             imageMessage?.mimetype ||
@@ -954,13 +1213,18 @@ export const handleWebhook = async ({
       : null
 
     // ------------------------------------------------------
+
     // SALVAR MENSAGEM
+
     // ------------------------------------------------------
 
     const savedMessage = await chatService.receiveWhatsAppMessage({
       conversationId: conversation._id,
+
       whatsappContactId: contact._id,
+
       externalMessageId,
+
       content:
         content ||
         (messageType === 'image'
@@ -968,22 +1232,30 @@ export const handleWebhook = async ({
           : messageType === 'file'
             ? 'Arquivo recebido'
             : 'Mensagem recebida'),
+
       type: messageType,
+
       attachment,
     })
 
     if (savedMessage?.duplicate) {
       return {
         success: true,
+
         duplicate: true,
+
         leadId: String(leadId),
+
         leadCreated,
+
         conversationId: String(conversation._id),
       }
     }
 
     // ------------------------------------------------------
+
     // ATUALIZAR ÚLTIMA MENSAGEM DO CONTATO
+
     // ------------------------------------------------------
 
     await WhatsAppContact.findByIdAndUpdate(contact._id, {
@@ -991,46 +1263,63 @@ export const handleWebhook = async ({
     })
 
     // ------------------------------------------------------
+
     // NOTIFICAR FRONTEND VIA SOCKET.IO
+
     // ------------------------------------------------------
 
     // ------------------------------------------------------
+
     // NOTIFICAR FRONTEND VIA SOCKET.IO
+
     // ------------------------------------------------------
 
     const io = requestIo || getSocketIO()
 
     if (io) {
       const conversationId = String(conversation._id)
+
       const assignedTo = normalizeId(conversation.assignedTo)
 
       // O frontend espera receber a mensagem diretamente.
+
       // Normalizamos os IDs para evitar problemas com ObjectId.
+
       const messagePayload = {
         ...(typeof savedMessage.toObject === 'function'
           ? savedMessage.toObject()
           : savedMessage),
+
         conversation: conversationId,
+
         conversationId,
       }
 
       // Atualiza os clientes conectados à sala da conversa.
+
       io.to(conversationId).emit('new_message', messagePayload)
 
       // A sala individual do usuário usa o prefixo user_.
+
       if (assignedTo) {
         io.to(`user_${assignedTo}`).emit('new_message_notification', {
           conversationId,
+
           message: messagePayload,
+
           leadId: String(leadId),
         })
       }
 
       console.info('[WA-AKG] Eventos Socket.IO emitidos:', {
         conversationId,
+
         assignedTo,
+
         messageId: savedMessage?._id ? String(savedMessage._id) : null,
+
         conversationRoom: conversationId,
+
         userRoom: assignedTo ? `user_${assignedTo}` : null,
       })
     } else {
@@ -1039,37 +1328,157 @@ export const handleWebhook = async ({
 
     console.info('[WA-AKG] Mensagem processada:', {
       event,
+
       leadId: String(leadId),
+
       leadCreated,
+
       conversationId: String(conversation._id),
+
       messageId: savedMessage?._id ? String(savedMessage._id) : null,
     })
 
     return {
       success: true,
+
       event,
+
       leadId: String(leadId),
+
       leadCreated,
+
       conversationId: String(conversation._id),
+
       messageId: savedMessage?._id ? String(savedMessage._id) : null,
     }
   }
 
   // --------------------------------------------------------
+
   // MENSAGEM ENVIADA
+
   // --------------------------------------------------------
 
-  if (event === 'message.sent' || event === 'messages.update') {
+  if (event === 'message.sent') {
+    const key = data.key || data.message?.key || {}
+    const externalMessageId =
+      key.id || data.id || data.messageId || data.message?.id || null
+
+    if (!externalMessageId) {
+      console.warn('[WA-AKG] Evento message.sent sem identificador externo.', {
+        sessionId,
+        dataKeys: Object.keys(data || {}),
+      })
+
+      return {
+        success: true,
+        event,
+        matched: false,
+        reason: 'Evento sem externalMessageId.',
+      }
+    }
+
+    // Localiza a mensagem já persistida pelo chatService.js.
+    // Não cria um segundo registro nem altera o status para um estado anterior.
+    const message = await Message.findOne({
+      externalMessageId: String(externalMessageId),
+      direction: 'outbound',
+    })
+      .select('_id conversation externalMessageId status')
+      .populate({
+        path: 'conversation',
+        select: 'channel whatsappIntegration',
+        populate: {
+          path: 'whatsappIntegration',
+          select: 'sessionId',
+        },
+      })
+      .lean()
+
+    if (!message) {
+      // O webhook pode chegar antes da persistência local. Não reenviamos
+      // a mensagem nem criamos um registro duplicado neste caminho.
+      console.warn(
+        '[WA-AKG] Confirmação recebida, mas a mensagem não foi localizada.',
+        {
+          externalMessageId: String(externalMessageId),
+          sessionId,
+        },
+      )
+
+      return {
+        success: true,
+        event,
+        matched: false,
+        externalMessageId: String(externalMessageId),
+      }
+    }
+
+    const conversationSessionId =
+      message.conversation?.whatsappIntegration?.sessionId
+
+    if (
+      message.conversation?.channel !== 'whatsapp' ||
+      (conversationSessionId &&
+        String(conversationSessionId) !== String(sessionId))
+    ) {
+      console.warn(
+        '[WA-AKG] A confirmação não corresponde à integração da mensagem.',
+        {
+          externalMessageId: String(externalMessageId),
+          messageId: String(message._id),
+          webhookSessionId: String(sessionId),
+          conversationSessionId: conversationSessionId
+            ? String(conversationSessionId)
+            : null,
+        },
+      )
+
+      return {
+        success: true,
+        event,
+        matched: false,
+        reason: 'A sessão do webhook não corresponde à mensagem.',
+        externalMessageId: String(externalMessageId),
+      }
+    }
+
+    console.info(
+      '[WA-AKG] Confirmação message.sent vinculada à mensagem existente.',
+      {
+        externalMessageId: String(externalMessageId),
+        messageId: String(message._id),
+        conversationId: message.conversation?._id
+          ? String(message.conversation._id)
+          : String(message.conversation),
+        status: message.status,
+      },
+    )
+
+    return {
+      success: true,
+      event,
+      matched: true,
+      externalMessageId: String(externalMessageId),
+      messageId: String(message._id),
+      status: message.status,
+    }
+  }
+
+  // messages.update pode representar diferentes atualizações do provedor.
+  // Não alteramos status sem confirmar o formato desse evento.
+  if (event === 'messages.update') {
     return {
       success: true,
       event,
       ignored: true,
-      reason: 'Evento de confirmação de mensagem enviada.',
+      reason: 'Evento messages.update sem mapeamento de status confirmado.',
     }
   }
 
   // --------------------------------------------------------
   // STATUS DA CONEXÃO
+
   // --------------------------------------------------------
 
   if (event === 'connection.update' || event === 'session.status') {
@@ -1082,8 +1491,11 @@ export const handleWebhook = async ({
 
     const disconnected = [
       'disconnected',
+
       'close',
+
       'closed',
+
       'offline',
     ].includes(normalizedStatus)
 
@@ -1095,25 +1507,34 @@ export const handleWebhook = async ({
 
     return {
       success: true,
+
       event,
+
       status: providerStatus,
     }
   }
 
   // --------------------------------------------------------
+
   // EVENTO NÃO TRATADO
+
   // --------------------------------------------------------
 
   return {
     success: true,
+
     ignored: true,
+
     event,
+
     reason: 'Evento do webhook não tratado por este serviço.',
   }
 }
 
 // ==========================================================
+
 // ATUALIZAR SEGREDO DO WEBHOOK
+
 // ==========================================================
 
 export const updateWebhookSecret = async ({ integrationId, webhookSecret }) => {
@@ -1123,11 +1544,14 @@ export const updateWebhookSecret = async ({ integrationId, webhookSecret }) => {
 
   const integration = await WhatsAppIntegration.findByIdAndUpdate(
     integrationId,
+
     {
       webhookSecret: String(webhookSecret).trim(),
     },
+
     {
       new: true,
+
       runValidators: true,
     },
   ).select('-apiKey -webhookSecret')
@@ -1151,30 +1575,42 @@ export const prepareLeadWhatsAppConversation = async ({ lead }) => {
   }
 
   // Busca uma integração WhatsApp ativa.
+
   const integration = await getIntegrationWithSecrets()
 
   const remoteJid = toJid(phone)
 
   // Cria ou recupera o contato vinculado ao lead.
+
   const contact = await upsertWhatsAppContact({
     integrationId: String(integration._id),
+
     remoteJid,
+
     leadId: String(lead._id),
+
     name: lead.name || '',
+
     isGroup: false,
+
     metadata: {
       source: 'leads-na-mao-crm',
     },
   })
 
   // Cria ou recupera a conversa vinculada ao contato e ao lead.
+
   const conversation = await upsertWhatsAppConversation({
     whatsappContactId: String(contact._id),
+
     integrationId: String(integration._id),
+
     leadId: String(lead._id),
+
     assignedTo: lead.assignedTo
       ? String(lead.assignedTo._id || lead.assignedTo)
       : null,
+
     name: lead.name || '',
   })
 
@@ -1182,20 +1618,33 @@ export const prepareLeadWhatsAppConversation = async ({ lead }) => {
 }
 
 // ==========================================================
+
 // EXPORT DEFAULT
+
 // ==========================================================
 
 export default {
   createIntegration,
+
   listIntegrations,
+
   sendTextMessage,
+
   sendMediaMessage,
+
   getIntegrationSecrets,
+
   getQrCode,
+
   verifyWebhookSignature,
+
   handleWebhook,
+
   updateWebhookSecret,
+
   upsertWhatsAppContact,
+
   upsertWhatsAppConversation,
+
   prepareLeadWhatsAppConversation,
 }

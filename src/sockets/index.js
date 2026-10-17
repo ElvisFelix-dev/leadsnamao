@@ -1,3 +1,4 @@
+// src/sockets/index.js
 import { Server } from 'socket.io'
 import Conversation from '../models/Conversation.js'
 
@@ -36,6 +37,39 @@ export function setupSocketIO(httpServer) {
 
   io.on('connection', (socket) => {
     console.log(`🟢 Cliente conectado ao Socket.IO: ${socket.id}`)
+
+    // =======================================================
+    // NOTIFICAÇÕES DE LEADS — SALAS DEDICADAS (NOVO)
+    // =======================================================
+
+    /**
+     * O frontend chama este evento após o login para entrar na
+     * sala correta de notificações.
+     *
+     * payload: { role: 'admin' | 'manager' | 'broker', userId: string }
+     *
+     * - admin/manager → sala "admins"
+     * - broker        → sala "broker_{userId}"
+     */
+    socket.on('join_notifications', ({ role, userId } = {}) => {
+      if (!role) {
+        console.warn(
+          `⚠️ Socket ${socket.id} chamou join_notifications sem role.`,
+        )
+        return
+      }
+
+      if (['admin', 'manager'].includes(role)) {
+        socket.join('admins')
+        console.log(`👨‍💼 Socket ${socket.id} → sala "admins"`)
+      }
+
+      if (role === 'broker' && userId) {
+        const room = `broker_${String(userId)}`
+        socket.join(room)
+        console.log(`🧑‍💼 Socket ${socket.id} → sala "${room}"`)
+      }
+    })
 
     // =======================================================
     // LEADS NA MÃO — ENTRADA NA SALA DO USUÁRIO

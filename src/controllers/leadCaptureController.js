@@ -5,7 +5,7 @@ import {
   captureBrokerHotsiteLead,
   capturePropertyLead,
 } from '../service/leadCaptureService.js'
-import { notifyLeadCreated } from '../service/leadService.js'
+import { notifyLeadRealtime } from '../service/leadRealtimeService.js'
 import { autoDistributeLead } from '../service/leadDistributionService.js'
 import Property from '../models/Property.js'
 import Lead from '../models/Lead.js'
@@ -95,6 +95,30 @@ async function tryDistributeLead(lead, options = {}) {
 }
 
 /* ============================================================
+   HELPER: NOTIFICAR LEAD (COM LOG)
+============================================================ */
+
+/**
+ * Encapsula a notificação em tempo real + persistência,
+ * garantindo que uma falha NUNCA derrube a captura do lead.
+ */
+async function safeNotifyLead(lead, options = {}) {
+  const { context = 'lead', assignedTo = null } = options
+
+  try {
+    await notifyLeadRealtime(lead, { assignedTo })
+    console.info(
+      `[LeadCapture] Notificação processada (${context}): ${lead?._id}`,
+    )
+  } catch (notificationError) {
+    console.error(
+      `[LeadCapture] Erro ao notificar (${context}):`,
+      notificationError,
+    )
+  }
+}
+
+/* ============================================================
    CAPTURAR LEAD - GENÉRICO
 ============================================================ */
 
@@ -144,9 +168,15 @@ export async function createLead(req, res) {
         region: lead.region || leadData.region || 'central',
         createdBy: req.user?._id,
       })
+
+      // 5. 🔔 NOTIFICAR EM TEMPO REAL (apenas leads novos)
+      await safeNotifyLead(lead, {
+        context: 'genérico',
+        assignedTo: distribution.assignedTo,
+      })
     }
 
-    // 5. Retornar os dados ao frontend
+    // 6. Retornar os dados ao frontend
     return res.status(isDuplicate ? 200 : 201).json({
       success: true,
       message:
@@ -174,6 +204,10 @@ export async function createLead(req, res) {
     })
   }
 }
+
+/* ============================================================
+   CAPTURAR LEAD DA PÁGINA DO IMÓVEL
+============================================================ */
 
 export async function createPropertyPageLead(req, res) {
   try {
@@ -212,7 +246,6 @@ export async function createPropertyPageLead(req, res) {
       message: req.body.message || '',
       region: normalizedRegion,
       source: req.body.source || 'public',
-      // 🔥 USAR A CONSTANTE IMPORTADA
       sourceType: LEAD_SOURCE_TYPE.PROPERTY_PAGE,
       property: propertyId,
       assignedTo: null,
@@ -282,6 +315,12 @@ export async function createPropertyPageLead(req, res) {
     const populatedLead = await Lead.findById(lead._id)
       .populate('assignedTo', 'name email phone')
       .populate('property', 'name type')
+
+    // 8. 🔔 NOTIFICAR EM TEMPO REAL
+    await safeNotifyLead(populatedLead, {
+      context: 'property-page',
+      assignedTo: populatedLead?.assignedTo?._id || null,
+    })
 
     return res.status(201).json({
       success: true,
@@ -366,27 +405,11 @@ export async function createSiteLead(req, res) {
         createdBy: req.user?._id,
       })
 
-      // 3. Notificar sobre o novo lead
-      try {
-        const leadForNotification = distribution.lead || lead
-        const assignedTo =
-          distribution.assignedTo || leadForNotification.assignedTo || null
-
-        await notifyLeadCreated(leadForNotification, {
-          pendingDistribution: !assignedTo,
-          assignedTo: assignedTo?._id || assignedTo,
-        })
-
-        console.info(
-          `[LeadCapture] Notificação processada para o lead ${lead._id}`,
-        )
-      } catch (notificationError) {
-        // Uma falha na notificação não deve invalidar a captura.
-        console.error(
-          '[LeadCapture] Erro ao notificar novo lead:',
-          notificationError,
-        )
-      }
+      // 3. 🔔 NOTIFICAR EM TEMPO REAL
+      await safeNotifyLead(lead, {
+        context: 'site',
+        assignedTo: distribution.assignedTo,
+      })
     }
 
     // 4. Responder ao site
@@ -447,6 +470,13 @@ export async function createBrokerLead(req, res) {
 
     const isAssigned = !!result.assignedTo
 
+    // 🔔 NOTIFICAR EM TEMPO REAL
+    const leadForNotification = result?.lead || result
+    await safeNotifyLead(leadForNotification, {
+      context: 'broker',
+      assignedTo: result?.assignedTo || brokerId,
+    })
+
     return res.status(201).json({
       success: true,
       message: isAssigned
@@ -477,7 +507,7 @@ export async function createBrokerLead(req, res) {
 }
 
 /* ============================================================
-   CAPTURAR LEAD RELACIONADO A UM IMÓVEL 🔥 CORRIGIDO
+   CAPTURAR LEAD RELACIONADO A UM IMÓVEL
 ============================================================ */
 
 export async function createPropertyLead(req, res) {
@@ -515,7 +545,6 @@ export async function createPropertyLead(req, res) {
     console.log(`👤 Corretor responsável: ${assignedBroker?.name || 'Nenhum'}`)
 
     // 4. DETERMINAR O MÉTODO DE DISTRIBUIÇÃO
-    // 🔥 VALORES PERMITIDOS: 'admin', 'automatic', 'broker', 'manual', 'round_robin', 'specialized'
     const distributionMethod = assignedBroker?._id ? 'broker' : 'manual'
 
     // 5. PREPARAR OS DADOS DO LEAD
@@ -665,6 +694,12 @@ export async function createPropertyLead(req, res) {
     const populatedLead = await Lead.findById(leadDoc._id)
       .populate('assignedTo', 'name email phone')
       .populate('property', 'name type')
+
+    // 12. 🔔 NOTIFICAR EM TEMPO REAL
+    await safeNotifyLead(populatedLead, {
+      context: 'property',
+      assignedTo: populatedLead?.assignedTo?._id || null,
+    })
 
     return res.status(201).json({
       success: true,

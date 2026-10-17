@@ -1,288 +1,678 @@
-// src/controllers/leadCaptureController.js
-import {
-  captureLead,
-  captureSiteLead,
-  captureBrokerHotsiteLead,
-  capturePropertyLead,
-} from '../service/leadCaptureService.js'
-import { autoDistributeLead } from '../service/leadDistributionService.js'
-import Property from '../models/Property.js'
+import mongoose from 'mongoose'
+
 import Lead from '../models/Lead.js'
+import Property from '../models/Property.js'
+import User from '../models/User.js'
+
 import { LEAD_SOURCE_TYPE } from '../constants/leadSourceType.js'
 
+import { LEAD_STAGES } from '../constants/leadStages.js'
+
+import { LEAD_STATUS } from '../constants/leadStatus.js'
+
+import { LEAD_PRIORITY } from '../constants/leadPriority.js'
+
 /* ============================================================
-   HELPER: NORMALIZAR REGIÃO
+   HELPERS
 ============================================================ */
 
-function normalizeRegion(region) {
-  if (!region) return 'central'
+/**
+ * Verifica se o ID é um ObjectId válido.
+ */
+function isValidObjectId(id) {
+  return mongoose.Types.ObjectId.isValid(id)
+}
 
-  const regionMap = {
-    'zona oeste': 'zona_oeste',
-    zona_oeste: 'zona_oeste',
-    'zona leste': 'zona_leste',
-    zona_leste: 'zona_leste',
-    'zona sul': 'zona_sul',
-    zona_sul: 'zona_sul',
-    'zona norte': 'zona_norte',
-    zona_norte: 'zona_norte',
-    centro: 'central',
-    central: 'central',
-    abc: 'abc',
-    'grande sp': 'grande_sp',
-    grande_sp: 'grande_sp',
-    interior: 'interior',
-    litoral: 'litoral',
+/**
+ * Limpa strings recebidas do frontend.
+ */
+function cleanString(value = '') {
+  if (value === null || value === undefined) {
+    return ''
   }
 
-  const normalized = region.toLowerCase().trim()
-  const mapped = regionMap[normalized] || normalized
+  return String(value).trim()
+}
 
-  const validRegions = [
-    'central',
-    'zona_oeste',
-    'zona_leste',
-    'zona_sul',
-    'zona_norte',
-    'abc',
-    'grande_sp',
-    'interior',
-    'litoral',
-  ]
+/**
+ * Normaliza email.
+ */
+function normalizeEmail(email = '') {
+  return cleanString(email).toLowerCase()
+}
 
-  if (validRegions.includes(mapped)) {
-    return mapped
+/**
+ * Normaliza telefone removendo espaços desnecessários.
+ */
+function normalizePhone(phone = '') {
+  return cleanString(phone)
+}
+
+/**
+ * Normaliza uma origem.
+ */
+function normalizeSource(source = '') {
+  return cleanString(source).toLowerCase()
+}
+
+/**
+ * Normaliza sourceType.
+ */
+function normalizeSourceType(sourceType = '') {
+  return cleanString(sourceType).toLowerCase()
+}
+
+/**
+ * Retorna uma prioridade segura.
+ */
+function normalizePriority(priority) {
+  if (!priority) {
+    return LEAD_PRIORITY.MEDIUM
   }
 
-  console.warn(
-    `⚠️ Região não reconhecida: "${region}", usando "central" como fallback`,
-  )
-  return 'central'
+  return priority
 }
 
 /* ============================================================
-   HELPER: TENTAR DISTRIBUIR LEAD
+   VALIDAR DADOS BÁSICOS
 ============================================================ */
 
-async function tryDistributeLead(lead, options = {}) {
-  const { propertyId, region, createdBy } = options
+function validateLeadData({ name, email, phone }) {
+  if (!name) {
+    throw new Error('Nome do lead não informado.')
+  }
 
-  try {
-    if (lead.assignedTo) {
-      return {
-        success: true,
-        message: 'Lead já possui corretor atribuído.',
-        assignedTo: lead.assignedTo,
-      }
+  if (!email) {
+    throw new Error('E-mail do lead não informado.')
+  }
+
+  if (!phone) {
+    throw new Error('Telefone do lead não informado.')
+  }
+
+  if (name.length < 2) {
+    throw new Error('Nome do lead inválido.')
+  }
+
+  if (!email.includes('@')) {
+    throw new Error('E-mail do lead inválido.')
+  }
+}
+
+/* ============================================================
+   VALIDAR IMÓVEL
+============================================================ */
+
+async function validateProperty(propertyId) {
+  if (!propertyId) {
+    throw new Error('ID do imóvel não informado.')
+  }
+
+  if (!isValidObjectId(propertyId)) {
+    throw new Error('ID do imóvel inválido.')
+  }
+
+  const property = await Property.findOne({
+    _id: propertyId,
+
+    isDeleted: {
+      $ne: true,
+    },
+  })
+    .select('_id name code slug status active published region')
+    .lean()
+
+  if (!property) {
+    throw new Error('Imóvel não encontrado.')
+  }
+
+  return property
+}
+
+/* ============================================================
+   VALIDAR CORRETOR
+============================================================ */
+
+async function validateBroker(brokerId) {
+  if (!brokerId) {
+    throw new Error('Corretor não informado.')
+  }
+
+  if (!isValidObjectId(brokerId)) {
+    throw new Error('ID do corretor inválido.')
+  }
+
+  const broker = await User.findOne({
+    _id: brokerId,
+
+    role: 'broker',
+  })
+    .select('_id name email avatar role active availability')
+    .lean()
+
+  if (!broker) {
+    throw new Error('Corretor não encontrado.')
+  }
+
+  /**
+   * Se seu User model não possuir active,
+   * o teste abaixo não bloqueará o corretor.
+   */
+  if (broker.active === false) {
+    throw new Error('Este corretor não está ativo.')
+  }
+
+  return broker
+}
+
+/* ============================================================
+   RESOLVER CONTEXTO DA ORIGEM
+============================================================ */
+
+/**
+ * Define automaticamente como o lead deverá ser tratado.
+ *
+ * IMPORTANTE:
+ *
+ * Nunca confiamos em:
+ *
+ * assignedTo
+ *
+ * enviado pelo frontend.
+ *
+ * O frontend informa o contexto da captura.
+ * O backend decide quem recebe o lead.
+ */
+async function resolveLeadSource({ sourceType, sourceBroker }) {
+  const normalizedType = normalizeSourceType(sourceType)
+
+  /* ----------------------------------------------------------
+     HOTSITE DO CORRETOR
+  ---------------------------------------------------------- */
+
+  if (normalizedType === LEAD_SOURCE_TYPE.BROKER_HOTSITE) {
+    if (!sourceBroker) {
+      throw new Error('O hotsite do corretor não possui corretor vinculado.')
     }
 
-    const result = await autoDistributeLead({
-      leadId: lead._id,
-      region: region || lead.region || 'central',
-      propertyId,
-      createdBy: createdBy || null,
-    })
+    const broker = await validateBroker(sourceBroker)
 
-    return result
-  } catch (error) {
-    console.error('❌ Erro na distribuição automática:', error)
     return {
-      success: false,
-      message: 'Erro ao distribuir lead: ' + error.message,
+      sourceType: LEAD_SOURCE_TYPE.BROKER_HOTSITE,
+
+      sourceBroker: broker._id,
+
+      assignedTo: broker._id,
+
+      awaitingAssignment: false,
+
+      assignmentType: 'broker',
+
+      assignedAt: new Date(),
+
+      assignedBy: null,
     }
+  }
+
+  /* ----------------------------------------------------------
+     SITE DA IMOBILIÁRIA
+  ---------------------------------------------------------- */
+
+  if (normalizedType === LEAD_SOURCE_TYPE.SITE) {
+    return {
+      sourceType: LEAD_SOURCE_TYPE.SITE,
+
+      sourceBroker: null,
+
+      assignedTo: null,
+
+      awaitingAssignment: true,
+
+      assignmentType: 'admin',
+
+      assignedAt: null,
+
+      assignedBy: null,
+    }
+  }
+
+  /* ----------------------------------------------------------
+     PÁGINA DO IMÓVEL
+  ---------------------------------------------------------- */
+
+  if (normalizedType === LEAD_SOURCE_TYPE.PROPERTY_PAGE) {
+    return {
+      sourceType: LEAD_SOURCE_TYPE.PROPERTY_PAGE,
+
+      sourceBroker: null,
+
+      assignedTo: null,
+
+      awaitingAssignment: true,
+
+      assignmentType: 'admin',
+
+      assignedAt: null,
+
+      assignedBy: null,
+    }
+  }
+
+  /* ----------------------------------------------------------
+     PORTAL
+  ---------------------------------------------------------- */
+
+  if (normalizedType === LEAD_SOURCE_TYPE.PORTAL) {
+    return {
+      sourceType: LEAD_SOURCE_TYPE.PORTAL,
+
+      sourceBroker: null,
+
+      assignedTo: null,
+
+      awaitingAssignment: true,
+
+      assignmentType: 'admin',
+
+      assignedAt: null,
+
+      assignedBy: null,
+    }
+  }
+
+  /* ----------------------------------------------------------
+     META
+  ---------------------------------------------------------- */
+
+  if (normalizedType === LEAD_SOURCE_TYPE.META) {
+    return {
+      sourceType: LEAD_SOURCE_TYPE.META,
+
+      sourceBroker: null,
+
+      assignedTo: null,
+
+      awaitingAssignment: true,
+
+      assignmentType: 'admin',
+
+      assignedAt: null,
+
+      assignedBy: null,
+    }
+  }
+
+  /* ----------------------------------------------------------
+     IMPORTAÇÃO
+  ---------------------------------------------------------- */
+
+  if (normalizedType === LEAD_SOURCE_TYPE.IMPORT) {
+    return {
+      sourceType: LEAD_SOURCE_TYPE.IMPORT,
+
+      sourceBroker: null,
+
+      assignedTo: null,
+
+      awaitingAssignment: true,
+
+      assignmentType: 'admin',
+
+      assignedAt: null,
+
+      assignedBy: null,
+    }
+  }
+
+  /* ----------------------------------------------------------
+     INDICAÇÃO
+  ---------------------------------------------------------- */
+
+  if (normalizedType === LEAD_SOURCE_TYPE.REFERRAL) {
+    return {
+      sourceType: LEAD_SOURCE_TYPE.REFERRAL,
+
+      sourceBroker: null,
+
+      assignedTo: null,
+
+      awaitingAssignment: true,
+
+      assignmentType: 'manual',
+
+      assignedAt: null,
+
+      assignedBy: null,
+    }
+  }
+
+  /* ----------------------------------------------------------
+     MANUAL
+  ---------------------------------------------------------- */
+
+  return {
+    sourceType: LEAD_SOURCE_TYPE.MANUAL,
+
+    sourceBroker: null,
+
+    assignedTo: null,
+
+    awaitingAssignment: false,
+
+    assignmentType: 'manual',
+
+    assignedAt: null,
+
+    assignedBy: null,
   }
 }
 
 /* ============================================================
-   CAPTURAR LEAD - GENÉRICO
+   CRIAR LEAD
 ============================================================ */
 
-export async function createLead(req, res) {
-  try {
-    const leadData = {
-      ...req.body,
-      region: normalizeRegion(req.body.region || 'central'),
-      ip: req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || '',
-      userAgent: req.headers['user-agent'] || '',
-      referrer:
-        req.body.referrer || req.headers.referer || req.headers.referrer || '',
-    }
+/**
+ * Captura principal de lead.
+ *
+ * Pode ser usada por:
+ *
+ * - Site
+ * - Hotsite
+ * - Página de imóvel
+ * - Portal
+ * - Meta
+ * - Integrações futuras
+ */
+export async function captureLead({
+  name,
+  email,
+  phone,
 
-    const result = await captureLead(leadData)
+  propertyId = null,
 
-    const distribution = await tryDistributeLead(result, {
-      region: result.region,
-      createdBy: req.user?._id,
-    })
+  source = 'public',
 
-    return res.status(201).json({
-      success: true,
-      message: distribution.success
-        ? 'Lead criado e distribuído com sucesso.'
-        : 'Lead criado, aguardando distribuição.',
-      data: {
-        lead: result,
-        distribution: {
-          success: distribution.success,
-          assignedTo: distribution.assignedTo || null,
-          method: distribution.matchMethod || null,
-          inQueue: distribution.inQueue || false,
-          message: distribution.message,
-        },
-      },
-    })
-  } catch (error) {
-    console.error('❌ Erro ao capturar lead:', error)
+  sourceType = LEAD_SOURCE_TYPE.SITE,
 
-    return res.status(error.statusCode || 400).json({
-      success: false,
-      message: error.message || 'Não foi possível criar o lead.',
-    })
+  sourceBroker = null,
+
+  sourceSite = '',
+
+  sourceUrl = '',
+
+  landingPage = '',
+
+  referrer = '',
+
+  region = 'zona norte',
+
+  notes = '',
+
+  sessionId = '',
+
+  visitorId = '',
+
+  campaign = {},
+
+  priority = LEAD_PRIORITY.MEDIUM,
+
+  createdBy = null,
+}) {
+  /* ----------------------------------------------------------
+     NORMALIZAÇÃO
+  ---------------------------------------------------------- */
+
+  const normalizedName = cleanString(name)
+
+  const normalizedEmail = normalizeEmail(email)
+
+  const normalizedPhone = normalizePhone(phone)
+
+  const normalizedSource = normalizeSource(source) || 'public'
+
+  const normalizedSourceType =
+    normalizeSourceType(sourceType) || LEAD_SOURCE_TYPE.SITE
+
+  /* ----------------------------------------------------------
+     VALIDAÇÃO
+  ---------------------------------------------------------- */
+
+  validateLeadData({
+    name: normalizedName,
+
+    email: normalizedEmail,
+
+    phone: normalizedPhone,
+  })
+
+  /* ----------------------------------------------------------
+     IMÓVEL
+  ---------------------------------------------------------- */
+
+  let property = null
+
+  if (propertyId) {
+    property = await validateProperty(propertyId)
   }
-}
 
-export async function createPropertyPageLead(req, res) {
-  try {
-    const { propertyId } = req.params
+  /* ----------------------------------------------------------
+     ORIGEM
+  ---------------------------------------------------------- */
 
-    if (!propertyId) {
-      return res.status(400).json({
-        success: false,
-        message: 'ID do imóvel não informado.',
-      })
-    }
+  const sourceContext = await resolveLeadSource({
+    sourceType: normalizedSourceType,
 
-    // 1. BUSCAR O IMÓVEL
-    const property = await Property.findById(propertyId)
+    sourceBroker,
+  })
 
-    if (!property) {
-      return res.status(404).json({
-        success: false,
-        message: 'Imóvel não encontrado.',
-      })
-    }
+  /* ----------------------------------------------------------
+     CAMPANHA
+  ---------------------------------------------------------- */
 
-    // 2. NORMALIZAR A REGIÃO
-    const propertyRegion = property.location?.region || 'central'
-    const normalizedRegion = normalizeRegion(propertyRegion)
+  const safeCampaign = {
+    utmSource: cleanString(campaign?.utmSource),
 
-    console.log(`📊 Lead da página do imóvel: ${property.name}`)
-    console.log(`📍 Região: ${normalizedRegion}`)
-    console.log(`🔄 Lead será distribuído pela fila round-robin`)
+    utmMedium: cleanString(campaign?.utmMedium),
 
-    // 3. PREPARAR OS DADOS DO LEAD USANDO A CONSTANTE
-    const leadData = {
-      name: req.body.name,
-      email: req.body.email,
-      phone: req.body.phone,
-      message: req.body.message || '',
-      region: normalizedRegion,
-      source: req.body.source || 'public',
-      // 🔥 USAR A CONSTANTE IMPORTADA
-      sourceType: LEAD_SOURCE_TYPE.PROPERTY_PAGE,
-      property: propertyId,
-      assignedTo: null,
-      awaitingAssignment: true,
-      isDistributed: false,
-      'distribution.method': 'manual',
-      'distribution.status': 'pending',
-      'distribution.attempts': 0,
-      'distribution.region': normalizedRegion,
-      'distribution.isAutoDistributed': false,
-      'distribution.distributedAt': null,
-      landingPage: req.body.landingPage || '',
-      referrer: req.body.referrer || '',
-      ip: req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || '',
-      userAgent: req.headers['user-agent'] || '',
-    }
+    utmCampaign: cleanString(campaign?.utmCampaign),
 
-    // 4. CRIAR O LEAD
-    const lead = new Lead(leadData)
-    await lead.save()
+    utmTerm: cleanString(campaign?.utmTerm),
 
-    console.log(`✅ Lead criado: ${lead.name}`)
-    console.log(`   sourceType: ${lead.sourceType}`)
+    utmContent: cleanString(campaign?.utmContent),
+  }
 
-    // 5. TENTAR DISTRIBUIR AUTOMATICAMENTE
-    console.log('🔄 Distribuindo lead pela fila round-robin...')
+  /* ----------------------------------------------------------
+     VERIFICAR LEAD DUPLICADO RECENTE
+  ---------------------------------------------------------- */
 
-    const distribution = await autoDistributeLead({
-      leadId: lead._id,
-      region: normalizedRegion,
-      propertyId,
-      createdBy: null,
+  /**
+   * Não criamos vários leads idênticos em poucos segundos
+   * caso o usuário clique duas vezes no botão.
+   *
+   * A janela é de 10 minutos.
+   */
+
+  const duplicateDate = new Date(Date.now() - 10 * 60 * 1000)
+
+  const duplicateQuery = {
+    email: normalizedEmail,
+
+    phone: normalizedPhone,
+
+    createdAt: {
+      $gte: duplicateDate,
+    },
+  }
+
+  if (propertyId) {
+    duplicateQuery.property = propertyId
+  }
+
+  if (normalizedSourceType === LEAD_SOURCE_TYPE.BROKER_HOTSITE) {
+    duplicateQuery.sourceBroker = sourceContext.sourceBroker
+  }
+
+  const existingLead = await Lead.findOne(duplicateQuery)
+    .sort({
+      createdAt: -1,
     })
+    .lean()
 
-    if (distribution.success && distribution.assignedTo) {
-      const assignedId = distribution.assignedTo._id || distribution.assignedTo
-      lead.assignedTo = assignedId
-      lead.isDistributed = true
-      lead.awaitingAssignment = false
-      lead.distribution.method = distribution.matchMethod || 'round_robin'
-      lead.distribution.status = 'success'
-      lead.distribution.isAutoDistributed = true
-      lead.distribution.distributedAt = new Date()
-      await lead.save()
-      console.log(`✅ Lead distribuído para: ${distribution.assignedTo.name}`)
-    } else {
-      console.log(`⏳ Lead em fila de espera: ${distribution.message}`)
+  /* ----------------------------------------------------------
+     SE JÁ EXISTIR
+  ---------------------------------------------------------- */
+
+  if (existingLead) {
+    return {
+      created: false,
+
+      duplicate: true,
+
+      lead: existingLead,
+
+      message: 'Este contato já foi registrado recentemente.',
     }
+  }
 
-    // 6. INCREMENTAR CONTATO NO IMÓVEL
-    try {
-      await Property.findByIdAndUpdate(propertyId, {
-        $inc: {
-          'statistics.contacts': 1,
-          totalContacts: 1,
-        },
-        $set: {
-          'statistics.lastContactAt': new Date(),
-        },
-      })
-      console.log(`✅ Contato incrementado para o imóvel ${property.name}`)
-    } catch (error) {
-      console.warn('⚠️ Erro ao incrementar contato do imóvel:', error)
-    }
+  /* ----------------------------------------------------------
+     DADOS DO LEAD
+  ---------------------------------------------------------- */
 
-    // 7. BUSCAR O LEAD ATUALIZADO
-    const populatedLead = await Lead.findById(lead._id)
-      .populate('assignedTo', 'name email phone')
-      .populate('property', 'name type')
+  const leadData = {
+    name: normalizedName,
 
-    return res.status(201).json({
-      success: true,
-      message: populatedLead?.assignedTo
-        ? `Solicitação recebida e encaminhada para ${populatedLead.assignedTo.name}`
-        : 'Solicitação recebida, aguardando distribuição.',
-      data: {
-        lead: populatedLead,
-        property: {
-          id: property._id,
-          name: property.name,
-          type: property.type,
-        },
-        assignedTo: populatedLead?.assignedTo || null,
-        distribution: {
-          success: !!populatedLead?.assignedTo,
-          assignedTo: populatedLead?.assignedTo || null,
-          method: populatedLead?.distribution?.method || null,
-          inQueue:
-            !populatedLead?.assignedTo && populatedLead?.awaitingAssignment,
-          message: populatedLead?.assignedTo
-            ? `Atribuído ao corretor ${populatedLead.assignedTo.name}`
-            : 'Aguardando distribuição',
-        },
+    email: normalizedEmail,
+
+    phone: normalizedPhone,
+
+    source: normalizedSource,
+
+    sourceType: sourceContext.sourceType,
+
+    sourceBroker: sourceContext.sourceBroker,
+
+    sourceSite: cleanString(sourceSite),
+
+    sourceUrl: cleanString(sourceUrl),
+
+    landingPage: cleanString(landingPage),
+
+    referrer: cleanString(referrer),
+
+    campaign: safeCampaign,
+
+    region: cleanString(region) || 'zona norte',
+
+    status: LEAD_STATUS.NEW,
+
+    stage: LEAD_STAGES.NEW,
+
+    priority: normalizePriority(priority),
+
+    score: 0,
+
+    notes: cleanString(notes),
+
+    property: property?._id || null,
+
+    createdBy: createdBy || null,
+
+    assignedTo: sourceContext.assignedTo,
+
+    awaitingAssignment: sourceContext.awaitingAssignment,
+
+    assignmentType: sourceContext.assignmentType,
+
+    assignedAt: sourceContext.assignedAt,
+
+    assignedBy: sourceContext.assignedBy,
+
+    sessionId: cleanString(sessionId),
+
+    visitorId: cleanString(visitorId),
+
+    contactHistory: [],
+  }
+
+  /* ----------------------------------------------------------
+     HISTÓRICO INICIAL DE DISTRIBUIÇÃO
+  ---------------------------------------------------------- */
+
+  if (sourceContext.assignedTo) {
+    leadData.assignmentHistory = [
+      {
+        from: null,
+
+        to: sourceContext.assignedTo,
+
+        type: sourceContext.assignmentType,
+
+        changedBy: null,
+
+        reason:
+          normalizedSourceType === LEAD_SOURCE_TYPE.BROKER_HOTSITE
+            ? 'Lead capturado através do hotsite do corretor.'
+            : 'Lead atribuído automaticamente.',
+
+        createdAt: new Date(),
       },
-    })
-  } catch (error) {
-    console.error('❌ Erro ao criar lead da página do imóvel:', error)
+    ]
+  }
 
-    return res.status(error.statusCode || 400).json({
-      success: false,
-      message:
-        error.message ||
-        'Não foi possível enviar sua solicitação sobre o imóvel.',
-    })
+  /* ----------------------------------------------------------
+     HISTÓRICO INICIAL DO PIPELINE
+  ---------------------------------------------------------- */
+
+  /**
+   * stageHistory exige changedBy.
+   *
+   * Como um lead público pode ser criado sem usuário
+   * autenticado, não adicionamos aqui.
+   *
+   * O histórico poderá ser criado pelo controller/service
+   * quando houver usuário administrativo ou corretor.
+   */
+
+  /* ----------------------------------------------------------
+     CRIAR
+  ---------------------------------------------------------- */
+
+  const lead = await Lead.create(leadData)
+
+  /* ----------------------------------------------------------
+     POPULATE
+  ---------------------------------------------------------- */
+
+  const populatedLead = await Lead.findById(lead._id)
+    .populate('property', 'name code slug coverImage prices status purpose')
+    .populate('sourceBroker', 'name email avatar')
+    .populate('assignedTo', 'name email avatar')
+    .lean()
+
+  /* ----------------------------------------------------------
+     RESULTADO
+  ---------------------------------------------------------- */
+
+  return {
+    created: true,
+
+    duplicate: false,
+
+    lead: populatedLead,
+
+    assignment: {
+      assigned: !!sourceContext.assignedTo,
+
+      assignedTo: sourceContext.assignedTo,
+
+      awaitingAssignment: sourceContext.awaitingAssignment,
+
+      type: sourceContext.assignmentType,
+    },
+
+    message: sourceContext.awaitingAssignment
+      ? 'Lead criado e enviado para distribuição.'
+      : 'Lead criado com sucesso.',
   }
 }
 
@@ -290,332 +680,441 @@ export async function createPropertyPageLead(req, res) {
    CAPTURAR LEAD DO SITE
 ============================================================ */
 
-export async function createSiteLead(req, res) {
-  try {
-    const leadData = {
-      ...req.body,
-      region: normalizeRegion(req.body.region || 'central'),
-      ip: req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || '',
-      userAgent: req.headers['user-agent'] || '',
-      referrer:
-        req.body.referrer || req.headers.referer || req.headers.referrer || '',
-    }
+/**
+ * Site da imobiliária.
+ *
+ * O admin deverá distribuir posteriormente.
+ */
 
-    const result = await captureSiteLead(leadData)
+export async function captureSiteLead(data = {}) {
+  return captureLead({
+    ...data,
 
-    const distribution = await tryDistributeLead(result, {
-      region: result.region || leadData.region || 'central',
-      createdBy: req.user?._id,
-    })
+    source: data.source || 'site',
 
-    return res.status(201).json({
-      success: true,
-      message: distribution.success
-        ? 'Solicitação recebida e distribuída com sucesso.'
-        : 'Solicitação recebida, aguardando distribuição.',
-      data: {
-        lead: result,
-        distribution: {
-          success: distribution.success,
-          assignedTo: distribution.assignedTo || null,
-          method: distribution.matchMethod || null,
-          inQueue: distribution.inQueue || false,
-          message: distribution.message,
-        },
-      },
-    })
-  } catch (error) {
-    console.error('❌ Erro ao criar lead do site:', error)
+    sourceType: LEAD_SOURCE_TYPE.SITE,
+  })
+}
 
-    return res.status(error.statusCode || 400).json({
-      success: false,
-      message: error.message || 'Não foi possível enviar sua solicitação.',
-    })
+/* ============================================================
+   CAPTURAR LEAD DO HOTSITE
+============================================================ */
+
+/**
+ * Hotsite de corretor.
+ *
+ * O corretor deve ser determinado pelo backend/rota
+ * do hotsite.
+ *
+ * Nunca confiar em assignedTo enviado pelo frontend.
+ */
+
+export async function captureBrokerHotsiteLead({
+  brokerId,
+
+  ...data
+}) {
+  if (!brokerId) {
+    throw new Error('Corretor do hotsite não informado.')
+  }
+
+  return captureLead({
+    ...data,
+
+    source: data.source || 'hotsite',
+
+    sourceType: LEAD_SOURCE_TYPE.BROKER_HOTSITE,
+
+    sourceBroker: brokerId,
+  })
+}
+
+/* ============================================================
+   CAPTURAR LEAD DA PÁGINA DO IMÓVEL
+============================================================ */
+
+/**
+ * Página pública do imóvel.
+ *
+ * O imóvel é identificado pelo backend.
+ *
+ * Não atribui automaticamente a um corretor.
+ */
+
+export async function capturePropertyLead({
+  propertyId,
+
+  ...data
+}) {
+  if (!propertyId) {
+    throw new Error('Imóvel do contato não informado.')
+  }
+
+  return captureLead({
+    ...data,
+
+    propertyId,
+
+    source: data.source || 'public',
+
+    sourceType: LEAD_SOURCE_TYPE.PROPERTY_PAGE,
+  })
+}
+
+/* ============================================================
+   CAPTURAR LEAD DE PORTAL
+============================================================ */
+
+export async function capturePortalLead(data = {}) {
+  return captureLead({
+    ...data,
+
+    source: data.source || 'portal',
+
+    sourceType: LEAD_SOURCE_TYPE.PORTAL,
+  })
+}
+
+/* ============================================================
+   CAPTURAR LEAD META
+============================================================ */
+
+export async function captureMetaLead(data = {}) {
+  return captureLead({
+    ...data,
+
+    source: data.source || 'meta',
+
+    sourceType: LEAD_SOURCE_TYPE.META,
+  })
+}
+
+/* ============================================================
+   CAPTURAR LEAD MANUAL
+============================================================ */
+
+export async function captureManualLead(data = {}) {
+  return captureLead({
+    ...data,
+
+    source: data.source || 'manual',
+
+    sourceType: LEAD_SOURCE_TYPE.MANUAL,
+  })
+}
+
+/* ============================================================
+   ATRIBUIR LEAD AO CORRETOR
+============================================================ */
+
+/**
+ * Usaremos essa função posteriormente no painel Admin.
+ *
+ * Fluxo:
+ *
+ * Lead do site
+ *      ↓
+ * Admin escolhe corretor
+ *      ↓
+ * assignLead()
+ */
+
+export async function assignLead({
+  leadId,
+
+  brokerId,
+
+  assignedBy = null,
+
+  reason = '',
+}) {
+  if (!leadId) {
+    throw new Error('ID do lead não informado.')
+  }
+
+  if (!isValidObjectId(leadId)) {
+    throw new Error('ID do lead inválido.')
+  }
+
+  if (!brokerId) {
+    throw new Error('Corretor não informado.')
+  }
+
+  const broker = await validateBroker(brokerId)
+
+  const lead = await Lead.findById(leadId)
+
+  if (!lead) {
+    throw new Error('Lead não encontrado.')
+  }
+
+  const previousBroker = lead.assignedTo || null
+
+  /* ----------------------------------------------------------
+     Atualizar lead
+  ---------------------------------------------------------- */
+
+  lead.assignedTo = broker._id
+
+  lead.awaitingAssignment = false
+
+  lead.assignmentType = 'admin'
+
+  lead.assignedAt = new Date()
+
+  lead.assignedBy = assignedBy || null
+
+  /* ----------------------------------------------------------
+     Histórico
+  ---------------------------------------------------------- */
+
+  if (!Array.isArray(lead.assignmentHistory)) {
+    lead.assignmentHistory = []
+  }
+
+  lead.assignmentHistory.push({
+    from: previousBroker,
+
+    to: broker._id,
+
+    type: 'admin',
+
+    changedBy: assignedBy || null,
+
+    reason: cleanString(reason) || 'Lead distribuído pelo administrador.',
+
+    createdAt: new Date(),
+  })
+
+  await lead.save()
+
+  /* ----------------------------------------------------------
+     Retornar atualizado
+  ---------------------------------------------------------- */
+
+  const updatedLead = await Lead.findById(lead._id)
+    .populate('property', 'name code slug coverImage prices status')
+    .populate('sourceBroker', 'name email avatar')
+    .populate('assignedTo', 'name email avatar')
+    .lean()
+
+  return {
+    success: true,
+
+    lead: updatedLead,
+
+    broker,
+
+    previousBroker,
+
+    message: 'Lead distribuído com sucesso.',
   }
 }
 
 /* ============================================================
-   CAPTURAR LEAD DO HOTSITE DO CORRETOR
+   REMOVER ATRIBUIÇÃO
 ============================================================ */
 
-export async function createBrokerLead(req, res) {
-  try {
-    const { brokerId } = req.params
+/**
+ * Retorna o lead para a fila de distribuição.
+ *
+ * Útil quando o admin precisa redistribuir um lead.
+ */
 
-    if (!brokerId) {
-      return res.status(400).json({
-        success: false,
-        message: 'ID do corretor não informado.',
-      })
-    }
+export async function unassignLead({
+  leadId,
 
-    const leadData = {
-      ...req.body,
-      region: normalizeRegion(req.body.region || 'central'),
-      brokerId,
-      ip: req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || '',
-      userAgent: req.headers['user-agent'] || '',
-      referrer:
-        req.body.referrer || req.headers.referer || req.headers.referrer || '',
-    }
+  changedBy = null,
 
-    const result = await captureBrokerHotsiteLead(leadData)
+  reason = '',
+}) {
+  if (!leadId) {
+    throw new Error('ID do lead não informado.')
+  }
 
-    const isAssigned = !!result.assignedTo
+  if (!isValidObjectId(leadId)) {
+    throw new Error('ID do lead inválido.')
+  }
 
-    return res.status(201).json({
-      success: true,
-      message: isAssigned
-        ? 'Solicitação enviada ao corretor com sucesso.'
-        : 'Solicitação recebida, aguardando distribuição.',
-      data: {
-        lead: result,
-        assignedTo: result.assignedTo || null,
-        distribution: {
-          success: isAssigned,
-          assignedTo: result.assignedTo || null,
-          method: isAssigned ? 'broker' : null,
-          message: isAssigned
-            ? 'Atribuído ao corretor do hotsite'
-            : 'Aguardando distribuição',
-        },
-      },
-    })
-  } catch (error) {
-    console.error('❌ Erro ao criar lead do corretor:', error)
+  const lead = await Lead.findById(leadId)
 
-    return res.status(error.statusCode || 400).json({
-      success: false,
-      message:
-        error.message || 'Não foi possível enviar sua solicitação ao corretor.',
-    })
+  if (!lead) {
+    throw new Error('Lead não encontrado.')
+  }
+
+  const previousBroker = lead.assignedTo || null
+
+  lead.assignedTo = null
+
+  lead.awaitingAssignment = true
+
+  lead.assignmentType = 'admin'
+
+  lead.assignedAt = null
+
+  lead.assignedBy = null
+
+  if (!Array.isArray(lead.assignmentHistory)) {
+    lead.assignmentHistory = []
+  }
+
+  lead.assignmentHistory.push({
+    from: previousBroker,
+
+    to: null,
+
+    type: 'admin',
+
+    changedBy: changedBy || null,
+
+    reason: cleanString(reason) || 'Lead retornado para distribuição.',
+
+    createdAt: new Date(),
+  })
+
+  await lead.save()
+
+  return {
+    success: true,
+
+    lead,
+
+    message: 'Lead retornado para a fila de distribuição.',
   }
 }
 
 /* ============================================================
-   CAPTURAR LEAD RELACIONADO A UM IMÓVEL 🔥 CORRIGIDO
+   BUSCAR LEADS AGUARDANDO DISTRIBUIÇÃO
 ============================================================ */
 
-export async function createPropertyLead(req, res) {
-  try {
-    const { propertyId } = req.params
+/**
+ * Usaremos no Dashboard/Admin.
+ */
 
-    if (!propertyId) {
-      return res.status(400).json({
-        success: false,
-        message: 'ID do imóvel não informado.',
-      })
-    }
+export async function getLeadsAwaitingAssignment({
+  limit = 50,
 
-    // 1. BUSCAR O IMÓVEL
-    const property = await Property.findById(propertyId)
-      .populate('broker', 'name email phone')
-      .populate('createdBy', 'name email phone')
+  skip = 0,
+} = {}) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 100)
 
-    if (!property) {
-      return res.status(404).json({
-        success: false,
-        message: 'Imóvel não encontrado.',
-      })
-    }
+  const safeSkip = Math.max(Number(skip) || 0, 0)
 
-    // 2. DETERMINAR O CORRETOR RESPONSÁVEL
-    const assignedBroker = property.broker || property.createdBy
-
-    // 3. NORMALIZAR A REGIÃO
-    const propertyRegion = property.location?.region || 'central'
-    const normalizedRegion = normalizeRegion(propertyRegion)
-
-    console.log(`📊 Lead para imóvel: ${property.name}`)
-    console.log(`📍 Região: ${normalizedRegion}`)
-    console.log(`👤 Corretor responsável: ${assignedBroker?.name || 'Nenhum'}`)
-
-    // 4. DETERMINAR O MÉTODO DE DISTRIBUIÇÃO
-    // 🔥 VALORES PERMITIDOS: 'admin', 'automatic', 'broker', 'manual', 'round_robin', 'specialized'
-    const distributionMethod = assignedBroker?._id ? 'broker' : 'manual'
-
-    // 5. PREPARAR OS DADOS DO LEAD
-    const leadData = {
-      ...req.body,
-      propertyId,
-      assignedTo: assignedBroker?._id || null,
-      awaitingAssignment: !assignedBroker?._id,
-      isDistributed: !!assignedBroker?._id,
-      region: normalizedRegion,
-      sourceType: req.body.sourceType || 'property_page',
-      'distribution.method': distributionMethod,
-      'distribution.status': assignedBroker?._id ? 'success' : 'pending',
-      'distribution.attempts': 0,
-      'distribution.region': normalizedRegion,
-      'distribution.isAutoDistributed': !!assignedBroker?._id,
-      'distribution.distributedAt': assignedBroker?._id ? new Date() : null,
-      ip: req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || '',
-      userAgent: req.headers['user-agent'] || '',
-      referrer:
-        req.body.referrer || req.headers.referer || req.headers.referrer || '',
-    }
-
-    // 6. CAPTURAR O LEAD
-    const savedLead = await capturePropertyLead(leadData)
-
-    // 7. VERIFICAR SE O LEAD FOI SALVO
-    let leadDoc
-
-    if (savedLead && savedLead._id) {
-      leadDoc = await Lead.findById(savedLead._id)
-    } else if (savedLead && savedLead.id) {
-      leadDoc = await Lead.findById(savedLead.id)
-    } else if (savedLead && savedLead.lead && savedLead.lead._id) {
-      leadDoc = await Lead.findById(savedLead.lead._id)
-    }
-
-    // FALLBACK: BUSCAR PELO EMAIL
-    if (!leadDoc && req.body.email) {
-      leadDoc = await Lead.findOne({
-        email: req.body.email,
-        property: propertyId,
-      }).sort({ createdAt: -1 })
-    }
-
-    // FALLBACK FINAL: CRIAR MANUALMENTE
-    if (!leadDoc) {
-      console.log('⚠️ Lead não encontrado, criando manualmente...')
-
-      leadDoc = new Lead({
-        name: req.body.name,
-        email: req.body.email,
-        phone: req.body.phone,
-        region: normalizedRegion,
-        source: 'public',
-        sourceType: 'property_page',
-        property: propertyId,
-        assignedTo: assignedBroker?._id || null,
-        awaitingAssignment: !assignedBroker?._id,
-        isDistributed: !!assignedBroker?._id,
-        notes: req.body.message || '',
-        status: 'novo',
-        stage: 'novo_lead',
-        priority: 'media',
-        'distribution.method': distributionMethod,
-        'distribution.status': assignedBroker?._id ? 'success' : 'pending',
-        'distribution.attempts': 0,
-        'distribution.region': normalizedRegion,
-        'distribution.isAutoDistributed': !!assignedBroker?._id,
-        'distribution.distributedAt': assignedBroker?._id ? new Date() : null,
-        landingPage: req.body.landingPage || '',
-        referrer: req.body.referrer || '',
-      })
-
-      await leadDoc.save()
-      console.log(`✅ Lead criado manualmente: ${leadDoc.name}`)
-    }
-
-    console.log(`📋 Lead após criação:`)
-    console.log(`  Nome: ${leadDoc.name}`)
-    console.log(`  assignedTo: ${leadDoc.assignedTo || 'null'}`)
-    console.log(`  awaitingAssignment: ${leadDoc.awaitingAssignment}`)
-    console.log(`  isDistributed: ${leadDoc.isDistributed}`)
-    console.log(`  distribution.method: ${leadDoc.distribution?.method}`)
-
-    // 8. SE TIVER CORRETOR, GARANTIR QUE O LEAD ESTÁ CORRETO
-    if (assignedBroker?._id) {
-      leadDoc.assignedTo = assignedBroker._id
-      leadDoc.isDistributed = true
-      leadDoc.awaitingAssignment = false
-      leadDoc.distribution.method = 'broker'
-      leadDoc.distribution.status = 'success'
-      leadDoc.distribution.isAutoDistributed = true
-      leadDoc.distribution.distributedAt = new Date()
-      await leadDoc.save()
-      console.log(`✅ Lead atribuído ao corretor: ${assignedBroker.name}`)
-    } else {
-      // 9. NÃO TEM CORRETOR, TENTAR DISTRIBUIR AUTOMATICAMENTE
-      console.log('🔄 Lead sem corretor, tentando distribuição automática...')
-
-      leadDoc.awaitingAssignment = true
-      leadDoc.isDistributed = false
-      leadDoc.distribution.method = 'manual'
-      leadDoc.distribution.status = 'pending'
-      leadDoc.distribution.attempts = 0
-      await leadDoc.save()
-
-      const distribution = await autoDistributeLead({
-        leadId: leadDoc._id,
-        region: normalizedRegion,
-        propertyId,
-        createdBy: req.user?._id || null,
-      })
-
-      if (distribution.success && distribution.assignedTo) {
-        const assignedId =
-          distribution.assignedTo._id || distribution.assignedTo
-        leadDoc.assignedTo = assignedId
-        leadDoc.isDistributed = true
-        leadDoc.awaitingAssignment = false
-        leadDoc.distribution.method = distribution.matchMethod || 'automatic'
-        leadDoc.distribution.status = 'success'
-        leadDoc.distribution.isAutoDistributed = true
-        leadDoc.distribution.distributedAt = new Date()
-        await leadDoc.save()
-        console.log(`✅ Lead distribuído para: ${distribution.assignedTo.name}`)
-      }
-    }
-
-    // 10. INCREMENTAR CONTATO NO IMÓVEL
-    try {
-      await Property.findByIdAndUpdate(propertyId, {
-        $inc: {
-          'statistics.contacts': 1,
-          totalContacts: 1,
-        },
-        $set: {
-          'statistics.lastContactAt': new Date(),
-        },
-      })
-      console.log(`✅ Contato incrementado para o imóvel ${property.name}`)
-    } catch (error) {
-      console.warn('⚠️ Erro ao incrementar contato do imóvel:', error)
-    }
-
-    // 11. BUSCAR O LEAD ATUALIZADO
-    const populatedLead = await Lead.findById(leadDoc._id)
-      .populate('assignedTo', 'name email phone')
-      .populate('property', 'name type')
-
-    return res.status(201).json({
-      success: true,
-      message: populatedLead?.assignedTo
-        ? `Solicitação recebida e encaminhada para ${populatedLead.assignedTo.name}`
-        : 'Solicitação recebida, aguardando distribuição.',
-      data: {
-        lead: populatedLead,
-        property: {
-          id: property._id,
-          name: property.name,
-          type: property.type,
-        },
-        assignedTo: populatedLead?.assignedTo || null,
-        distribution: {
-          success: !!populatedLead?.assignedTo,
-          assignedTo: populatedLead?.assignedTo || null,
-          method: populatedLead?.distribution?.method || null,
-          inQueue:
-            !populatedLead?.assignedTo && populatedLead?.awaitingAssignment,
-          message: populatedLead?.assignedTo
-            ? `Atribuído ao corretor ${populatedLead.assignedTo.name}`
-            : 'Aguardando distribuição',
-        },
-      },
+  return Lead.find({
+    awaitingAssignment: true,
+  })
+    .populate('property', 'name code slug coverImage prices status purpose')
+    .populate('sourceBroker', 'name email avatar')
+    .sort({
+      createdAt: -1,
     })
-  } catch (error) {
-    console.error('❌ Erro ao criar lead do imóvel:', error)
+    .skip(safeSkip)
+    .limit(safeLimit)
+    .lean()
+}
 
-    return res.status(error.statusCode || 400).json({
-      success: false,
-      message:
-        error.message ||
-        'Não foi possível enviar sua solicitação sobre o imóvel.',
+/* ============================================================
+   CONTAR LEADS AGUARDANDO DISTRIBUIÇÃO
+============================================================ */
+
+export async function countLeadsAwaitingAssignment() {
+  return Lead.countDocuments({
+    awaitingAssignment: true,
+  })
+}
+
+/* ============================================================
+   BUSCAR LEADS DE UM CORRETOR
+============================================================ */
+
+export async function getBrokerCapturedLeads(
+  brokerId,
+  {
+    limit = 50,
+
+    skip = 0,
+  } = {},
+) {
+  if (!brokerId) {
+    throw new Error('ID do corretor não informado.')
+  }
+
+  if (!isValidObjectId(brokerId)) {
+    throw new Error('ID do corretor inválido.')
+  }
+
+  const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 100)
+
+  const safeSkip = Math.max(Number(skip) || 0, 0)
+
+  return Lead.find({
+    sourceBroker: brokerId,
+  })
+    .populate('property', 'name code slug coverImage prices status')
+    .populate('assignedTo', 'name email avatar')
+    .sort({
+      createdAt: -1,
     })
+    .skip(safeSkip)
+    .limit(safeLimit)
+    .lean()
+}
+
+/* ============================================================
+   ESTATÍSTICAS DE ORIGEM DO CORRETOR
+============================================================ */
+
+/**
+ * Quantos leads foram gerados através do hotsite
+ * de determinado corretor.
+ */
+
+export async function getBrokerLeadSourceStats(brokerId) {
+  if (!brokerId) {
+    throw new Error('ID do corretor não informado.')
+  }
+
+  if (!isValidObjectId(brokerId)) {
+    throw new Error('ID do corretor inválido.')
+  }
+
+  const [total, assignedToBroker, converted, lost] = await Promise.all([
+    Lead.countDocuments({
+      sourceBroker: brokerId,
+    }),
+
+    Lead.countDocuments({
+      sourceBroker: brokerId,
+
+      assignedTo: brokerId,
+    }),
+
+    Lead.countDocuments({
+      sourceBroker: brokerId,
+
+      status: LEAD_STATUS.CONVERTED,
+    }),
+
+    Lead.countDocuments({
+      sourceBroker: brokerId,
+
+      status: LEAD_STATUS.LOST,
+    }),
+  ])
+
+  const conversionRate =
+    total > 0 ? Number(((converted / total) * 100).toFixed(2)) : 0
+
+  return {
+    total,
+
+    assignedToBroker,
+
+    converted,
+
+    lost,
+
+    conversionRate,
   }
 }
 
@@ -624,8 +1123,29 @@ export async function createPropertyLead(req, res) {
 ============================================================ */
 
 export default {
-  createLead,
-  createSiteLead,
-  createBrokerLead,
-  createPropertyLead,
+  captureLead,
+
+  captureSiteLead,
+
+  captureBrokerHotsiteLead,
+
+  capturePropertyLead,
+
+  capturePortalLead,
+
+  captureMetaLead,
+
+  captureManualLead,
+
+  assignLead,
+
+  unassignLead,
+
+  getLeadsAwaitingAssignment,
+
+  countLeadsAwaitingAssignment,
+
+  getBrokerCapturedLeads,
+
+  getBrokerLeadSourceStats,
 }

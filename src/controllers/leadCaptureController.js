@@ -108,20 +108,53 @@ export async function createLead(req, res) {
         req.body.referrer || req.headers.referer || req.headers.referrer || '',
     }
 
-    const result = await captureLead(leadData)
+    // 1. Capturar o lead
+    const captureResult = await captureLead(leadData)
 
-    const distribution = await tryDistributeLead(result, {
-      region: result.region,
-      createdBy: req.user?._id,
-    })
+    // 2. Extrair o documento correto do retorno do serviço
+    const lead = captureResult?.lead || captureResult
 
-    return res.status(201).json({
+    if (!lead?._id) {
+      console.error('[LeadCapture] Captura sem ID de lead:', captureResult)
+
+      throw new Error('A captura foi concluída sem retornar o ID do lead.')
+    }
+
+    let distribution
+
+    // 3. Não distribuir novamente um contato duplicado
+    const isDuplicate =
+      captureResult?.duplicate === true || captureResult?.created === false
+
+    if (isDuplicate) {
+      const assignedTo = lead.assignedTo || null
+
+      distribution = {
+        success: !!assignedTo,
+        assignedTo,
+        inQueue: !assignedTo,
+        message:
+          captureResult.message ||
+          'Este contato já foi registrado recentemente.',
+      }
+    } else {
+      // 4. Distribuir usando o documento que contém _id
+      distribution = await tryDistributeLead(lead, {
+        region: lead.region || leadData.region || 'central',
+        createdBy: req.user?._id,
+      })
+    }
+
+    // 5. Retornar os dados ao frontend
+    return res.status(isDuplicate ? 200 : 201).json({
       success: true,
-      message: distribution.success
-        ? 'Lead criado e distribuído com sucesso.'
-        : 'Lead criado, aguardando distribuição.',
+      message:
+        captureResult.message ||
+        (distribution.success
+          ? 'Lead criado e distribuído com sucesso.'
+          : 'Lead criado, aguardando distribuição.'),
       data: {
-        lead: result,
+        lead,
         distribution: {
           success: distribution.success,
           assignedTo: distribution.assignedTo || null,

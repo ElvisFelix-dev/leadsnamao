@@ -113,10 +113,33 @@ const failFollowUp = async (followUp, error) => {
 const claimNextFollowUp = async () => {
   const now = new Date()
 
-  const candidate = await LeadFollowUp.findOne({
+  const filter = {
     status: 'pending',
     scheduledAt: { $lte: now },
-  })
+  }
+
+  if (!isDryRun()) {
+    const testFollowUpId = String(
+      process.env.LEAD_FOLLOWUPS_TEST_ID || '',
+    ).trim()
+
+    const allowBulkSend =
+      String(process.env.LEAD_FOLLOWUPS_ALLOW_BULK_SEND || '')
+        .trim()
+        .toLowerCase() === 'true'
+
+    if (testFollowUpId) {
+      filter._id = testFollowUpId
+    } else if (!allowBulkSend) {
+      console.warn(
+        '[LeadFollowUp] Envio real bloqueado: configure ' +
+          'LEAD_FOLLOWUPS_TEST_ID para um teste individual.',
+      )
+      return null
+    }
+  }
+
+  const candidate = await LeadFollowUp.findOne(filter)
     .sort({
       scheduledAt: 1,
       createdAt: 1,
@@ -128,8 +151,6 @@ const claimNextFollowUp = async () => {
     return null
   }
 
-  // A condição atômica impede duas instâncias de reservar
-  // o mesmo registro enquanto ele continuar pendente.
   return LeadFollowUp.findOneAndUpdate(
     {
       _id: candidate._id,

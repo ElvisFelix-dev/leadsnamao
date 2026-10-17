@@ -324,7 +324,7 @@ const startCronJobs = () => {
     } catch (err) {
       console.error(
         '[LeadFollowUp] Erro no processamento agendado:',
-        err.message,
+        err.stack || err,
       )
     }
   })

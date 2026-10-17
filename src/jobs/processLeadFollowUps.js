@@ -144,11 +144,28 @@ const claimNextFollowUp = async () => {
       scheduledAt: 1,
       createdAt: 1,
     })
-    .select('_id')
+    .select('_id status scheduledAt step')
     .lean()
 
-  if (!candidate) {
-    return null
+  if (!candidate && !isDryRun()) {
+    const testFollowUpId = String(
+      process.env.LEAD_FOLLOWUPS_TEST_ID || '',
+    ).trim()
+
+    if (testFollowUpId) {
+      const diagnostic = await LeadFollowUp.findById(testFollowUpId)
+        .select('_id status scheduledAt step')
+        .lean()
+
+      console.warn('[LeadFollowUp] Diagnóstico do teste individual:', {
+        configuredId: testFollowUpId,
+        recordFound: Boolean(diagnostic),
+        recordStatus: diagnostic?.status ?? null,
+        scheduledAt: diagnostic?.scheduledAt ?? null,
+        step: diagnostic?.step ?? null,
+        currentTime: new Date(),
+      })
+    }
   }
 
   return LeadFollowUp.findOneAndUpdate(

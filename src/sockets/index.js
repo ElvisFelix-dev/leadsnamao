@@ -7,7 +7,7 @@ export const getSocketIO = () => ioInstance
 
 export function setupSocketIO(httpServer) {
   const allowedOrigins = process.env.ALLOWED_ORIGINS
-    ? process.env.ALLOWED_ORIGINS.split(',')
+    ? process.env.ALLOWED_ORIGINS.split(',').map((origin) => origin.trim())
     : ['http://localhost:3333', 'http://localhost:5173']
 
   const io = new Server(httpServer, {
@@ -21,31 +21,12 @@ export function setupSocketIO(httpServer) {
   ioInstance = io
 
   // =========================================================
-  // MIDDLEWARE DE AUTENTICAÇÃO DO SOCKET
+  // MIDDLEWARE DE AUTENTICAÇÃO
   // =========================================================
 
   io.use((socket, next) => {
-    // Aqui você pode validar o token JWT do socket
-    //
-    // const token = socket.handshake.auth.token
-    //
-    // if (!token) {
-    //   return next(new Error('Autenticação necessária'))
-    // }
-    //
-    // try {
-    //   const decoded = jwt.verify(
-    //     token,
-    //     process.env.JWT_SECRET,
-    //   )
-    //
-    //   socket.userId = decoded.id
-    //
-    //   next()
-    // } catch (err) {
-    //   next(new Error('Token inválido'))
-    // }
-
+    // Mantém o comportamento atual.
+    // A validação JWT poderá ser adicionada sem alterar os eventos.
     next()
   })
 
@@ -54,16 +35,62 @@ export function setupSocketIO(httpServer) {
   // =========================================================
 
   io.on('connection', (socket) => {
-    console.log(`🟢 Cliente conectado: ${socket.id}`)
+    console.log(`🟢 Cliente conectado ao Socket.IO: ${socket.id}`)
 
-    // ============================================
-    // ADMIN
-    // ============================================
+    // =======================================================
+    // LEADS NA MÃO — ENTRADA NA SALA DO USUÁRIO
+    // =======================================================
+
+    socket.on('join_conversations', () => {
+      const userId = socket.handshake.auth?.userId
+
+      if (!userId) {
+        console.warn(
+          `⚠️ Socket ${socket.id} solicitou join_conversations sem userId.`,
+        )
+        return
+      }
+
+      const userRoom = `user_${String(userId)}`
+
+      socket.join(userRoom)
+
+      console.log(
+        `👤 Socket ${socket.id} entrou na sala do usuário: ${userRoom}`,
+      )
+    })
+
+    // =======================================================
+    // LEADS NA MÃO — ENTRADA NA SALA DA CONVERSA
+    // =======================================================
+
+    socket.on('join_conversation', (conversationId) => {
+      const id =
+        typeof conversationId === 'string'
+          ? conversationId
+          : conversationId?._id || conversationId?.conversationId
+
+      if (!id || typeof id !== 'string') {
+        console.warn(
+          '⚠️ join_conversation recebeu um ID inválido:',
+          conversationId,
+        )
+        return
+      }
+
+      socket.join(id)
+
+      console.log(`💬 Socket ${socket.id} entrou na sala da conversa: ${id}`)
+    })
+
+    // =======================================================
+    // COMPATIBILIDADE COM O EVENTO ANTIGO DO ADMIN
+    // =======================================================
 
     socket.on('joinAdmin', async () => {
       socket.join('admins')
 
-      console.log('👨‍💻 Admin conectado e ouvindo todas as conversas')
+      console.log('👨‍💻 Admin conectado e ouvindo conversas antigas')
 
       try {
         const conversations = await Conversation.find({})
@@ -74,7 +101,7 @@ export function setupSocketIO(httpServer) {
               from: msg.from,
               to: msg.to,
               body: msg.body,
-              time: msg.createdAt.toLocaleTimeString([], {
+              time: msg.createdAt?.toLocaleTimeString([], {
                 hour: '2-digit',
                 minute: '2-digit',
               }),
@@ -87,14 +114,21 @@ export function setupSocketIO(httpServer) {
       }
     })
 
-    // ============================================
-    // USUÁRIO
-    // ============================================
+    // =======================================================
+    // COMPATIBILIDADE COM A CONVERSA ANTIGA POR USERNAME
+    // =======================================================
 
-    socket.on('joinConversation', async ({ userName }) => {
+    socket.on('joinConversation', async (data = {}) => {
+      const userName = typeof data === 'string' ? data : data.userName
+
+      if (!userName) {
+        console.warn('⚠️ joinConversation recebido sem userName.')
+        return
+      }
+
       socket.join(userName)
 
-      console.log(`👤 Usuário ${userName} entrou na conversa`)
+      console.log(`👤 Usuário entrou na conversa antiga: ${userName}`)
 
       try {
         let conversation = await Conversation.findOne({ userName })
@@ -113,7 +147,7 @@ export function setupSocketIO(httpServer) {
             from: msg.from,
             to: msg.to,
             body: msg.body,
-            time: msg.createdAt.toLocaleTimeString([], {
+            time: msg.createdAt?.toLocaleTimeString([], {
               hour: '2-digit',
               minute: '2-digit',
             }),
@@ -121,16 +155,23 @@ export function setupSocketIO(httpServer) {
           })
         })
       } catch (err) {
-        console.error('❌ Erro ao carregar conversa:', err.message)
+        console.error('❌ Erro ao carregar conversa antiga:', err.message)
       }
     })
 
-    // ============================================
-    // ENVIAR MENSAGEM
-    // ============================================
+    // =======================================================
+    // COMPATIBILIDADE COM O ENVIO DE MENSAGENS ANTIGO
+    // =======================================================
 
-    socket.on('sendMessage', async (data) => {
+    socket.on('sendMessage', async (data = {}) => {
       const { conversationId, from, to, body } = data
+
+      if (!conversationId || !body) {
+        socket.emit('messageError', {
+          message: 'conversationId e body são obrigatórios.',
+        })
+        return
+      }
 
       try {
         let conversation = await Conversation.findOne({
@@ -153,7 +194,6 @@ export function setupSocketIO(httpServer) {
         }
 
         conversation.messages.push(msg)
-
         await conversation.save()
 
         const messageData = {
@@ -166,10 +206,9 @@ export function setupSocketIO(httpServer) {
         }
 
         io.to(conversationId).emit('newMessage', messageData)
-
         io.to('admins').emit('newMessage', messageData)
       } catch (err) {
-        console.error('❌ Erro ao salvar mensagem:', err.message)
+        console.error('❌ Erro ao salvar mensagem antiga:', err.message)
 
         socket.emit('messageError', {
           message: 'Erro ao enviar mensagem',
@@ -178,22 +217,23 @@ export function setupSocketIO(httpServer) {
       }
     })
 
-    // ============================================
-    // DIGITAÇÃO
-    // ============================================
+    // =======================================================
+    // DIGITAÇÃO — COMPATIBILIDADE COM O SISTEMA ANTIGO
+    // =======================================================
 
     socket.on('typing', (conversationId) => {
-      socket.to(conversationId).emit('typing', conversationId)
+      if (!conversationId) return
 
+      socket.to(conversationId).emit('typing', conversationId)
       socket.to('admins').emit('typing', conversationId)
     })
 
-    // ============================================
+    // =======================================================
     // DESCONEXÃO
-    // ============================================
+    // =======================================================
 
-    socket.on('disconnect', () => {
-      console.log(`🔴 Cliente desconectado: ${socket.id}`)
+    socket.on('disconnect', (reason) => {
+      console.log(`🔴 Socket desconectado: ${socket.id}. Motivo: ${reason}`)
     })
   })
 

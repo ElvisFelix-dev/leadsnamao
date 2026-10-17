@@ -1,6 +1,7 @@
 // src/service/whatsapp/whatsappAkgService.js
 
 import axios from 'axios'
+import mongoose from 'mongoose'
 
 import crypto from 'crypto'
 
@@ -122,19 +123,38 @@ const toJid = (phone) => {
 }
 
 const getIntegrationWithSecrets = async (integrationId = null) => {
-  const query = {
-    enabled: true,
-  }
+  let integration = null
 
   if (integrationId) {
-    query._id = integrationId
+    const normalizedId = String(integrationId).trim()
+
+    if (!mongoose.Types.ObjectId.isValid(normalizedId)) {
+      throw new AppError('ID da integração WhatsApp inválido.', 400)
+    }
+
+    integration = await WhatsAppIntegration.findOne({
+      _id: normalizedId,
+      enabled: true,
+    })
+      .select('+apiKey +webhookSecret')
+      .lean()
+  } else {
+    // Não selecionar silenciosamente uma sessão quando há várias integrações.
+    const integrations = await WhatsAppIntegration.find({ enabled: true })
+      .select('+apiKey +webhookSecret')
+      .sort({ createdAt: -1 })
+      .limit(2)
+      .lean()
+
+    if (integrations.length > 1) {
+      throw new AppError(
+        'Há mais de uma integração WhatsApp ativa. Informe integrationId para escolher a sessão correta.',
+        400,
+      )
+    }
+
+    integration = integrations[0] || null
   }
-
-  const integration = await WhatsAppIntegration.findOne(query)
-
-    .select('+apiKey +webhookSecret')
-
-    .lean()
 
   if (!integration) {
     throw new AppError('Integração WhatsApp não encontrada ou desativada.', 404)
@@ -143,7 +163,6 @@ const getIntegrationWithSecrets = async (integrationId = null) => {
   if (!integration.baseUrl || !integration.sessionId) {
     throw new AppError(
       'A integração não possui baseUrl ou sessionId configurado.',
-
       400,
     )
   }
@@ -397,10 +416,57 @@ export const upsertWhatsAppConversation = async ({
 
 // ==========================================================
 
-export const createIntegration = async (payload) => {
-  const integration = await WhatsAppIntegration.create(payload)
+export const createIntegration = async (payload = {}) => {
+  const name = String(payload.name || '').trim()
+  const baseUrlInput = String(payload.baseUrl || '').trim()
+  const apiKey = String(payload.apiKey || '').trim()
+  const sessionId = String(payload.sessionId || '').trim()
+  const webhookSecret = String(payload.webhookSecret || '').trim()
 
-  return integration
+  if (!name || !baseUrlInput || !apiKey || !sessionId) {
+    throw new AppError(
+      'Informe name, baseUrl, apiKey e sessionId para criar a integração.',
+      400,
+    )
+  }
+
+  let parsedBaseUrl
+  try {
+    parsedBaseUrl = new URL(baseUrlInput)
+  } catch {
+    throw new AppError('A URL base da integração é inválida.', 400)
+  }
+
+  const isLocalHttp =
+    parsedBaseUrl.protocol === 'http:' &&
+    ['localhost', '127.0.0.1'].includes(parsedBaseUrl.hostname)
+
+  if (parsedBaseUrl.protocol !== 'https:' && !isLocalHttp) {
+    throw new AppError(
+      'A URL base deve utilizar HTTPS. HTTP só é permitido em localhost para desenvolvimento.',
+      400,
+    )
+  }
+
+  try {
+    return await WhatsAppIntegration.create({
+      name,
+      baseUrl: normalizeBaseUrl(baseUrlInput),
+      apiKey,
+      sessionId,
+      webhookSecret,
+      provider: 'wa-akg',
+      enabled: payload.enabled !== false,
+    })
+  } catch (error) {
+    if (error?.code === 11000) {
+      throw new AppError(
+        'Já existe uma integração WA-AKG cadastrada com esse sessionId.',
+        409,
+      )
+    }
+    throw error
+  }
 }
 
 export const listIntegrations = async () => {
@@ -936,9 +1002,12 @@ export const handleWebhook = async ({
     }
   }
 
-  const event = payload.event || payload.type || payload.data?.event || ''
+  const event = String(
+    payload.event || payload.type || payload.data?.event || '',
+  ).trim()
 
-  const data = payload.data || payload
+  const data =
+    payload.data && typeof payload.data === 'object' ? payload.data : payload
 
   console.info('[WA-AKG] Webhook recebido:', {
     event,
@@ -1563,7 +1632,10 @@ export const updateWebhookSecret = async ({ integrationId, webhookSecret }) => {
   return integration
 }
 
-export const prepareLeadWhatsAppConversation = async ({ lead }) => {
+export const prepareLeadWhatsAppConversation = async ({
+  lead,
+  integrationId = null,
+}) => {
   if (!lead?._id) {
     throw new AppError('Lead inválido.', 400)
   }
@@ -1576,7 +1648,7 @@ export const prepareLeadWhatsAppConversation = async ({ lead }) => {
 
   // Busca uma integração WhatsApp ativa.
 
-  const integration = await getIntegrationWithSecrets()
+  const integration = await getIntegrationWithSecrets(integrationId)
 
   const remoteJid = toJid(phone)
 

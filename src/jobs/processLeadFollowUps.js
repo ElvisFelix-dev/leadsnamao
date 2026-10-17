@@ -118,6 +118,7 @@ const claimNextFollowUp = async () => {
     scheduledAt: { $lte: now },
   }
 
+  // Em produção, restringe o envio ao ID de teste configurado.
   if (!isDryRun()) {
     const testFollowUpId = String(
       process.env.LEAD_FOLLOWUPS_TEST_ID || '',
@@ -147,28 +148,35 @@ const claimNextFollowUp = async () => {
     .select('_id status scheduledAt step')
     .lean()
 
-  if (!candidate && !isDryRun()) {
-    const testFollowUpId = String(
-      process.env.LEAD_FOLLOWUPS_TEST_ID || '',
-    ).trim()
+  // Não tenta acessar candidate._id quando nenhum registro é encontrado.
+  if (!candidate) {
+    if (!isDryRun()) {
+      const testFollowUpId = String(
+        process.env.LEAD_FOLLOWUPS_TEST_ID || '',
+      ).trim()
 
-    if (testFollowUpId) {
-      const diagnostic = await LeadFollowUp.findById(testFollowUpId)
-        .select('_id status scheduledAt step')
-        .lean()
+      if (testFollowUpId) {
+        const diagnostic = await LeadFollowUp.findById(testFollowUpId)
+          .select('_id status scheduledAt step')
+          .lean()
 
-      console.warn('[LeadFollowUp] Diagnóstico do teste individual:', {
-        configuredId: testFollowUpId,
-        recordFound: Boolean(diagnostic),
-        recordStatus: diagnostic?.status ?? null,
-        scheduledAt: diagnostic?.scheduledAt ?? null,
-        step: diagnostic?.step ?? null,
-        currentTime: new Date(),
-      })
+        console.warn('[LeadFollowUp] Diagnóstico do teste individual:', {
+          configuredId: testFollowUpId,
+          recordFound: Boolean(diagnostic),
+          recordStatus: diagnostic?.status ?? null,
+          scheduledAt: diagnostic?.scheduledAt ?? null,
+          step: diagnostic?.step ?? null,
+          currentTime: new Date(),
+        })
+      }
     }
+
+    return null
   }
 
-  return LeadFollowUp.findOneAndUpdate(
+  // Reserva condicional para evitar que dois ciclos processem
+  // simultaneamente o mesmo follow-up.
+  const claimedFollowUp = await LeadFollowUp.findOneAndUpdate(
     {
       _id: candidate._id,
       status: 'pending',
@@ -184,6 +192,21 @@ const claimNextFollowUp = async () => {
       new: true,
     },
   )
+
+  // Outro processo pode ter reservado o registro entre as consultas.
+  if (!claimedFollowUp) {
+    console.warn(
+      '[LeadFollowUp] O registro não pôde ser reservado; ' +
+        'pode ter sido processado por outra execução.',
+      {
+        followUpId: String(candidate._id),
+      },
+    )
+
+    return null
+  }
+
+  return claimedFollowUp
 }
 
 // ============================================================

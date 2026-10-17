@@ -5,6 +5,7 @@ import {
   captureBrokerHotsiteLead,
   capturePropertyLead,
 } from '../service/leadCaptureService.js'
+import { notifyLeadCreated } from '../service/leadService.js'
 import { autoDistributeLead } from '../service/leadDistributionService.js'
 import Property from '../models/Property.js'
 import Lead from '../models/Lead.js'
@@ -334,24 +335,21 @@ export async function createSiteLead(req, res) {
         req.body.referrer || req.headers.referer || req.headers.referrer || '',
     }
 
-    // 1. Capturar o lead pelo site
+    // 1. Capturar o lead
     const captureResult = await captureSiteLead(leadData)
-
-    // O serviço retorna { created, duplicate, lead, ... }
-    // Precisamos usar o documento do lead, não o objeto externo.
     const lead = captureResult?.lead || captureResult
 
-    // 2. Validar o ID antes de tentar distribuir
     if (!lead?._id) {
-      console.error('[LeadCapture] Captura sem ID de lead:', captureResult)
-
       throw new Error('A captura foi concluída sem retornar o ID do lead.')
     }
 
+    const isDuplicate =
+      captureResult?.duplicate === true || captureResult?.created === false
+
     let distribution
 
-    // 3. Não redistribuir contatos duplicados
-    if (captureResult?.duplicate === true || captureResult?.created === false) {
+    // 2. Distribuir apenas leads novos
+    if (isDuplicate) {
       const assignedTo = lead.assignedTo || null
 
       distribution = {
@@ -363,17 +361,35 @@ export async function createSiteLead(req, res) {
           'Este contato já foi registrado recentemente.',
       }
     } else {
-      // 4. Distribuir usando o documento correto
       distribution = await tryDistributeLead(lead, {
         region: lead.region || leadData.region || 'central',
         createdBy: req.user?._id,
       })
+
+      // 3. Notificar sobre o novo lead
+      try {
+        const leadForNotification = distribution.lead || lead
+        const assignedTo =
+          distribution.assignedTo || leadForNotification.assignedTo || null
+
+        await notifyLeadCreated(leadForNotification, {
+          pendingDistribution: !assignedTo,
+          assignedTo: assignedTo?._id || assignedTo,
+        })
+
+        console.info(
+          `[LeadCapture] Notificação processada para o lead ${lead._id}`,
+        )
+      } catch (notificationError) {
+        // Uma falha na notificação não deve invalidar a captura.
+        console.error(
+          '[LeadCapture] Erro ao notificar novo lead:',
+          notificationError,
+        )
+      }
     }
 
-    // 5. Responder ao frontend
-    const isDuplicate =
-      captureResult?.duplicate === true || captureResult?.created === false
-
+    // 4. Responder ao site
     return res.status(isDuplicate ? 200 : 201).json({
       success: true,
       message:

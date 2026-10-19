@@ -1,5 +1,6 @@
 import dotenv from 'dotenv'
 import multer from 'multer'
+import crypto from 'node:crypto'
 
 import { v2 as cloudinary } from 'cloudinary'
 import { CloudinaryStorage } from 'multer-storage-cloudinary'
@@ -34,7 +35,7 @@ cloudinary.api.ping((error, result) => {
 
 /*
 ====================================================
-HELPER
+HELPERS DE STORAGE
 ====================================================
 */
 
@@ -44,9 +45,7 @@ function createImageStorage(folder) {
 
     params: async () => ({
       folder,
-
       allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
-
       transformation: [
         {
           quality: 'auto',
@@ -63,7 +62,6 @@ function createRawStorage(folder) {
 
     params: async () => ({
       folder,
-
       resource_type: 'raw',
     }),
   })
@@ -71,7 +69,93 @@ function createRawStorage(folder) {
 
 /*
 ====================================================
-AVATAR
+TIPOS PERMITIDOS NO CHAT / WHATSAPP
+====================================================
+*/
+
+const CHAT_MEDIA_MIME_TYPES = new Set([
+  // Imagens
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+
+  // Vídeos
+  'video/mp4',
+  'video/3gpp',
+  'video/quicktime',
+  'video/webm',
+
+  // Áudios
+  'audio/mpeg',
+  'audio/mp4',
+  'audio/aac',
+  'audio/ogg',
+  'audio/opus',
+  'audio/wav',
+  'audio/webm',
+  'audio/x-m4a',
+
+  // Documentos
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'text/plain',
+  'text/csv',
+  'application/zip',
+])
+
+/*
+====================================================
+UPLOAD DE MÍDIAS DO CHAT
+====================================================
+
+Aceita imagens, áudios, vídeos e documentos.
+
+O arquivo fica hospedado no Cloudinary e a URL
+retornada será usada posteriormente pelo chat
+para enviar a mídia ao WhatsApp.
+
+Limite: 50 MB por arquivo.
+====================================================
+*/
+
+export const chatMediaUpload = multer({
+  storage: new CloudinaryStorage({
+    cloudinary,
+
+    params: async (req, file) => ({
+      folder: 'crm/chat-media',
+
+      // O Cloudinary identifica o tipo de recurso.
+      resource_type: 'auto',
+
+      // Identificador único para evitar colisões.
+      public_id: `${Date.now()}-${crypto.randomUUID()}`,
+    }),
+  }),
+
+  limits: {
+    fileSize: 50 * 1024 * 1024,
+    files: 1,
+  },
+
+  fileFilter: (req, file, callback) => {
+    if (!CHAT_MEDIA_MIME_TYPES.has(file.mimetype)) {
+      return callback(new Error('Formato não permitido para anexos do chat.'))
+    }
+
+    callback(null, true)
+  },
+})
+
+/*
+====================================================
+UPLOAD DE AVATAR
 ====================================================
 */
 
@@ -85,7 +169,7 @@ export const avatarUpload = multer({
 
 /*
 ====================================================
-CAPA
+UPLOAD DE CAPA
 ====================================================
 */
 
@@ -99,7 +183,7 @@ export const coverUpload = multer({
 
 /*
 ====================================================
-IMÓVEIS
+UPLOAD DE IMAGENS DOS IMÓVEIS
 ====================================================
 */
 
@@ -113,7 +197,7 @@ export const propertyImageUpload = multer({
 
 /*
 ====================================================
-PDF DOS IMÓVEIS
+UPLOAD DE PDF DOS IMÓVEIS
 ====================================================
 */
 
@@ -127,7 +211,7 @@ export const propertyPdfUpload = multer({
 
 /*
 ====================================================
-CONTRATOS
+UPLOAD DE CONTRATOS
 ====================================================
 */
 
@@ -141,7 +225,7 @@ export const contractUpload = multer({
 
 /*
 ====================================================
-DOCUMENTOS
+UPLOAD DE DOCUMENTOS
 ====================================================
 */
 
@@ -155,7 +239,7 @@ export const documentUpload = multer({
 
 /*
 ====================================================
-IMPORTAÇÃO CSV
+UPLOAD PARA IMPORTAÇÃO CSV
 ====================================================
 */
 

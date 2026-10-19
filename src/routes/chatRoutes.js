@@ -3,6 +3,9 @@
 import express from 'express'
 import { protect } from '../middleware/authMiddleware.js'
 
+import { chatMediaUpload } from '../utils/upload.js'
+import { uploadChatMedia } from '../controllers/chatMediaController.js'
+
 import {
   getConversations,
   createConversation,
@@ -27,6 +30,15 @@ router.use(protect)
 
 // Lista conversas internas e WhatsApp conforme as permissões.
 router.get('/conversations', getConversations)
+
+/*
+==========================================================
+UPLOAD DE MÍDIAS DO CHAT
+==========================================================
+*/
+
+// Recebe um arquivo no campo multipart "file".
+router.post('/media', chatMediaUpload.single('file'), uploadChatMedia)
 
 // Cria conversa interna.
 router.post('/conversations', createConversation)

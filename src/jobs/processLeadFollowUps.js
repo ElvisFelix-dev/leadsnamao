@@ -22,7 +22,8 @@ const TERMINAL_STATUSES = [LEAD_STATUS.CONVERTED, LEAD_STATUS.LOST]
 const TERMINAL_STAGES = [LEAD_STAGES.WON, LEAD_STAGES.LOST]
 
 // Simulação ativada por padrão.
-// Para envio real, configure LEAD_FOLLOWUPS_DRY_RUN=false.
+// Para produção, use DRY_RUN=false e autorize explicitamente a fila.
+// O envio real permanece bloqueado se ALLOW_BULK_SEND não for true.
 const isDryRun = () =>
   String(process.env.LEAD_FOLLOWUPS_DRY_RUN || 'true')
     .trim()
@@ -118,23 +119,18 @@ const claimNextFollowUp = async () => {
     scheduledAt: { $lte: now },
   }
 
-  // Em produção, restringe o envio ao ID de teste configurado.
+  // Envio real exige autorização explícita. Não é necessário configurar
+  // um ID individual: com a flag habilitada, o cron processa a fila elegível.
   if (!isDryRun()) {
-    const testFollowUpId = String(
-      process.env.LEAD_FOLLOWUPS_TEST_ID || '',
-    ).trim()
-
     const allowBulkSend =
       String(process.env.LEAD_FOLLOWUPS_ALLOW_BULK_SEND || '')
         .trim()
         .toLowerCase() === 'true'
 
-    if (testFollowUpId) {
-      filter._id = testFollowUpId
-    } else if (!allowBulkSend) {
+    if (!allowBulkSend) {
       console.warn(
-        '[LeadFollowUp] Envio real bloqueado: configure ' +
-          'LEAD_FOLLOWUPS_TEST_ID para um teste individual.',
+        '[LeadFollowUp] Envio real bloqueado: defina ' +
+          'LEAD_FOLLOWUPS_ALLOW_BULK_SEND=true para autorizar a fila de produção.',
       )
       return null
     }

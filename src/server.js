@@ -343,6 +343,13 @@ const startServer = async () => {
   // O servidor HTTP só inicia após a conexão inicial.
   await connectDB()
 
+  console.log('[LeadFollowUp] Configuração carregada:', {
+    dryRun: process.env.LEAD_FOLLOWUPS_DRY_RUN,
+    allowBulkSend: process.env.LEAD_FOLLOWUPS_ALLOW_BULK_SEND,
+    testFollowUpConfigured: Boolean(process.env.LEAD_FOLLOWUPS_TEST_ID),
+    processId: process.pid,
+  })
+
   httpServer = createServer(app)
 
   const io = setupSocketIO(httpServer)

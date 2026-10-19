@@ -1,6 +1,5 @@
 import dotenv from 'dotenv'
 import multer from 'multer'
-import crypto from 'node:crypto'
 
 import { v2 as cloudinary } from 'cloudinary'
 import { CloudinaryStorage } from 'multer-storage-cloudinary'
@@ -126,19 +125,10 @@ Limite: 50 MB por arquivo.
 */
 
 export const chatMediaUpload = multer({
-  storage: new CloudinaryStorage({
-    cloudinary,
-
-    params: async (req, file) => ({
-      folder: 'crm/chat-media',
-
-      // O Cloudinary identifica o tipo de recurso.
-      resource_type: 'auto',
-
-      // Identificador único para evitar colisões.
-      public_id: `${Date.now()}-${crypto.randomUUID()}`,
-    }),
-  }),
+  // Mantemos o arquivo em memória para que o controller possa converter
+  // áudios antes de enviá-los ao Cloudinary. Os demais anexos seguem sendo
+  // enviados ao Cloudinary pelo próprio controller, sem conversão.
+  storage: multer.memoryStorage(),
 
   limits: {
     fileSize: 50 * 1024 * 1024,

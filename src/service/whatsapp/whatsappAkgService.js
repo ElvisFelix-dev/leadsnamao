@@ -4,6 +4,8 @@ import axios from 'axios'
 import mongoose from 'mongoose'
 
 import crypto from 'crypto'
+import { Readable } from 'node:stream'
+import { cloudinary } from '../../utils/upload.js'
 
 import WhatsAppIntegration from '../../models/WhatsAppIntegration.js'
 
@@ -36,6 +38,179 @@ import { LEAD_STAGES } from '../../constants/leadStages.js'
 const REQUEST_TIMEOUT = 20000
 
 const ALLOWED_MEDIA_TYPES = ['image', 'audio', 'video', 'file', 'gif']
+
+const inferMediaType = ({
+  providerType = '',
+  mimeType = '',
+  url = '',
+  messageObject = {},
+}) => {
+  const type = String(providerType || '').toLowerCase()
+  const mime = String(mimeType || '').toLowerCase()
+  const keys = Object.keys(messageObject || {})
+    .join(' ')
+    .toLowerCase()
+  const pathname = String(url || '')
+    .split('?')[0]
+    .toLowerCase()
+
+  if (
+    type.includes('audio') ||
+    mime.startsWith('audio/') ||
+    keys.includes('audiomessage') ||
+    /\.(ogg|opus|mp3|m4a|aac|wav|webm)$/.test(pathname)
+  )
+    return 'audio'
+  if (
+    type.includes('video') ||
+    mime.startsWith('video/') ||
+    keys.includes('videomessage') ||
+    /\.(mp4|mov|avi|mkv)$/.test(pathname)
+  )
+    return 'video'
+  if (
+    type.includes('image') ||
+    mime.startsWith('image/') ||
+    keys.includes('imagemessage') ||
+    /\.(jpg|jpeg|png|gif|webp)$/.test(pathname)
+  )
+    return 'image'
+  if (
+    type.includes('document') ||
+    type.includes('file') ||
+    mime.startsWith('application/') ||
+    keys.includes('documentmessage') ||
+    /\.(pdf|docx?|xlsx?|pptx?|zip|csv|txt)$/.test(pathname)
+  )
+    return 'file'
+  return 'text'
+}
+
+const mimeFromExtension = (filename = '') => {
+  const ext = String(filename).split('?')[0].split('.').pop()?.toLowerCase()
+  const types = {
+    ogg: 'audio/ogg',
+    opus: 'audio/opus',
+    mp3: 'audio/mpeg',
+    m4a: 'audio/mp4',
+    aac: 'audio/aac',
+    wav: 'audio/wav',
+    webm: 'audio/webm',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    mp4: 'video/mp4',
+    pdf: 'application/pdf',
+    doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    txt: 'text/plain',
+    csv: 'text/csv',
+    zip: 'application/zip',
+  }
+  return types[ext] || 'application/octet-stream'
+}
+
+const uploadBufferToCloudinary = (buffer, { filename, mimeType }) =>
+  new Promise((resolve, reject) => {
+    const resourceType = mimeType.startsWith('image/')
+      ? 'image'
+      : mimeType.startsWith('audio/') || mimeType.startsWith('video/')
+        ? 'video'
+        : 'raw'
+    const publicId = `crm/chat-media/inbound-${Date.now()}-${crypto.randomUUID()}`
+    const upload = cloudinary.uploader.upload_stream(
+      {
+        resource_type: resourceType,
+        public_id: publicId,
+        use_filename: false,
+        overwrite: false,
+        filename_override: filename || undefined,
+      },
+      (error, result) => {
+        if (error) return reject(error)
+        if (!result?.secure_url)
+          return reject(
+            new Error(
+              'Cloudinary não retornou secure_url para a mídia recebida.',
+            ),
+          )
+        resolve({
+          url: result.secure_url,
+          size: Number(result.bytes || buffer.length),
+          mimeType,
+        })
+      },
+    )
+    Readable.from(buffer).pipe(upload)
+  })
+
+const persistInboundMedia = async ({
+  integration,
+  url,
+  filename,
+  mimeType,
+}) => {
+  const rawUrl = String(url || '').trim()
+  if (!rawUrl) return null
+
+  // URLs externas já hospedadas não precisam ser baixadas novamente.
+  let parsedUrl
+  try {
+    parsedUrl = new URL(rawUrl, normalizeBaseUrl(integration.baseUrl))
+  } catch {
+    throw new Error('URL de mídia recebida da WA-AKG inválida.')
+  }
+
+  const waBase = normalizeBaseUrl(integration.baseUrl)
+  const isProviderMedia =
+    rawUrl.startsWith('/') || parsedUrl.origin === new URL(waBase).origin
+  if (!isProviderMedia) {
+    return {
+      url: parsedUrl.toString(),
+      name: filename || parsedUrl.pathname.split('/').pop() || 'anexo',
+      size: 0,
+      mimeType: mimeType || mimeFromExtension(parsedUrl.pathname),
+    }
+  }
+
+  const safePath = parsedUrl.pathname
+  if (!safePath.startsWith('/api/media/') || safePath.includes('..')) {
+    throw new Error(
+      'O caminho de mídia recebido não é uma rota /api/media/ válida da WA-AKG.',
+    )
+  }
+
+  const response = await axios.get(`${waBase}${safePath}${parsedUrl.search}`, {
+    responseType: 'arraybuffer',
+    timeout: REQUEST_TIMEOUT,
+    maxContentLength: 50 * 1024 * 1024,
+    headers: { 'X-API-Key': integration.apiKey, Accept: '*/*' },
+    validateStatus: (status) => status >= 200 && status < 300,
+  })
+
+  const buffer = Buffer.from(response.data)
+  if (!buffer.length)
+    throw new Error('A WA-AKG retornou um arquivo de mídia vazio.')
+
+  const resolvedMime = String(
+    mimeType ||
+      response.headers?.['content-type'] ||
+      mimeFromExtension(filename || safePath),
+  )
+    .split(';')[0]
+    .toLowerCase()
+  const resolvedName =
+    filename || decodeURIComponent(safePath.split('/').pop() || 'anexo')
+  const uploaded = await uploadBufferToCloudinary(buffer, {
+    filename: resolvedName,
+    mimeType: resolvedMime,
+  })
+  return { ...uploaded, name: resolvedName }
+}
 
 // ==========================================================
 
@@ -1329,62 +1504,216 @@ export const handleWebhook = async ({
 
     // ------------------------------------------------------
 
-    // IDENTIFICAR CONTEÚDO E ANEXOS
-
+    // IDENTIFICAR CONTEÚDO E ANEXOS (texto, imagem, áudio, vídeo e documentos)
     // ------------------------------------------------------
 
     const messageObject = data.message?.message || data.message || data
-
-    const imageUrl = data.fileUrl || data.mediaUrl || data.url || null
+    const normalizedProviderType = String(
+      data.type ||
+        data.messageType ||
+        data.mediaType ||
+        data.message?.type ||
+        '',
+    ).toLowerCase()
 
     const imageMessage =
-      messageObject.imageMessage || messageObject.image || null
-
+      messageObject.imageMessage ||
+      messageObject.image ||
+      data.imageMessage ||
+      null
+    const audioMessage =
+      messageObject.audioMessage ||
+      messageObject.audio ||
+      data.audioMessage ||
+      null
+    const videoMessage =
+      messageObject.videoMessage ||
+      messageObject.video ||
+      data.videoMessage ||
+      null
     const documentMessage =
-      messageObject.documentMessage || messageObject.document || null
+      messageObject.documentMessage ||
+      messageObject.document ||
+      data.documentMessage ||
+      null
+    const stickerMessage =
+      messageObject.stickerMessage ||
+      messageObject.sticker ||
+      data.stickerMessage ||
+      null
+    const mediaObjects = [
+      imageMessage,
+      audioMessage,
+      videoMessage,
+      documentMessage,
+      stickerMessage,
+      data.media,
+      data.file,
+      data.attachment,
+    ].filter((item) => item && typeof item === 'object')
 
-    const content =
-      data.content ||
-      data.text ||
-      imageMessage?.caption ||
-      documentMessage?.caption ||
-      messageObject.conversation ||
-      messageObject.extendedTextMessage?.text ||
-      messageObject.imageMessage?.caption ||
-      messageObject.documentMessage?.caption ||
-      ''
+    let mimeType = String(
+      data.mimeType ||
+        data.mimetype ||
+        data.media?.mimeType ||
+        data.media?.mimetype ||
+        data.file?.mimeType ||
+        data.file?.mimetype ||
+        data.attachment?.mimeType ||
+        mediaObjects.find((item) => item.mimetype || item.mimeType)?.mimetype ||
+        mediaObjects.find((item) => item.mimeType)?.mimeType ||
+        '',
+    ).toLowerCase()
 
-    let messageType = 'text'
+    const attachmentUrl = String(
+      data.fileUrl ||
+        data.mediaUrl ||
+        data.downloadUrl ||
+        data.media?.downloadUrl ||
+        data.media?.url ||
+        data.file?.url ||
+        data.attachment?.url ||
+        data.message?.fileUrl ||
+        data.message?.mediaUrl ||
+        data.url ||
+        imageMessage?.downloadUrl ||
+        imageMessage?.url ||
+        audioMessage?.downloadUrl ||
+        audioMessage?.url ||
+        videoMessage?.downloadUrl ||
+        videoMessage?.url ||
+        documentMessage?.downloadUrl ||
+        documentMessage?.url ||
+        stickerMessage?.downloadUrl ||
+        stickerMessage?.url ||
+        '',
+    ).trim()
 
-    if (data.type === 'IMAGE' || data.type === 'image' || imageMessage) {
-      messageType = 'image'
-    } else if (
-      data.type === 'FILE' ||
-      data.type === 'DOCUMENT' ||
-      data.type === 'document' ||
-      documentMessage
+    let messageType = inferMediaType({
+      providerType: normalizedProviderType,
+      mimeType,
+      url: attachmentUrl,
+      messageObject: {
+        ...(messageObject || {}),
+        ...(imageMessage ? { imageMessage } : {}),
+        ...(audioMessage ? { audioMessage } : {}),
+        ...(videoMessage ? { videoMessage } : {}),
+        ...(documentMessage ? { documentMessage } : {}),
+        ...(stickerMessage ? { stickerMessage } : {}),
+      },
+    })
+    if (stickerMessage && messageType === 'text') messageType = 'image'
+
+    const attachmentName =
+      String(
+        data.fileName ||
+          data.filename ||
+          data.media?.fileName ||
+          data.file?.name ||
+          data.attachment?.name ||
+          imageMessage?.fileName ||
+          audioMessage?.fileName ||
+          videoMessage?.fileName ||
+          documentMessage?.fileName ||
+          documentMessage?.title ||
+          stickerMessage?.fileName ||
+          (messageType === 'audio'
+            ? 'audio.ogg'
+            : messageType === 'video'
+              ? 'video.mp4'
+              : messageType === 'image'
+                ? 'imagem'
+                : ''),
+      ).trim() ||
+      (attachmentUrl
+        ? decodeURIComponent(
+            attachmentUrl.split('?')[0].split('/').pop() || 'anexo',
+          )
+        : '')
+
+    const attachmentSize =
+      Number(
+        data.fileSize ||
+          data.filesize ||
+          data.media?.size ||
+          data.file?.size ||
+          data.attachment?.size ||
+          imageMessage?.fileLength ||
+          audioMessage?.fileLength ||
+          videoMessage?.fileLength ||
+          documentMessage?.fileLength ||
+          0,
+      ) || 0
+
+    let attachment = null
+    if (
+      attachmentUrl &&
+      ['image', 'audio', 'video', 'file'].includes(messageType)
     ) {
-      messageType = 'file'
+      try {
+        const persisted = await persistInboundMedia({
+          integration,
+          url: attachmentUrl,
+          filename: attachmentName,
+          mimeType:
+            mimeType || mimeFromExtension(attachmentName || attachmentUrl),
+        })
+        attachment = {
+          url: persisted.url,
+          name: persisted.name || attachmentName || 'anexo',
+          size: Number(persisted.size || attachmentSize || 0),
+          mimeType:
+            persisted.mimeType ||
+            mimeType ||
+            mimeFromExtension(attachmentName || attachmentUrl),
+        }
+        mimeType = attachment.mimeType
+      } catch (mediaError) {
+        console.error('[WA-AKG] Não foi possível persistir a mídia recebida:', {
+          externalMessageId,
+          messageType,
+          status: mediaError?.response?.status,
+          message: mediaError?.message,
+        })
+        // Não inventa uma URL pública: mantém o caminho original para diagnóstico.
+        attachment = {
+          url: attachmentUrl.startsWith('/')
+            ? `${normalizeBaseUrl(integration.baseUrl)}${attachmentUrl}`
+            : attachmentUrl,
+          name: attachmentName || 'anexo',
+          size: attachmentSize,
+          mimeType:
+            mimeType || mimeFromExtension(attachmentName || attachmentUrl),
+        }
+      }
     }
 
-    const attachmentUrl =
-      imageUrl || imageMessage?.url || documentMessage?.url || ''
+    const content = String(
+      data.content ||
+        data.text ||
+        imageMessage?.caption ||
+        videoMessage?.caption ||
+        documentMessage?.caption ||
+        messageObject.conversation ||
+        messageObject.extendedTextMessage?.text ||
+        '',
+    ).trim()
 
-    const attachment = attachmentUrl
-      ? {
-          url: attachmentUrl,
-
-          name: data.fileName || documentMessage?.fileName || '',
-
-          size: Number(data.fileSize || 0),
-
-          mimeType:
-            data.mimeType ||
-            imageMessage?.mimetype ||
-            documentMessage?.mimetype ||
-            '',
-        }
-      : null
+    if (
+      ['image', 'audio', 'video', 'file'].includes(messageType) &&
+      !attachmentUrl
+    ) {
+      console.warn(
+        '[WA-AKG] Mídia recebida sem fileUrl/URL disponível no payload.',
+        {
+          messageType,
+          providerType: normalizedProviderType || null,
+          mimeType: mimeType || null,
+          messageKeys: Object.keys(messageObject || {}),
+          dataKeys: Object.keys(data || {}),
+        },
+      )
+    }
 
     // ------------------------------------------------------
 
@@ -1403,9 +1732,13 @@ export const handleWebhook = async ({
         content ||
         (messageType === 'image'
           ? 'Imagem recebida'
-          : messageType === 'file'
-            ? 'Arquivo recebido'
-            : 'Mensagem recebida'),
+          : messageType === 'audio'
+            ? 'Áudio recebido'
+            : messageType === 'video'
+              ? 'Vídeo recebido'
+              : messageType === 'file'
+                ? 'Arquivo recebido'
+                : 'Mensagem recebida'),
 
       type: messageType,
 

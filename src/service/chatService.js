@@ -438,7 +438,11 @@ export const sendMessage = async ({
 
   const normalizedType = String(type || 'text').toLowerCase()
 
-  if (!['text', 'image', 'audio', 'video', 'file', 'system'].includes(normalizedType)) {
+  if (
+    !['text', 'image', 'audio', 'video', 'file', 'system'].includes(
+      normalizedType,
+    )
+  ) {
     throw new AppError('Tipo de mensagem inválido.', 400)
   }
 
@@ -518,7 +522,13 @@ export const sendMessage = async ({
             content:
               normalizedContent ||
               normalizedAttachment?.name ||
-              (normalizedType === 'image' ? 'Imagem' : normalizedType === 'audio' ? 'Áudio' : normalizedType === 'video' ? 'Vídeo' : 'Arquivo'),
+              (normalizedType === 'image'
+                ? 'Imagem'
+                : normalizedType === 'audio'
+                  ? 'Áudio'
+                  : normalizedType === 'video'
+                    ? 'Vídeo'
+                    : 'Arquivo'),
             type: normalizedType,
             attachment: normalizedAttachment || undefined,
             replyTo: replyTo || null,
@@ -667,15 +677,36 @@ export const sendWhatsAppMessage = async ({
       message: normalizedContent,
     })
   } else {
-    providerResult = await sendMediaMessage({
-      integrationId: integration._id,
-      phone,
-      mediaUrl: normalizedAttachment.url,
-      mediaType: normalizedType,
-      caption: normalizedContent,
-      fileName: normalizedAttachment.name,
-      mimeType: normalizedAttachment.mimeType,
-    })
+    try {
+      console.info('[ChatService] Enviando mídia ao WA-AKG:', {
+        conversationId: String(conversation._id),
+        type: normalizedType,
+        mimeType: normalizedAttachment.mimeType,
+        hasUrl: Boolean(normalizedAttachment.url),
+      })
+
+      providerResult = await sendMediaMessage({
+        integrationId: integration._id,
+        phone,
+        mediaUrl: normalizedAttachment.url,
+        mediaType: normalizedType,
+        caption: normalizedContent,
+        fileName: normalizedAttachment.name,
+        mimeType: normalizedAttachment.mimeType,
+      })
+
+      console.info('[ChatService] WA-AKG aceitou a requisição de mídia.')
+    } catch (error) {
+      console.error('[ChatService] Falha no envio de mídia:', {
+        message: error?.message,
+        code: error?.code,
+        status: error?.response?.status,
+        response: error?.response?.data,
+        stack: error?.stack,
+      })
+
+      throw error
+    }
   }
 
   // Só persiste depois que a API do provedor confirmar
@@ -704,7 +735,13 @@ export const sendWhatsAppMessage = async ({
     content:
       normalizedContent ||
       normalizedAttachment?.name ||
-      (normalizedType === 'image' ? 'Imagem' : normalizedType === 'audio' ? 'Áudio' : normalizedType === 'video' ? 'Vídeo' : 'Arquivo'),
+      (normalizedType === 'image'
+        ? 'Imagem'
+        : normalizedType === 'audio'
+          ? 'Áudio'
+          : normalizedType === 'video'
+            ? 'Vídeo'
+            : 'Arquivo'),
     type: normalizedType,
     attachment: normalizedType === 'text' ? undefined : normalizedAttachment,
     status: 'sent',
@@ -1177,7 +1214,11 @@ export const receiveWhatsAppMessage = async ({
 
   const normalizedType = String(type || 'text').toLowerCase()
 
-  if (!['text', 'image', 'audio', 'video', 'file', 'system'].includes(normalizedType)) {
+  if (
+    !['text', 'image', 'audio', 'video', 'file', 'system'].includes(
+      normalizedType,
+    )
+  ) {
     throw new AppError('Tipo de mensagem recebida inválido.', 400)
   }
 
@@ -1198,7 +1239,13 @@ export const receiveWhatsAppMessage = async ({
       direction: 'inbound',
       content:
         normalizedContent ||
-        (normalizedType === 'image' ? 'Imagem recebida' : normalizedType === 'audio' ? 'Áudio recebido' : normalizedType === 'video' ? 'Vídeo recebido' : 'Arquivo recebido'),
+        (normalizedType === 'image'
+          ? 'Imagem recebida'
+          : normalizedType === 'audio'
+            ? 'Áudio recebido'
+            : normalizedType === 'video'
+              ? 'Vídeo recebido'
+              : 'Arquivo recebido'),
       type: normalizedType,
       attachment: normalizedAttachment || undefined,
       status: 'delivered',

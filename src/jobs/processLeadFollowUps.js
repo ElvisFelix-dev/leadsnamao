@@ -239,7 +239,7 @@ const reportStaleProcessing = async () => {
 const getLeadAndConversation = async (followUp) => {
   const lead = await Lead.findById(followUp.lead)
     .select(
-      'name phone phoneNormalized status stage assignedTo lastContactAt followUpAutomation sourceType isDistributed property region',
+      'name phone phoneNormalized status stage assignedTo createdBy stageHistory lastContactAt followUpAutomation sourceType isDistributed property region',
     )
     .populate('assignedTo', '_id name role isAdmin')
     .lean()
@@ -368,6 +368,35 @@ const handleLeadReply = async (lead, reason) => {
       distributed: false,
       alreadyHandled: true,
     }
+  }
+
+  // Fallback: se o agendador detectar a resposta antes do webhook
+  // executar essa transição, qualifica apenas etapas iniciais.
+  const earlyStages = [LEAD_STAGES.NEW, LEAD_STAGES.FIRST_CONTACT]
+  if (earlyStages.includes(updatedLead.stage)) {
+    const previousStage = updatedLead.stage
+    updatedLead.stage = LEAD_STAGES.QUALIFIED
+    updatedLead.status = LEAD_STATUS.IN_PROGRESS
+    updatedLead.lastContactAt = now
+
+    const changedBy =
+      updatedLead.assignedTo?._id ||
+      updatedLead.assignedTo ||
+      updatedLead.createdBy ||
+      null
+    if (changedBy) {
+      updatedLead.stageHistory = updatedLead.stageHistory || []
+      updatedLead.stageHistory.push({
+        from: previousStage,
+        to: LEAD_STAGES.QUALIFIED,
+        stage: LEAD_STAGES.QUALIFIED,
+        changedBy,
+        reason: 'Lead respondeu pelo WhatsApp.',
+        changedAt: now,
+      })
+    }
+
+    await updatedLead.save()
   }
 
   // Preserva leads já atribuídos e leads do hotsite.

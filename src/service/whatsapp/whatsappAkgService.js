@@ -13,6 +13,7 @@ import Conversation from '../../models/Conversation.js'
 import Message from '../../models/Message.js'
 
 import Lead from '../../models/Lead.js'
+import LeadFollowUp from '../../models/LeadFollowUp.js'
 
 import AppError from '../../utils/AppError.js'
 
@@ -850,6 +851,100 @@ export const verifyWebhookSignature = ({ rawBody, signature, secret }) => {
 }
 
 // ==========================================================
+// TRATAR RESPOSTA DO LEAD
+// ==========================================================
+
+const handleInboundLeadReply = async (lead) => {
+  if (!lead?._id) return
+
+  const now = new Date()
+  const reason =
+    'O lead respondeu pelo WhatsApp; sequência automática cancelada.'
+
+  // Marca a automação como respondida sem sobrescrever outros estados.
+  await Lead.updateOne(
+    {
+      _id: lead._id,
+      'followUpAutomation.status': 'active',
+    },
+    {
+      $set: {
+        'followUpAutomation.status': 'replied',
+        'followUpAutomation.repliedAt': now,
+      },
+    },
+  )
+
+  // Cancela os próximos contatos da sequência. Registros já enviados
+  // permanecem intactos para preservar o histórico.
+  const cancellation = await LeadFollowUp.updateMany(
+    {
+      lead: lead._id,
+      status: { $in: ['pending', 'processing', 'simulated', 'failed'] },
+    },
+    {
+      $set: {
+        status: 'cancelled',
+        cancelledAt: now,
+        cancelReason: reason,
+        processingAt: null,
+      },
+    },
+  )
+
+  // Só promove etapas iniciais. Nunca move para trás um lead que já avançou.
+  const earlyStages = [LEAD_STAGES.NEW, LEAD_STAGES.FIRST_CONTACT]
+  if (earlyStages.includes(lead.stage)) {
+    const update = {
+      $set: {
+        stage: LEAD_STAGES.QUALIFIED,
+        status: LEAD_STATUS.IN_PROGRESS,
+        lastContactAt: now,
+      },
+    }
+
+    const changedBy =
+      normalizeId(lead.assignedTo) || normalizeId(lead.createdBy)
+    if (changedBy) {
+      update.$push = {
+        stageHistory: {
+          from: lead.stage,
+          to: LEAD_STAGES.QUALIFIED,
+          stage: LEAD_STAGES.QUALIFIED,
+          changedBy,
+          reason: 'Lead respondeu pelo WhatsApp.',
+          changedAt: now,
+        },
+      }
+    }
+
+    const stageResult = await Lead.updateOne(
+      {
+        _id: lead._id,
+        stage: { $in: earlyStages },
+        isDeleted: { $ne: true },
+      },
+      update,
+    )
+
+    if (stageResult.modifiedCount > 0) {
+      console.info('[WA-AKG] Lead promovido para Qualificado após resposta.', {
+        leadId: String(lead._id),
+        previousStage: lead.stage,
+        stage: LEAD_STAGES.QUALIFIED,
+      })
+    }
+  }
+
+  if (cancellation.modifiedCount > 0) {
+    console.info('[WA-AKG] Follow-ups cancelados após resposta do lead.', {
+      leadId: String(lead._id),
+      cancelledCount: cancellation.modifiedCount,
+    })
+  }
+}
+
+// ==========================================================
 
 // WEBHOOK WA-AKG
 
@@ -1320,6 +1415,10 @@ export const handleWebhook = async ({
         conversationId: String(conversation._id),
       }
     }
+
+    // Resposta inbound confirmada e persistida: interrompe a sequência
+    // e qualifica o lead antes de notificar a interface.
+    await handleInboundLeadReply(lead)
 
     // ------------------------------------------------------
 

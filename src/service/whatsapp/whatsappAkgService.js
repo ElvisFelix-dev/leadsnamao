@@ -593,12 +593,18 @@ export const sendMediaMessage = async ({
       ...(normalizedCaption ? { caption: normalizedCaption } : {}),
     }
   } else if (normalizedMediaType === 'audio') {
-    // Áudio comum. O formato de mensagem de voz/PTT pode exigir suporte
-    // específico do provedor e não é presumido por esta implementação.
+    // Solicita ao WA-AKG que envie o áudio como mensagem de voz (PTT).
+    // IMPORTANTE: ptt não converte o arquivo. O mimetype informado deve
+    // corresponder ao conteúdo real disponibilizado em mediaUrl.
+    const normalizedMimeType = String(mimeType || '')
+      .trim()
+      .toLowerCase()
+
     mediaPayload = {
       audio: {
         url: validatedUrl,
-        ...(mimeType ? { mimetype: String(mimeType).trim() } : {}),
+        ...(normalizedMimeType ? { mimetype: normalizedMimeType } : {}),
+        ptt: true,
       },
     }
   } else if (normalizedMediaType === 'video') {

@@ -310,9 +310,9 @@ export const sendMessage = asyncHandler(async (req, res) => {
   }
 
   // Validação do tipo e do conteúdo.
-  if (!['text', 'image', 'file'].includes(normalizedType)) {
+  if (!['text', 'image', 'audio', 'video', 'file'].includes(normalizedType)) {
     throw new AppError(
-      'Tipo de mensagem inválido. Utilize text, image ou file.',
+      'Tipo de mensagem inválido. Utilize text, image, audio, video ou file.',
       400,
     )
   }

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import User from '../../models/User.js'
 import Lead from '../../models/Lead.js'
 import Visit from '../../models/Visit.js'
+import Sale from '../../models/Sale.js'
 
 import { addBrokerToChannel } from '../chatService.js'
 
@@ -44,27 +45,68 @@ export async function getBrokerDetailsById(userId) {
 
   /*
   =====================================
-  MÉTRICAS REAIS
+  MÉTRICAS DE LEADS E VISITAS
   =====================================
   */
 
-  const totalLeads = await Lead.countDocuments({
-    assignedTo: userId,
-  })
+  const [totalLeads, totalVisits, convertedLeads, lostLeads] =
+    await Promise.all([
+      Lead.countDocuments({
+        assignedTo: broker._id,
+      }),
 
-  const totalVisits = await Visit.countDocuments({
-    broker: userId,
-  })
+      Visit.countDocuments({
+        broker: broker._id,
+      }),
 
-  const convertedLeads = await Lead.countDocuments({
-    assignedTo: userId,
-    status: 'convertido',
-  })
+      Lead.countDocuments({
+        assignedTo: broker._id,
+        status: 'convertido',
+      }),
 
-  const lostLeads = await Lead.countDocuments({
-    assignedTo: userId,
-    status: 'perdido',
-  })
+      Lead.countDocuments({
+        assignedTo: broker._id,
+        status: 'perdido',
+      }),
+    ])
+
+  /*
+  =====================================
+  VENDAS CONCLUÍDAS E RECEITA
+  =====================================
+
+  Mantém a mesma regra do dashboard do corretor:
+  - vendedor: Sale.sellerBroker
+  - venda concluída: status 'completed'
+  - valor da venda: saleAmount
+  */
+
+  const completedSalesFilter = {
+    sellerBroker: broker._id,
+    status: 'completed',
+  }
+
+  const [completedSales, revenueResult] = await Promise.all([
+    Sale.countDocuments(completedSalesFilter),
+
+    Sale.aggregate([
+      {
+        $match: completedSalesFilter,
+      },
+      {
+        $group: {
+          _id: null,
+          total: {
+            $sum: {
+              $ifNull: ['$saleAmount', 0],
+            },
+          },
+        },
+      },
+    ]),
+  ])
+
+  const totalRevenue = revenueResult[0]?.total || 0
 
   /*
   =====================================
@@ -72,68 +114,55 @@ export async function getBrokerDetailsById(userId) {
   =====================================
   */
 
+  // Taxa de conversão definida pelo negócio:
+  // vendas concluídas / total de leads recebidos.
   const conversionRate =
-    totalLeads > 0 ? ((convertedLeads / totalLeads) * 100).toFixed(1) : 0
+    totalLeads > 0
+      ? Number(((completedSales / totalLeads) * 100).toFixed(1))
+      : 0
 
-  /*
-  =====================================
-  RECEITA
-  =====================================
-  */
+  // Progresso da meta mensal considera vendas concluídas no mês atual.
+  const now = new Date()
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+  const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1)
 
-  const revenue = await Lead.aggregate([
-    {
-      $match: {
-        assignedTo: broker._id,
-        status: 'convertido',
-      },
+  const dealsThisMonth = await Sale.countDocuments({
+    ...completedSalesFilter,
+    createdAt: {
+      $gte: monthStart,
+      $lt: nextMonthStart,
     },
+  })
 
-    {
-      $group: {
-        _id: null,
-        total: {
-          $sum: '$proposalValue',
-        },
-      },
-    },
-  ])
-
-  const totalRevenue = revenue[0]?.total || 0
+  const monthlyGoal = Math.max(0, Number(broker.settings?.monthlyGoal) || 0)
+  const goalProgress =
+    monthlyGoal > 0
+      ? Math.min(100, Number(((dealsThisMonth / monthlyGoal) * 100).toFixed(1)))
+      : 0
 
   return {
     profile: {
       id: broker._id,
-
       name: broker.name,
-
       avatar: broker.avatar,
-
       coverImage: broker.coverImage,
-
       email: broker.email,
-
       phone: broker.phone,
-
       creci: broker.creci,
-
       company: broker.company,
-
       position: broker.position,
     },
 
     stats: {
       leads: totalLeads,
-
       visits: totalVisits,
-
-      deals: convertedLeads,
-
+      deals: completedSales,
       lostDeals: lostLeads,
-
       revenue: totalRevenue,
-
       conversionRate,
+      dealsThisMonth,
+      monthlyGoal,
+      goalProgress,
     },
 
     performance: {
@@ -141,9 +170,7 @@ export async function getBrokerDetailsById(userId) {
     },
 
     settings: broker.settings,
-
     socials: broker.socials,
-
     availability: broker.availability,
   }
 }
@@ -469,56 +496,35 @@ export async function getMe(userId) {
 
 export async function getBrokerMonthlyPerformance(brokerId) {
   const months = []
-
   const now = new Date()
 
   for (let i = 5; i >= 0; i--) {
     const date = new Date(now.getFullYear(), now.getMonth() - i, 1)
-
     const nextMonth = new Date(now.getFullYear(), now.getMonth() - i + 1, 1)
 
-    /*
-    ==============================
-    LEADS
-    ==============================
-    */
-
+    // LEADS
     const leads = await Lead.countDocuments({
       assignedTo: brokerId,
-
       createdAt: {
         $gte: date,
         $lt: nextMonth,
       },
     })
 
-    /*
-    ==============================
-    VISITAS
-    ==============================
-    */
-
+    // VISITAS
     const visits = await Visit.countDocuments({
       broker: brokerId,
-
       createdAt: {
         $gte: date,
         $lt: nextMonth,
       },
     })
 
-    /*
-    ==============================
-    NEGÓCIOS FECHADOS
-    ==============================
-    */
-
-    const deals = await Lead.countDocuments({
-      assignedTo: brokerId,
-
-      status: 'convertido',
-
-      closeDate: {
+    // VENDAS CONCLUÍDAS — mesma regra do dashboard principal
+    const deals = await Sale.countDocuments({
+      sellerBroker: brokerId,
+      status: 'completed',
+      createdAt: {
         $gte: date,
         $lt: nextMonth,
       },
@@ -526,23 +532,18 @@ export async function getBrokerMonthlyPerformance(brokerId) {
 
     months.push({
       month: date
-        .toLocaleString('pt-BR', {
-          month: 'short',
-        })
+        .toLocaleString('pt-BR', { month: 'short' })
         .replace('.', '')
         .toUpperCase(),
-
+      year: date.getFullYear(),
       leads,
-
       visits,
-
       deals,
     })
   }
 
   return months
 }
-
 /*
 ====================================================
 ÚLTIMOS LEADS DO CORRETOR

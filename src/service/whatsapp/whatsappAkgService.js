@@ -35,7 +35,7 @@ import { LEAD_STAGES } from '../../constants/leadStages.js'
 
 const REQUEST_TIMEOUT = 20000
 
-const ALLOWED_MEDIA_TYPES = ['image', 'file', 'gif']
+const ALLOWED_MEDIA_TYPES = ['image', 'audio', 'video', 'file', 'gif']
 
 // ==========================================================
 
@@ -570,7 +570,7 @@ export const sendMediaMessage = async ({
 
   if (!ALLOWED_MEDIA_TYPES.includes(normalizedMediaType)) {
     throw new AppError(
-      'Tipo de mídia inválido. Utilize image, gif ou file.',
+      'Tipo de mídia inválido. Utilize image, audio, video, gif ou file.',
 
       400,
     )
@@ -587,29 +587,33 @@ export const sendMediaMessage = async ({
   let mediaPayload
 
   if (normalizedMediaType === 'image' || normalizedMediaType === 'gif') {
-    // O GIF é enviado pelo formato de imagem.
-
-    // A animação depende do suporte do provedor.
-
+    // GIFs continuam usando o payload de imagem para preservar o fluxo atual.
     mediaPayload = {
-      image: {
+      image: { url: validatedUrl },
+      ...(normalizedCaption ? { caption: normalizedCaption } : {}),
+    }
+  } else if (normalizedMediaType === 'audio') {
+    // Áudio comum. O formato de mensagem de voz/PTT pode exigir suporte
+    // específico do provedor e não é presumido por esta implementação.
+    mediaPayload = {
+      audio: {
         url: validatedUrl,
+        ...(mimeType ? { mimetype: String(mimeType).trim() } : {}),
       },
-
+    }
+  } else if (normalizedMediaType === 'video') {
+    mediaPayload = {
+      video: { url: validatedUrl },
       ...(normalizedCaption ? { caption: normalizedCaption } : {}),
     }
   } else {
-    // Documento/arquivo.
-
+    // Documento/arquivo: mantém o payload existente para PDFs e outros anexos.
     mediaPayload = {
       document: {
         url: validatedUrl,
-
         ...(fileName ? { fileName: String(fileName).trim() } : {}),
-
         ...(mimeType ? { mimetype: String(mimeType).trim() } : {}),
       },
-
       ...(normalizedCaption ? { caption: normalizedCaption } : {}),
     }
   }

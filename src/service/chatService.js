@@ -438,7 +438,7 @@ export const sendMessage = async ({
 
   const normalizedType = String(type || 'text').toLowerCase()
 
-  if (!['text', 'image', 'file', 'system'].includes(normalizedType)) {
+  if (!['text', 'image', 'audio', 'video', 'file', 'system'].includes(normalizedType)) {
     throw new AppError('Tipo de mensagem inválido.', 400)
   }
 
@@ -518,7 +518,7 @@ export const sendMessage = async ({
             content:
               normalizedContent ||
               normalizedAttachment?.name ||
-              (normalizedType === 'image' ? 'Imagem' : 'Arquivo'),
+              (normalizedType === 'image' ? 'Imagem' : normalizedType === 'audio' ? 'Áudio' : normalizedType === 'video' ? 'Vídeo' : 'Arquivo'),
             type: normalizedType,
             attachment: normalizedAttachment || undefined,
             replyTo: replyTo || null,
@@ -627,7 +627,7 @@ export const sendWhatsAppMessage = async ({
   const normalizedContent = String(content || '').trim()
   const normalizedAttachment = normalizeAttachment(attachment)
 
-  if (!['text', 'image', 'file'].includes(normalizedType)) {
+  if (!['text', 'image', 'audio', 'video', 'file'].includes(normalizedType)) {
     throw new AppError('Tipo de mensagem WhatsApp inválido.', 400)
   }
 
@@ -704,7 +704,7 @@ export const sendWhatsAppMessage = async ({
     content:
       normalizedContent ||
       normalizedAttachment?.name ||
-      (normalizedType === 'image' ? 'Imagem' : 'Arquivo'),
+      (normalizedType === 'image' ? 'Imagem' : normalizedType === 'audio' ? 'Áudio' : normalizedType === 'video' ? 'Vídeo' : 'Arquivo'),
     type: normalizedType,
     attachment: normalizedType === 'text' ? undefined : normalizedAttachment,
     status: 'sent',
@@ -1177,7 +1177,7 @@ export const receiveWhatsAppMessage = async ({
 
   const normalizedType = String(type || 'text').toLowerCase()
 
-  if (!['text', 'image', 'file', 'system'].includes(normalizedType)) {
+  if (!['text', 'image', 'audio', 'video', 'file', 'system'].includes(normalizedType)) {
     throw new AppError('Tipo de mensagem recebida inválido.', 400)
   }
 
@@ -1198,7 +1198,7 @@ export const receiveWhatsAppMessage = async ({
       direction: 'inbound',
       content:
         normalizedContent ||
-        (normalizedType === 'image' ? 'Imagem recebida' : 'Arquivo recebido'),
+        (normalizedType === 'image' ? 'Imagem recebida' : normalizedType === 'audio' ? 'Áudio recebido' : normalizedType === 'video' ? 'Vídeo recebido' : 'Arquivo recebido'),
       type: normalizedType,
       attachment: normalizedAttachment || undefined,
       status: 'delivered',

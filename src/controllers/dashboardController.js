@@ -1,6 +1,8 @@
 import Lead from '../models/Lead.js'
 import Property from '../models/Property.js'
 import User from '../models/User.js'
+import Visit from '../models/Visit.js'
+import { VISIT_STATUS } from '../constants/visitStatus.js'
 
 /*
 ====================================================
@@ -110,9 +112,10 @@ export const getAdminDashboard = async (req, res) => {
       status: { $ne: 'perdido' },
     })
 
-    const visitas = await Lead.countDocuments({
-      isDeleted: { $ne: true },
-      stage: 'visita_agendada',
+    // Total de visitas efetivamente realizadas por todos os corretores.
+    // Usa o status oficial do modelo de visitas, não a etapa do lead.
+    const visitas = await Visit.countDocuments({
+      status: VISIT_STATUS.COMPLETED,
     })
 
     const propostas = await Lead.countDocuments({

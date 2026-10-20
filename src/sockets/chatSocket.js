@@ -1,5 +1,6 @@
 import mongoose from 'mongoose'
 import Conversation from '../models/Conversation.js'
+import User from '../models/User.js'
 
 const normalizeId = (value) => {
   if (!value) return null
@@ -137,6 +138,21 @@ export function setupChatSocket(io) {
 
     socket.data.userId = userId
 
+    // Carrega o papel diretamente do banco: não confiamos em role enviado
+    // pelo cliente e socket.data.user não é preenchido automaticamente.
+    const authenticatedUser = await User.findById(userId)
+      .select('_id role isAdmin')
+      .lean()
+
+    if (!authenticatedUser) {
+      console.warn('⚠️ Usuário do socket não encontrado:', userId)
+      socket.disconnect(true)
+      return
+    }
+
+    socket.data.user = authenticatedUser
+    const isAdmin = isAdminUser(authenticatedUser)
+
     // =====================================================
     // USER ROOM
     // =====================================================
@@ -164,17 +180,23 @@ export function setupChatSocket(io) {
         console.log('🔎 BUSCANDO CONVERSAS DO USUÁRIO')
         console.log('User:', userId)
 
-        const conversations = await Conversation.find({
-          isActive: true,
-          $or: [
-            {
-              participants: userId,
-            },
-            {
-              assignedTo: userId,
-            },
-          ],
-        })
+        const conversationQuery = isAdmin
+          ? {
+              isActive: true,
+              $or: [
+                { channel: 'whatsapp' },
+                { channel: 'internal', participants: userId },
+              ],
+            }
+          : {
+              isActive: true,
+              $or: [
+                { channel: 'internal', participants: userId },
+                { channel: 'whatsapp', assignedTo: userId },
+              ],
+            }
+
+        const conversations = await Conversation.find(conversationQuery)
           .select('_id channel assignedTo participants')
           .lean()
 
@@ -194,7 +216,9 @@ export function setupChatSocket(io) {
           )
 
           const canJoin =
-            conversation.channel === 'whatsapp' ? isAssigned : isParticipant
+            conversation.channel === 'whatsapp'
+              ? isAdmin || isAssigned
+              : isParticipant
 
           console.log('')
           console.log('💬 CONVERSA')
@@ -306,16 +330,12 @@ export function setupChatSocket(io) {
             (participant) => normalizeId(participant) === userId,
           ) || false
 
-        /**
-         * O admin pode acessar qualquer conversa.
-         *
-         * Atualmente socket.data.user não é populado,
-         * então mantemos também a validação de assignedTo
-         * e participant.
-         */
-        const isAdmin = isAdminUser(socket.data?.user)
-
-        const canJoin = isAdmin || isAssigned || isParticipant
+        // WhatsApp: admin pode acessar para gerir os leads.
+        // Chat interno: somente participantes, inclusive quando o solicitante é admin.
+        const canJoin =
+          conversation.channel === 'whatsapp'
+            ? isAdmin || isAssigned
+            : isParticipant
 
         console.log('Channel:', conversation.channel)
         console.log('AssignedTo:', assignedTo)
@@ -393,6 +413,10 @@ export function setupChatSocket(io) {
 
     socket.on('typing', (conversationId) => {
       if (!conversationId) return
+
+      // Não permita emitir eventos de digitação em salas às quais o socket
+      // não foi autorizado a entrar.
+      if (!socket.rooms.has(String(conversationId))) return
 
       console.log('⌨️ TYPING:', {
         socket: socket.id,

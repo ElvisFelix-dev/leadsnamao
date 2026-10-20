@@ -51,9 +51,11 @@ const canAccessConversation = (conversation, user) => {
 
   if (!conversation.isActive) return false
 
-  if (isAdminUser(user)) return true
-
+  // Administradores mantêm acesso às conversas WhatsApp para gestão dos leads,
+  // mas conversas internas são privadas e exigem participação explícita.
   if (conversation.channel === 'whatsapp') {
+    if (isAdminUser(user)) return true
+
     return (
       sameId(conversation.assignedTo, user._id) ||
       sameId(conversation.lead?.assignedTo, user._id)
@@ -277,7 +279,11 @@ export const getUserConversations = async (userId) => {
   }
 
   if (isAdminUser(user)) {
-    query.channel = { $in: ['internal', 'whatsapp'] }
+    // Admin vê todos os chats WhatsApp, mas só chats internos dos quais participa.
+    query.$or = [
+      { channel: 'internal', participants: user._id },
+      { channel: 'whatsapp' },
+    ]
   } else {
     query.$or = [
       {
@@ -428,11 +434,7 @@ export const sendMessage = async ({
     throw new AppError('Conversa interna não encontrada.', 404)
   }
 
-  if (
-    !isAdmin &&
-    !isAdminUser(sender) &&
-    !isParticipant(conversation, sender._id)
-  ) {
+  if (!isParticipant(conversation, sender._id)) {
     throw new AppError('Você não participa desta conversa.', 403)
   }
 
@@ -937,21 +939,27 @@ export const createBrokerChannel = async ({
     throw new AppError('Um ou mais participantes são inválidos.', 400)
   }
 
-  // Por padrão, canais de corretores incluem todos os corretores
-  // e administradores ativos, não apenas quem criou o canal.
+  // Canais de corretores incluem automaticamente apenas corretores ativos.
+  // Administradores só entram se forem o criador ou forem selecionados explicitamente.
   const eligibleUsers = await User.find({
     isActive: { $ne: false },
-    $or: [{ role: 'broker' }, { role: 'admin' }, { isAdmin: true }],
+    role: 'broker',
   }).select('_id role isAdmin isActive')
 
   const eligibleIds = new Set(eligibleUsers.map((user) => String(user._id)))
+  const requestedUsers = await User.find({
+    _id: { $in: requestedIds },
+    isActive: { $ne: false },
+  }).select('_id role isAdmin isActive')
 
-  // Mantém o criador e os participantes elegíveis explicitamente
-  // selecionados, sem duplicações.
+  const explicitlySelectedIds = requestedUsers
+    .filter((user) => user.role === 'broker' || isAdminUser(user))
+    .map((user) => String(user._id))
+
   const uniqueParticipants = [
     ...new Set([
       ...eligibleUsers.map((user) => String(user._id)),
-      ...requestedIds.filter((id) => eligibleIds.has(id)),
+      ...explicitlySelectedIds,
     ]),
   ]
 

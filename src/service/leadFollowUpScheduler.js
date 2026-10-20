@@ -1,5 +1,11 @@
 import Lead from '../models/Lead.js'
 import LeadFollowUp from '../models/LeadFollowUp.js'
+import LeadFollowUpTemplate from '../models/LeadFollowUpTemplate.js'
+import {
+  FOLLOW_UP_TEMPLATE_DEFAULTS,
+  getTemplateText,
+  renderFollowUpTemplate,
+} from './leadFollowUpTemplateService.js'
 import WhatsAppIntegration from '../models/WhatsAppIntegration.js'
 
 import {
@@ -29,31 +35,23 @@ const TERMINAL_STATUSES = [LEAD_STATUS.CONVERTED, LEAD_STATUS.LOST]
 const TERMINAL_STAGES = [LEAD_STAGES.WON, LEAD_STAGES.LOST]
 
 // ============================================================
-// MENSAGENS
+// MENSAGENS EDITÁVEIS PELO ADMIN
 // ============================================================
 
-const buildMessage = (lead, step) => {
-  const name = String(lead.name || '')
-    .trim()
-    .split(/\s+/)[0]
+const buildMessage = (lead, step, templates) => {
+  const template = getTemplateText(templates, step)
+  return renderFollowUpTemplate(template, lead)
+}
 
-  const greeting = name ? `Olá, ${name}!` : 'Olá!'
+const getConfiguredTemplates = async () => {
+  const config = await LeadFollowUpTemplate.findOne({ key: 'default' }).lean()
+  if (!config?.templates?.length) return FOLLOW_UP_TEMPLATE_DEFAULTS
 
-  const messages = {
-    D0: `${greeting} recebemos seu interesse e estamos à disposição para ajudar. Você ainda está procurando um imóvel?`,
-
-    D1: `${greeting} passando para saber se você conseguiu avançar na busca pelo imóvel. Posso ajudar com as opções disponíveis?`,
-
-    D3: `${greeting} gostaria de saber se ainda podemos ajudar na sua busca por um imóvel. Se suas preferências mudaram, podemos considerar isso também.`,
-
-    D5: `${greeting} continuo à disposição para ajudar você a encontrar um imóvel que faça sentido para suas necessidades. Podemos conversar?`,
-
-    D7: `${greeting} ainda podemos ajudar na sua busca por um imóvel. Se quiser continuar, basta responder a esta mensagem.`,
-
-    D10: `${greeting} este é nosso último contato automático por enquanto. Se ainda estiver procurando um imóvel, pode responder por aqui que teremos prazer em ajudar.`,
-  }
-
-  return messages[step]
+  const byStep = new Map(config.templates.map((item) => [item.step, item]))
+  return FOLLOW_UP_TEMPLATE_DEFAULTS.map((fallback) => ({
+    ...fallback,
+    ...(byStep.get(fallback.step) || {}),
+  }))
 }
 
 // ============================================================
@@ -195,7 +193,7 @@ export const scheduleLeadFollowUps = async ({
     throw new Error('leadId é obrigatório para agendar follow-ups.')
   }
 
-  const lead = await Lead.findById(leadId)
+  const lead = await Lead.findById(leadId).populate('property', 'name code location')
 
   if (!lead) {
     return {
@@ -265,6 +263,7 @@ export const scheduleLeadFollowUps = async ({
   const baseDate = new Date()
 
   let scheduled = 0
+  const templates = await getConfiguredTemplates()
 
   for (const item of FOLLOW_UP_STEPS) {
     const scheduledAt = new Date(baseDate.getTime() + item.offsetMs)
@@ -283,7 +282,7 @@ export const scheduleLeadFollowUps = async ({
           step: item.step,
           scheduledAt,
           status: 'pending',
-          message: buildMessage(lead, item.step),
+          message: buildMessage(lead, item.step, templates),
           attempts: 0,
           dedupeKey,
         },

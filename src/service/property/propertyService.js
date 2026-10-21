@@ -4,6 +4,7 @@ import Property from '../../models/Property.js'
 
 import AppError from '../../utils/AppError.js'
 import { PROPERTY_STATUS } from '../../constants/propertyStatus.js'
+import { PROPERTY_FEATURES } from '../../constants/propertyFeatures.js'
 
 /* ============================================================
    POPULATE
@@ -1594,4 +1595,184 @@ export async function incrementVisits(id) {
   return {
     visitsScheduled: property.statistics.visitsScheduled,
   }
+}
+
+
+/* ============================================================
+   IMPORTAR IMÓVEIS EM LOTE (CSV)
+   - Validação individual por registro
+   - Cria createdBy com o usuário autenticado
+   - Não importa imagens, relacionamentos ou IDs externos
+============================================================ */
+
+const importBoolean = (value, fallback = false) => {
+  if (typeof value === 'boolean') return value
+  if (value === null || value === undefined || value === '') return fallback
+  const normalized = String(value).trim().toLowerCase()
+  if (['sim', 's', 'true', '1', 'yes', 'y'].includes(normalized)) return true
+  if (['não', 'nao', 'n', 'false', '0', 'no'].includes(normalized)) return false
+  return fallback
+}
+
+const importNumber = (value, fallback = 0) => {
+  if (value === null || value === undefined || String(value).trim() === '') {
+    return fallback
+  }
+
+  if (typeof value === 'number') return Number.isFinite(value) ? value : fallback
+
+  let normalized = String(value).trim().replace(/\s/g, '')
+  // Aceita formatos comuns: 1250000, 1.250.000,00 e 1250000.50
+  if (normalized.includes(',') && normalized.includes('.')) {
+    normalized = normalized.replace(/\./g, '').replace(',', '.')
+  } else if (normalized.includes(',')) {
+    normalized = normalized.replace(',', '.')
+  }
+
+  const parsed = Number(normalized)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+const importText = (value) =>
+  value === null || value === undefined ? '' : String(value).trim()
+
+const normalizeImportedProperty = (row = {}) => {
+  const features = Array.isArray(row.features)
+    ? row.features
+    : importText(row.features)
+        .split('|')
+        .map((item) => item.trim())
+        .filter(Boolean)
+
+  return {
+    name: importText(row.name),
+    // O model gera code automaticamente se não for informado.
+    ...(importText(row.code) ? { code: importText(row.code) } : {}),
+    description: importText(row.description),
+    shortDescription: importText(row.shortDescription),
+    type: importText(row.type),
+    ...(importText(row.category) ? { category: importText(row.category) } : {}),
+    purpose: importText(row.purpose) || 'venda',
+    status: importText(row.status) || PROPERTY_STATUS.AVAILABLE,
+    featured: importBoolean(row.featured),
+    exclusive: importBoolean(row.exclusive),
+    published: importBoolean(row.published, true),
+    active: importBoolean(row.active, true),
+    bedrooms: importNumber(row.bedrooms),
+    suites: importNumber(row.suites),
+    bathrooms: importNumber(row.bathrooms),
+    parkingSpaces: importNumber(row.parkingSpaces),
+    furnished: importBoolean(row.furnished),
+    acceptsPets: importBoolean(row.acceptsPets),
+    acceptsFinancing: importBoolean(row.acceptsFinancing, true),
+    acceptsFGTS: importBoolean(row.acceptsFGTS),
+    dimensions: {
+      totalArea: importNumber(row.dimensions?.totalArea),
+      builtArea: importNumber(row.dimensions?.builtArea),
+      landArea: importNumber(row.dimensions?.landArea),
+    },
+    prices: {
+      salePrice: importNumber(row.prices?.salePrice),
+      rentPrice: importNumber(row.prices?.rentPrice),
+      condominiumFee: importNumber(row.prices?.condominiumFee),
+      iptu: importNumber(row.prices?.iptu),
+    },
+    location: {
+      city: importText(row.location?.city),
+      state: importText(row.location?.state),
+      district: importText(row.location?.district),
+      zipCode: importText(row.location?.zipCode),
+      street: importText(row.location?.street),
+      number: importText(row.location?.number),
+      complement: importText(row.location?.complement),
+      country: importText(row.location?.country) || 'Brasil',
+      ...(importText(row.location?.region)
+        ? { region: importText(row.location.region) }
+        : {}),
+    },
+    // Mantém apenas características permitidas pelo enum do model.
+    features: features.filter((feature) => PROPERTY_FEATURES.includes(feature)),
+    highlights: Array.isArray(row.highlights) ? row.highlights : [],
+    notes: importText(row.notes),
+    tags: Array.isArray(row.tags) ? row.tags : [],
+  }
+}
+
+export async function importPropertiesCSV(rows, userId) {
+  const results = {
+    total: rows.length,
+    imported: 0,
+    failed: 0,
+    skipped: 0,
+    errors: [],
+    importedProperties: [],
+  }
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index] || {}
+    const line = index + 2 // linha 1 contém os cabeçalhos CSV
+
+    try {
+      const data = normalizeImportedProperty(row)
+
+      if (!data.name) {
+        throw new Error('Nome do imóvel é obrigatório.')
+      }
+
+      if (!data.type) {
+        throw new Error('Tipo do imóvel é obrigatório.')
+      }
+
+      // Evita duplicar códigos já existentes.
+      if (data.code) {
+        const duplicate = await Property.findOne({
+          code: data.code,
+          isDeleted: { $ne: true },
+        }).select('_id code name')
+
+        if (duplicate) {
+          results.skipped += 1
+          results.errors.push({
+            line,
+            name: data.name,
+            code: data.code,
+            type: 'duplicate',
+            message: `Código ${data.code} já cadastrado; registro ignorado.`,
+          })
+          continue
+        }
+      }
+
+      const property = await Property.create({
+        ...data,
+        createdBy: userId,
+        updatedBy: userId,
+      })
+
+      results.imported += 1
+      results.importedProperties.push({
+        id: property._id,
+        name: property.name,
+        code: property.code,
+      })
+    } catch (error) {
+      results.failed += 1
+      results.errors.push({
+        line,
+        name: importText(row.name),
+        code: importText(row.code),
+        type: 'validation',
+        message:
+          error?.name === 'ValidationError'
+            ? Object.values(error.errors || {})
+                .map((item) => item.message)
+                .join(' ')
+            : error?.code === 11000
+              ? 'Código ou slug duplicado. Confira o nome e o código do imóvel.'
+              : error?.message || 'Não foi possível importar este imóvel.',
+      })
+    }
+  }
+
+  return results
 }

@@ -16,6 +16,40 @@ export const createProperty = asyncHandler(async (req, res) => {
   })
 })
 
+
+/* ============================================================
+   IMPORTAÇÃO EM LOTE VIA CSV
+============================================================ */
+
+export const importPropertiesCSV = asyncHandler(async (req, res) => {
+  const { properties } = req.body || {}
+
+  if (!Array.isArray(properties) || properties.length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: 'Envie uma lista de imóveis para importar.',
+    })
+  }
+
+  if (properties.length > 500) {
+    return res.status(400).json({
+      success: false,
+      message: 'O limite é de 500 imóveis por importação.',
+    })
+  }
+
+  const result = await propertyService.importPropertiesCSV(
+    properties,
+    req.user._id,
+  )
+
+  return res.status(200).json({
+    success: true,
+    message: 'Importação processada.',
+    data: result,
+  })
+})
+
 /* ============================================================
    GET ALL
 ============================================================ */

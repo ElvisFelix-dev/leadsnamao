@@ -4,6 +4,7 @@ import express from 'express'
 
 import {
   createProperty,
+  importPropertiesCSV,
   getProperties,
   getProperty,
   getPropertyCRM,
@@ -383,6 +384,14 @@ router.get('/:id', propertyIdValidator, validateRequest, getProperty)
 CRUD ADMIN
 ============================================================
 */
+
+/*
+------------------------------------------------------------
+IMPORTAR IMÓVEIS VIA CSV
+------------------------------------------------------------
+*/
+
+router.post('/import/csv', protect, admin, importPropertiesCSV)
 
 /*
 ------------------------------------------------------------

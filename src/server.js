@@ -158,8 +158,7 @@ app.use('/api/commissions', commissonRoutes)
 app.use('/api/orchestrator', orchestratorRoutes)
 app.use('/api/webhooks', webhookRoutes)
 app.use('/api/lead-follow-up-templates', leadFollowUpTemplateRoutes)
-app.use('/api/public-proposals', publicProposalRoutes);
-
+app.use('/api/public-proposals', publicProposalRoutes)
 
 // ============================================
 // MIDDLEWARE DE ERRO

@@ -124,6 +124,48 @@ const proposalSchema = new mongoose.Schema(
     },
 
     /**
+     * ORIGEM E REVISÃO DA PROPOSTA PÚBLICA
+     * Campos opcionais para preservar propostas internas existentes.
+     */
+
+    origin: {
+      type: String,
+      enum: ['crm', 'public_link', 'public_site'],
+      default: 'crm',
+      index: true,
+    },
+
+    brokerReviewStatus: {
+      type: String,
+      enum: ['not_required', 'pending', 'approved', 'rejected'],
+      default: 'not_required',
+      index: true,
+    },
+
+    brokerReviewedAt: {
+      type: Date,
+      default: null,
+    },
+
+    brokerReviewedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+
+    brokerReviewComment: {
+      type: String,
+      trim: true,
+      maxlength: 2000,
+      default: '',
+    },
+
+    publicSubmittedAt: {
+      type: Date,
+      default: null,
+    },
+
+    /**
      * STATUS
      */
 

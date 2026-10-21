@@ -1088,6 +1088,17 @@ export const submitProposal = async ({ proposalId, user }) => {
         user,
       })
 
+      // Propostas recebidas pelo link público precisam passar primeiro
+      // pela análise do corretor responsável. Propostas internas seguem iguais.
+      if (proposal.origin === 'public_link') {
+        if (!isBroker(user) || String(proposal.broker) !== String(user._id)) {
+          throw createError('Somente o corretor responsável pode encaminhar esta proposta ao gestor.', 403)
+        }
+        if (proposal.brokerReviewStatus !== 'pending') {
+          throw createError('Esta proposta pública já foi analisada ou não está aguardando revisão.', 409)
+        }
+      }
+
       const lead = await Lead.findById(proposal.lead).session(session)
 
       if (!lead) {
@@ -1104,6 +1115,12 @@ export const submitProposal = async ({ proposalId, user }) => {
       proposal.status = PROPOSAL_STATUS.PENDING
 
       proposal.submittedAt = new Date()
+
+      if (proposal.origin === 'public_link') {
+        proposal.brokerReviewStatus = 'approved'
+        proposal.brokerReviewedAt = new Date()
+        proposal.brokerReviewedBy = user._id
+      }
 
       proposal.history.push(
         createProposalHistoryEntry({

@@ -3,6 +3,7 @@ import User from '../../models/User.js'
 import Lead from '../../models/Lead.js'
 import Visit from '../../models/Visit.js'
 import Sale from '../../models/Sale.js'
+import Commission from '../../models/Commission.js'
 
 import { addBrokerToChannel } from '../chatService.js'
 
@@ -86,7 +87,7 @@ export async function getBrokerDetailsById(userId) {
     status: 'completed',
   }
 
-  const [completedSales, revenueResult] = await Promise.all([
+  const [completedSales, revenueResult, commissionResult] = await Promise.all([
     Sale.countDocuments(completedSalesFilter),
 
     Sale.aggregate([
@@ -104,9 +105,31 @@ export async function getBrokerDetailsById(userId) {
         },
       },
     ]),
+
+    // Soma somente a parte da comissão que pertence ao corretor vendedor.
+    // Não inclui a comissão total da imobiliária nem valores cancelados.
+    Commission.aggregate([
+      {
+        $match: {
+          sellerBroker: broker._id,
+          status: { $ne: 'cancelled' },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          totalCommission: {
+            $sum: {
+              $ifNull: ['$distribution.seller.amount', 0],
+            },
+          },
+        },
+      },
+    ]),
   ])
 
   const totalRevenue = revenueResult[0]?.total || 0
+  const totalBrokerCommission = commissionResult[0]?.totalCommission || 0
 
   /*
   =====================================
@@ -159,6 +182,7 @@ export async function getBrokerDetailsById(userId) {
       deals: completedSales,
       lostDeals: lostLeads,
       revenue: totalRevenue,
+      comissaoTotal: totalBrokerCommission,
       conversionRate,
       dealsThisMonth,
       monthlyGoal,

@@ -1044,8 +1044,6 @@ export const importLeadsFromCSV = async (rows) => {
 // ======================================================
 
 export const createBrokerHotsiteLead = async (data) => {
-  const normalizedRegion = requireValidRegion(data.region)
-
   const {
     name,
     email,
@@ -1071,12 +1069,29 @@ export const createBrokerHotsiteLead = async (data) => {
   const property = await Property.findById(propertyId)
   if (!property) throw new Error('Imóvel não encontrado.')
 
-  const broker = await User.findOne({ _id: brokerId, isBroker: true })
-  if (!broker) throw new Error('Corretor do hotsite não encontrado.')
+  const broker = await User.findOne({
+    _id: brokerId,
+    isBroker: true,
+  })
 
-  const region = property.region || property.location?.region
-  if (!region) {
-    throw new Error('Não foi possível identificar a região do imóvel.')
+  if (!broker) {
+    throw new Error('Corretor do hotsite não encontrado.')
+  }
+
+  const regionCandidates = [
+    property.region,
+    property.location?.region,
+    data.region,
+  ]
+
+  const normalizedRegion = regionCandidates
+    .map((region) => normalizeRegion(region))
+    .find(Boolean)
+
+  if (!normalizedRegion) {
+    throw new Error(
+      'Não foi possível identificar uma região válida para o imóvel.',
+    )
   }
 
   const lead = new Lead({

@@ -158,7 +158,7 @@ const distributionSchema = new mongoose.Schema(
     region: {
       type: String,
       default: '',
-      trim: true,
+      trim: false,
     },
 
     priority: {

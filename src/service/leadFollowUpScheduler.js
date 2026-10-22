@@ -3,7 +3,6 @@ import LeadFollowUp from '../models/LeadFollowUp.js'
 import LeadFollowUpTemplate from '../models/LeadFollowUpTemplate.js'
 import {
   FOLLOW_UP_TEMPLATE_DEFAULTS,
-  getTemplateText,
   renderFollowUpTemplate,
 } from './leadFollowUpTemplateService.js'
 import WhatsAppIntegration from '../models/WhatsAppIntegration.js'
@@ -38,9 +37,56 @@ const TERMINAL_STAGES = [LEAD_STAGES.WON, LEAD_STAGES.LOST]
 // MENSAGENS EDITÁVEIS PELO ADMIN
 // ============================================================
 
-const buildMessage = (lead, step, templates) => {
-  const template = getTemplateText(templates, step)
-  return renderFollowUpTemplate(template, lead)
+const buildMessage = (lead, template) =>
+  renderFollowUpTemplate(template?.message || '', lead)
+
+/**
+ * Escolhe uma alternativa elegível usando menor frequência histórica.
+ * Em empate, prioriza a alternativa menos recentemente usada.
+ * A seleção serve para qualidade da comunicação, não para contornar
+ * políticas de envio; as barreiras de consentimento e simulação continuam obrigatórias.
+ */
+const selectTemplateVariation = async (step, templates) => {
+  const stepTemplate = templates?.find((item) => item.step === step && item.enabled !== false)
+  if (!stepTemplate) {
+    const fallback = FOLLOW_UP_TEMPLATE_DEFAULTS.find((item) => item.step === step)
+    return fallback ? { ...fallback, variationId: null } : null
+  }
+
+  const variations = (stepTemplate.variations || [])
+    .filter((item) => item && item.enabled !== false && String(item.message || '').trim())
+
+  // Compatibilidade: configuração antiga com apenas `message` continua válida.
+  if (!variations.length) {
+    return { ...stepTemplate, message: stepTemplate.message, variationId: null }
+  }
+
+  const ids = variations.map((item) => item._id).filter(Boolean)
+  const usage = ids.length
+    ? await LeadFollowUp.aggregate([
+        { $match: { step, templateVariationId: { $in: ids }, status: { $in: ['sent', 'simulated'] } } },
+        { $group: { _id: '$templateVariationId', count: { $sum: 1 }, lastUsedAt: { $max: '$createdAt' } } },
+      ])
+    : []
+  const usageById = new Map(usage.map((item) => [String(item._id), item]))
+
+  const ranked = variations.map((variation, index) => {
+    const stats = variation._id ? usageById.get(String(variation._id)) : null
+    return {
+      ...variation,
+      _index: index,
+      _count: stats?.count || 0,
+      _lastUsedAt: stats?.lastUsedAt ? new Date(stats.lastUsedAt).getTime() : 0,
+    }
+  }).sort((a, b) => a._count - b._count || a._lastUsedAt - b._lastUsedAt || a._index - b._index)
+
+  const selected = ranked[0]
+  return {
+    ...stepTemplate,
+    message: selected.message,
+    variationId: selected._id || null,
+    variationLabel: `Variação ${selected._index + 1}`,
+  }
 }
 
 const getConfiguredTemplates = async () => {
@@ -65,6 +111,14 @@ const validateLeadEligibility = (lead) => {
 
   if (lead.isDeleted === true) {
     return 'Lead excluído.'
+  }
+
+  if (lead.isTestLead === true) {
+    return 'Lead identificado como teste; follow-up bloqueado.'
+  }
+
+  if (lead.whatsappConsent?.status !== 'granted' || lead.whatsappConsent?.revokedAt) {
+    return 'Lead sem consentimento válido para contato por WhatsApp.'
   }
 
   if (
@@ -267,6 +321,15 @@ export const scheduleLeadFollowUps = async ({
 
   for (const item of FOLLOW_UP_STEPS) {
     const scheduledAt = new Date(baseDate.getTime() + item.offsetMs)
+    const selectedTemplate = await selectTemplateVariation(item.step, templates)
+
+    if (!selectedTemplate || selectedTemplate.enabled === false) {
+      console.info('[LeadFollowUpScheduler] Etapa sem mensagem ativa; ignorada.', {
+        leadId: String(lead._id),
+        step: item.step,
+      })
+      continue
+    }
 
     const dedupeKey = `lead:${lead._id}:${item.step}`
 
@@ -282,7 +345,9 @@ export const scheduleLeadFollowUps = async ({
           step: item.step,
           scheduledAt,
           status: 'pending',
-          message: buildMessage(lead, item.step, templates),
+          message: buildMessage(lead, selectedTemplate),
+          templateVariationId: selectedTemplate.variationId || null,
+          templateVariationLabel: selectedTemplate.variationLabel || '',
           attempts: 0,
           dedupeKey,
         },

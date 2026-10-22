@@ -193,7 +193,7 @@ export const testPush = async (req, res) => {
     const { title, body, url } = req.body || {}
 
     const result = await sendPushToUser(userId, {
-      title: title || 'Leads Na Mão',
+      title: title || 'CRM NODUS',
 
       body: body || 'As notificações push estão funcionando!',
 

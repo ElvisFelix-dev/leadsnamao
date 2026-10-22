@@ -20,6 +20,42 @@ const getOrCreateConfig = async () => {
   return config
 }
 
+export const getLeadFollowUpTemplateUsage = async (req, res) => {
+  try {
+    const usage = await LeadFollowUp.aggregate([
+      {
+        $match: {
+          templateVariationId: { $ne: null },
+          status: { $in: ['sent', 'simulated'] },
+        },
+      },
+      {
+        $group: {
+          _id: '$templateVariationId',
+          step: { $first: '$step' },
+          usageCount: { $sum: 1 },
+          sentCount: { $sum: { $cond: [{ $eq: ['$status', 'sent'] }, 1, 0] } },
+          simulatedCount: { $sum: { $cond: [{ $eq: ['$status', 'simulated'] }, 1, 0] } },
+          lastUsedAt: { $max: '$createdAt' },
+        },
+      },
+      { $sort: { step: 1, usageCount: -1 } },
+    ])
+
+    return res.status(200).json({ success: true, usage: usage.map((item) => ({
+      variationId: String(item._id),
+      step: item.step,
+      usageCount: item.usageCount,
+      sentCount: item.sentCount,
+      simulatedCount: item.simulatedCount,
+      lastUsedAt: item.lastUsedAt || null,
+    })) })
+  } catch (error) {
+    console.error('[LeadFollowUpTemplates] Erro ao buscar histórico de uso:', error)
+    return res.status(500).json({ success: false, message: 'Não foi possível carregar o histórico de uso.' })
+  }
+}
+
 export const getLeadFollowUpTemplates = async (req, res) => {
   try {
     const config = await getOrCreateConfig()
@@ -52,11 +88,28 @@ export const saveLeadFollowUpTemplates = async (req, res) => {
       if (item.message.length > 2000) {
         return res.status(400).json({ success: false, message: `A mensagem ${fallback.step} excede 2.000 caracteres.` })
       }
+      const variations = Array.isArray(item.variations)
+        ? item.variations.map((variation, index) => {
+            if (!variation || typeof variation.message !== 'string' || !variation.message.trim()) {
+              throw new Error(`A variação ${index + 1} de ${fallback.step} não pode ficar vazia.`)
+            }
+            if (variation.message.length > 2000) {
+              throw new Error(`A variação ${index + 1} de ${fallback.step} excede 2.000 caracteres.`)
+            }
+            return {
+              ...(variation._id ? { _id: variation._id } : {}),
+              message: variation.message.trim(),
+              enabled: variation.enabled !== false,
+            }
+          })
+        : []
+
       normalized.push({
         step: fallback.step,
         label: fallback.label,
         enabled: item.enabled !== false,
         message: item.message.trim(),
+        variations,
       })
     }
 
@@ -71,6 +124,9 @@ export const saveLeadFollowUpTemplates = async (req, res) => {
 
     return res.status(200).json({ success: true, message: 'Mensagens salvas com sucesso.', templates: config.templates, updatedAt: config.updatedAt })
   } catch (error) {
+    if (error.message?.startsWith('A variação ')) {
+      return res.status(400).json({ success: false, message: error.message })
+    }
     console.error('[LeadFollowUpTemplates] Erro ao salvar templates:', error)
     return res.status(500).json({ success: false, message: 'Não foi possível salvar as mensagens.' })
   }
@@ -86,7 +142,7 @@ export const applyTemplatesToPendingFollowUps = async (req, res) => {
       fallback.step,
       { ...fallback, ...(savedByStep.get(fallback.step) || {}) },
     ]))
-    const pending = await LeadFollowUp.find({ status: 'pending' }).select('_id lead step').lean()
+    const pending = await LeadFollowUp.find({ status: 'pending' }).select('_id lead step templateVariationId').lean()
     let updated = 0
     let skipped = 0
 
@@ -104,10 +160,18 @@ export const applyTemplatesToPendingFollowUps = async (req, res) => {
         skipped += 1
         continue
       }
-      const message = renderFollowUpTemplate(template.message, lead)
+      const activeVariations = (template.variations || []).filter((item) => item && item.enabled !== false && String(item.message || '').trim())
+      const selectedIndex = activeVariations.findIndex((item) => String(item._id) === String(followUp.templateVariationId))
+      const selectedVariation = selectedIndex >= 0 ? activeVariations[selectedIndex] : activeVariations[0] || null
+      const templateText = selectedVariation?.message || template.message
+      const message = renderFollowUpTemplate(templateText, lead)
       const result = await LeadFollowUp.updateOne(
         { _id: followUp._id, status: 'pending' },
-        { $set: { message } },
+        { $set: {
+          message,
+          templateVariationId: selectedVariation?._id || null,
+          templateVariationLabel: selectedVariation ? `Variação ${selectedIndex >= 0 ? selectedIndex + 1 : 1}` : '',
+        } },
       )
       updated += result.modifiedCount || 0
     }

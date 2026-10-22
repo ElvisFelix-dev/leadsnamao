@@ -12,7 +12,7 @@ const sendEmail = async (options) => {
   })
 
   const mailOptions = {
-    from: `"Leads na Mão" <${process.env.EMAIL_USER}>`,
+    from: `"CRM NODUS" <${process.env.EMAIL_USER}>`,
     to: options.email,
     subject: options.subject,
     html: options.message,

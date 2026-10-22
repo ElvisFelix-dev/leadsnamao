@@ -81,7 +81,7 @@ export const register = asyncHandler(async (req, res) => {
   try {
     await sendEmail({
       to: user.email,
-      subject: '🎉 Bem-vindo ao LeadsnaMão',
+      subject: '🎉 Bem-vindo ao CRM NODUS',
       htmlContent: welcomeTemplate(user.name),
     })
   } catch (error) {
@@ -220,7 +220,7 @@ export async function forgotPassword(req, res) {
     await sendEmail({
       to: user.email,
 
-      subject: 'Recuperação de senha - LeadsnaMão',
+      subject: 'Recuperação de senha - CRM NODUS',
 
       htmlContent: resetPasswordTemplate(user.name, resetUrl),
     })

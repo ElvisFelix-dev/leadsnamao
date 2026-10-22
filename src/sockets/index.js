@@ -72,7 +72,7 @@ export function setupSocketIO(httpServer) {
     })
 
     // =======================================================
-    // LEADS NA MÃO — ENTRADA NA SALA DO USUÁRIO
+    // CRM NODUS — ENTRADA NA SALA DO USUÁRIO
     // =======================================================
 
     socket.on('join_conversations', () => {
@@ -95,7 +95,7 @@ export function setupSocketIO(httpServer) {
     })
 
     // =======================================================
-    // LEADS NA MÃO — ENTRADA NA SALA DA CONVERSA
+    // CRM NODUS — ENTRADA NA SALA DA CONVERSA
     // =======================================================
 
     socket.on('join_conversation', (conversationId) => {

@@ -129,7 +129,7 @@ app.get('/health', (req, res) => {
 })
 
 app.get('/test-server', (req, res) => {
-  res.send('🚀 Leads Na Mão server running! ✅')
+  res.send('🚀 CRM NODUS server running! ✅')
 })
 
 // ============================================

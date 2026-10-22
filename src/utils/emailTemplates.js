@@ -8,7 +8,7 @@ export const welcomeTemplate = (userName) => `
   <meta name="color-scheme" content="light">
   <meta name="supported-color-schemes" content="light">
 
-  <title>Bem-vindo ao Leads Na Mão</title>
+  <title>Bem-vindo ao CRM NODUS</title>
 </head>
 
 <body style="
@@ -27,7 +27,7 @@ export const welcomeTemplate = (userName) => `
     opacity:0;
     color:transparent;
   ">
-    Sua conta no Leads Na Mão foi criada com sucesso.
+    Sua conta no CRM NODUS foi criada com sucesso.
   </div>
 
 
@@ -103,7 +103,7 @@ export const welcomeTemplate = (userName) => `
 
                     <img
                       src="https://res.cloudinary.com/dgdtytc5n/image/upload/v1790027717/logoImg_g4jai0.png"
-                      alt="Leads Na Mão"
+                      alt="CRM NODUS"
                       width="76"
                       height="76"
                       style="
@@ -131,9 +131,9 @@ export const welcomeTemplate = (userName) => `
                 letter-spacing:-0.5px;
                 margin-top:4px;
               ">
-                Leads
+                CRM
                 <span style="color:#4f8cff;">
-                  Na Mão
+                  NODUS
                 </span>
               </div>
 
@@ -212,7 +212,7 @@ export const welcomeTemplate = (userName) => `
                 font-weight:700;
                 letter-spacing:-0.5px;
               ">
-                Seja bem-vindo ao Leads Na Mão
+                Seja bem-vindo ao CRM NODUS
               </h1>
 
 
@@ -235,7 +235,7 @@ export const welcomeTemplate = (userName) => `
                 line-height:1.7;
               ">
                 É um prazer ter você conosco.
-                Sua conta no <strong>Leads Na Mão</strong> foi criada
+                Sua conta no <strong>CRM NODUS</strong> foi criada
                 com sucesso e você já pode começar a utilizar a plataforma.
               </p>
 
@@ -318,7 +318,7 @@ export const welcomeTemplate = (userName) => `
                         box-shadow:0 5px 14px rgba(37,99,235,0.25);
                       "
                     >
-                      Acessar o Leads Na Mão
+                      Acessar o CRM NODUS
                     </a>
 
                   </td>
@@ -383,7 +383,7 @@ export const welcomeTemplate = (userName) => `
                 <strong style="
                   color:#111827;
                 ">
-                  Equipe Leads Na Mão
+                  Equipe CRM NODUS
                 </strong>
               </p>
 
@@ -414,7 +414,7 @@ export const welcomeTemplate = (userName) => `
                 font-weight:600;
                 letter-spacing:0.2px;
               ">
-                Acompanhe o Leads Na Mão
+                Acompanhe o CRM NODUS
               </p>
 
 
@@ -577,7 +577,7 @@ export const welcomeTemplate = (userName) => `
                 font-size:11px;
                 line-height:1.6;
               ">
-                © ${new Date().getFullYear()} Leads Na Mão
+                © ${new Date().getFullYear()} CRM NODUS
                 <br>
                 Gestão inteligente para imobiliárias.
               </p>
@@ -624,7 +624,7 @@ export const resetPasswordTemplate = (userName, resetUrl) => `
   <meta name="color-scheme" content="light">
   <meta name="supported-color-schemes" content="light">
 
-  <title>Redefinição de senha | Leads Na Mão</title>
+  <title>Redefinição de senha | CRM NODUS</title>
 </head>
 
 <body style="
@@ -643,7 +643,7 @@ export const resetPasswordTemplate = (userName, resetUrl) => `
     opacity:0;
     color:transparent;
   ">
-    Solicitação para redefinir sua senha no Leads Na Mão.
+    Solicitação para redefinir sua senha no CRM NODUS.
   </div>
 
 
@@ -715,7 +715,7 @@ export const resetPasswordTemplate = (userName, resetUrl) => `
 
                     <img
                       src="https://res.cloudinary.com/dgdtytc5n/image/upload/v1790027717/logoImg_g4jai0.png"
-                      alt="Leads Na Mão"
+                      alt="CRM NODUS"
                       width="76"
                       height="76"
                       style="
@@ -742,9 +742,9 @@ export const resetPasswordTemplate = (userName, resetUrl) => `
                 letter-spacing:-0.5px;
                 margin-top:4px;
               ">
-                Leads
+                CRM
                 <span style="color:#4f8cff;">
-                  Na Mão
+                  NODUS
                 </span>
               </div>
 
@@ -846,7 +846,7 @@ export const resetPasswordTemplate = (userName, resetUrl) => `
                 line-height:1.7;
               ">
                 Recebemos uma solicitação para redefinir a senha
-                da sua conta no <strong>Leads Na Mão</strong>.
+                da sua conta no <strong>CRM NODUS</strong>.
               </p>
 
 
@@ -1044,7 +1044,7 @@ export const resetPasswordTemplate = (userName, resetUrl) => `
                 font-weight:600;
                 letter-spacing:0.2px;
               ">
-                Acompanhe o Leads Na Mão
+                Acompanhe o CRM NODUS
               </p>
 
 
@@ -1207,7 +1207,7 @@ export const resetPasswordTemplate = (userName, resetUrl) => `
                 font-size:11px;
                 line-height:1.6;
               ">
-                © ${new Date().getFullYear()} Leads Na Mão
+                © ${new Date().getFullYear()} CRM NODUS
                 <br>
                 Gestão inteligente para imobiliárias.
               </p>
@@ -1262,7 +1262,7 @@ export function leadAssignedTemplate({
   <meta name="color-scheme" content="light">
   <meta name="supported-color-schemes" content="light">
 
-  <title>Novo lead recebido | Leads Na Mão</title>
+  <title>Novo lead recebido | CRM NODUS</title>
 </head>
 
 
@@ -1282,7 +1282,7 @@ export function leadAssignedTemplate({
     opacity:0;
     color:transparent;
   ">
-    Um novo lead foi atribuído a você no Leads Na Mão.
+    Um novo lead foi atribuído a você no CRM NODUS.
   </div>
 
 
@@ -1360,7 +1360,7 @@ export function leadAssignedTemplate({
 
                     <img
                       src="https://res.cloudinary.com/dgdtytc5n/image/upload/v1790027717/logoImg_g4jai0.png"
-                      alt="Leads Na Mão"
+                      alt="CRM NODUS"
                       width="76"
                       height="76"
                       style="
@@ -1389,9 +1389,9 @@ export function leadAssignedTemplate({
                 letter-spacing:-0.5px;
                 margin-top:4px;
               ">
-                Leads
+                CRM
                 <span style="color:#4f8cff;">
-                  Na Mão
+                  NODUS
                 </span>
               </div>
 
@@ -1495,7 +1495,7 @@ export function leadAssignedTemplate({
                 line-height:1.7;
               ">
                 Um novo lead foi atribuído a você e já está disponível
-                para atendimento no <strong>Leads Na Mão</strong>.
+                para atendimento no <strong>CRM NODUS</strong>.
               </p>
 
 
@@ -1847,7 +1847,7 @@ export function leadAssignedTemplate({
                 font-weight:600;
                 letter-spacing:0.2px;
               ">
-                Acompanhe o Leads Na Mão
+                Acompanhe o CRM NODUS
               </p>
 
 
@@ -2010,7 +2010,7 @@ export function leadAssignedTemplate({
                 font-size:11px;
                 line-height:1.6;
               ">
-                © ${new Date().getFullYear()} Leads Na Mão
+                © ${new Date().getFullYear()} CRM NODUS
                 <br>
                 Gestão inteligente para imobiliárias.
               </p>

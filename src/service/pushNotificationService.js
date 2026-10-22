@@ -30,12 +30,12 @@ export async function sendPushNotification(subscription, payload = {}) {
   ensureVapidConfigured()
 
   const notificationPayload = JSON.stringify({
-    title: payload.title || 'Leads Na Mão',
+    title: payload.title || 'CRM NODUS',
     body: payload.body || 'Você recebeu uma nova notificação.',
     icon: payload.icon || '/logo192.png',
     badge: payload.badge || '/logo192.png',
     url: payload.url || '/',
-    tag: payload.tag || 'leads-na-mao',
+    tag: payload.tag || 'crm-nodus',
     data: payload.data || {},
   })
 

@@ -235,7 +235,7 @@ const reportStaleProcessing = async () => {
 const getLeadAndConversation = async (followUp) => {
   const lead = await Lead.findById(followUp.lead)
     .select(
-      'name phone phoneNormalized status stage assignedTo createdBy stageHistory lastContactAt followUpAutomation sourceType isDistributed property region',
+      'name phone phoneNormalized status stage assignedTo createdBy stageHistory lastContactAt followUpAutomation sourceType isDistributed property region isTestLead whatsappConsent isDeleted',
     )
     .populate('assignedTo', '_id name role isAdmin')
     .lean()
@@ -244,6 +244,14 @@ const getLeadAndConversation = async (followUp) => {
     return {
       reason: 'Lead inexistente ou excluído.',
     }
+  }
+
+  if (lead.isDeleted || lead.isTestLead === true) {
+    return { reason: 'Lead excluído ou identificado como teste; envio bloqueado.' }
+  }
+
+  if (lead.whatsappConsent?.status !== 'granted' || lead.whatsappConsent?.revokedAt) {
+    return { reason: 'Sem consentimento válido para contato por WhatsApp.' }
   }
 
   if (isTerminalLead(lead)) {

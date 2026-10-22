@@ -268,6 +268,24 @@ const leadSchema = new mongoose.Schema(
       index: true,
     },
 
+    // Proteções de follow-up: novos leads não são considerados consentidos por padrão.
+    isTestLead: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    whatsappConsent: {
+      status: {
+        type: String,
+        enum: ['unknown', 'granted', 'denied'],
+        default: 'unknown',
+        index: true,
+      },
+      grantedAt: { type: Date, default: null },
+      source: { type: String, default: '', trim: true },
+      revokedAt: { type: Date, default: null },
+    },
+
     isDeleted: {
       type: Boolean,
       default: false,

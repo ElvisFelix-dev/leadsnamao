@@ -9,7 +9,14 @@ const followUpTemplateItemSchema = new mongoose.Schema({
   },
   label: { type: String, required: true, trim: true },
   enabled: { type: Boolean, default: true },
+  // Mantido para compatibilidade com a configuração antiga.
   message: { type: String, required: true, trim: true, maxlength: 2000 },
+  // Alternativas opcionais para rodízio; cada item mantém ID estável.
+  variations: [{
+    _id: { type: mongoose.Schema.Types.ObjectId, auto: true },
+    message: { type: String, required: true, trim: true, maxlength: 2000 },
+    enabled: { type: Boolean, default: true },
+  }],
 }, { _id: false })
 
 const leadFollowUpTemplateSchema = new mongoose.Schema({

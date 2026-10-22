@@ -52,7 +52,7 @@ const sendLeadAssignedEmail = async ({ lead, assignedTo }) => {
 
     await sendEmail({
       to: assignedTo.email,
-      subject: 'Novo lead atribuído - Leads Na Mão',
+      subject: 'Novo lead atribuído - CRM NODUS',
       htmlContent: leadAssignedTemplate({
         brokerName: assignedTo.name,
         brokerPosition: assignedTo.position || 'Corretor de imóveis',
@@ -418,7 +418,7 @@ export const assignLeads = async (req, res) => {
         await sendEmail({
           to: broker.email,
 
-          subject: '🎯 Novo lead atribuído - LeadsnaMão',
+          subject: '🎯 Novo lead atribuído - CRM NODUS',
 
           htmlContent: leadAssignedTemplate({
             brokerName: broker.name,

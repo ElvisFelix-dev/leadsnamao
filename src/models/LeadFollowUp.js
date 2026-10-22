@@ -54,6 +54,17 @@ const leadFollowUpSchema = new mongoose.Schema(
       trim: true,
     },
 
+    // Identifica a alternativa selecionada; registros antigos ficam sem este campo.
+    templateVariationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+    },
+    templateVariationLabel: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+
     attempts: {
       type: Number,
       default: 0,

@@ -63,6 +63,42 @@ function normalizeSourceType(sourceType = '') {
 }
 
 /**
+ * Normaliza o consentimento explícito para contato por WhatsApp.
+ * Não inferimos autorização apenas pela existência de um telefone.
+ */
+function normalizeWhatsappConsent(consent = {}, fallbackSource = '') {
+  const status = cleanString(consent?.status).toLowerCase()
+
+  if (status !== 'granted') {
+    return {
+      status: 'unknown',
+      grantedAt: null,
+      source: '',
+      revokedAt: null,
+    }
+  }
+
+  const allowedSources = new Set([
+    'site',
+    'property_page',
+    'broker_hotsite',
+    'portal',
+    'meta',
+  ])
+  const requestedSource = cleanString(consent?.source).toLowerCase()
+  const source = allowedSources.has(requestedSource)
+    ? requestedSource
+    : cleanString(fallbackSource).toLowerCase()
+
+  return {
+    status: 'granted',
+    grantedAt: new Date(),
+    source,
+    revokedAt: null,
+  }
+}
+
+/**
  * Retorna uma prioridade segura.
  */
 function normalizePriority(priority) {
@@ -414,6 +450,8 @@ export async function captureLead({
 
   campaign = {},
 
+  whatsappConsent = {},
+
   priority = LEAD_PRIORITY.MEDIUM,
 
   createdBy = null,
@@ -432,6 +470,11 @@ export async function captureLead({
 
   const normalizedSourceType =
     normalizeSourceType(sourceType) || LEAD_SOURCE_TYPE.SITE
+
+  const normalizedWhatsappConsent = normalizeWhatsappConsent(
+    whatsappConsent,
+    normalizedSourceType,
+  )
 
   /* ----------------------------------------------------------
      VALIDAÇÃO
@@ -548,6 +591,8 @@ export async function captureLead({
     source: normalizedSource,
 
     sourceType: sourceContext.sourceType,
+
+    whatsappConsent: normalizedWhatsappConsent,
 
     sourceBroker: sourceContext.sourceBroker,
 

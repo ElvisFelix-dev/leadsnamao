@@ -244,6 +244,10 @@ export async function createPropertyPageLead(req, res) {
       email: req.body.email,
       phone: req.body.phone,
       message: req.body.message || '',
+      whatsappConsent: req.body.whatsappConsent || {
+        status: 'unknown',
+        source: '',
+      },
       region: normalizedRegion,
       source: req.body.source || 'public',
       sourceType: LEAD_SOURCE_TYPE.PROPERTY_PAGE,
@@ -606,6 +610,10 @@ export async function createPropertyLead(req, res) {
         awaitingAssignment: !assignedBroker?._id,
         isDistributed: !!assignedBroker?._id,
         notes: req.body.message || '',
+        whatsappConsent: req.body.whatsappConsent || {
+          status: 'unknown',
+          source: '',
+        },
         status: 'novo',
         stage: 'novo_lead',
         priority: 'media',

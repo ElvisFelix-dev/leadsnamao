@@ -21,9 +21,32 @@ const TERMINAL_STATUSES = [LEAD_STATUS.CONVERTED, LEAD_STATUS.LOST]
 
 const TERMINAL_STAGES = [LEAD_STAGES.WON, LEAD_STAGES.LOST]
 
+const FOLLOW_UP_TIMEZONE =
+  process.env.LEAD_FOLLOWUPS_TIMEZONE || 'America/Sao_Paulo'
+const SEND_WINDOW_START_MINUTES = 9 * 60
+const SEND_WINDOW_END_MINUTES = 18 * 60
+
+const isWithinSendWindow = (date = new Date()) => {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: FOLLOW_UP_TIMEZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date)
+
+  const hour = Number(parts.find((part) => part.type === 'hour')?.value)
+  const minute = Number(parts.find((part) => part.type === 'minute')?.value)
+  const minuteOfDay = hour * 60 + minute
+
+  return (
+    minuteOfDay >= SEND_WINDOW_START_MINUTES &&
+    minuteOfDay < SEND_WINDOW_END_MINUTES
+  )
+}
+
 // Simulação ativada por padrão.
-// Para produção, use DRY_RUN=false e autorize explicitamente a fila.
-// O envio real permanece bloqueado se ALLOW_BULK_SEND não for true.
+// Para um envio individual, configure DRY_RUN=false e TEST_ID com o ID do follow-up.
+// Sem TEST_ID, envios reais exigem ALLOW_BULK_SEND=true.
 const isDryRun = () =>
   String(process.env.LEAD_FOLLOWUPS_DRY_RUN || 'true')
     .trim()
@@ -114,14 +137,37 @@ const failFollowUp = async (followUp, error) => {
 const claimNextFollowUp = async () => {
   const now = new Date()
 
-  const filter = {
+  if (!isWithinSendWindow(now)) {
+    console.log(
+      `[LeadFollowUp] Fora da janela de envio (09:00–18:00, ${FOLLOW_UP_TIMEZONE}). A fila será mantida para a próxima execução dentro da janela.`,
+    )
+    return null
+  }
+  const dryRun = isDryRun()
+  const testFollowUpId = String(process.env.LEAD_FOLLOWUPS_TEST_ID || '').trim()
+
+  let filter = {
     status: 'pending',
     scheduledAt: { $lte: now },
   }
 
-  // Envio real exige autorização explícita. Não é necessário configurar
-  // um ID individual: com a flag habilitada, o cron processa a fila elegível.
-  if (!isDryRun()) {
+  if (!dryRun && testFollowUpId) {
+    // Modo de teste individual: só permite reservar exatamente o ID indicado.
+    // Também aceita 'simulated' para reprocessar o follow-up que foi simulado
+    // anteriormente. Nunca amplia a consulta para outros registros.
+    if (!/^[a-f\d]{24}$/i.test(testFollowUpId)) {
+      console.error(
+        '[LeadFollowUp] TEST_ID inválido. Informe o ObjectId de 24 caracteres hexadecimais.',
+      )
+      return null
+    }
+
+    filter = {
+      _id: testFollowUpId,
+      status: { $in: ['pending', 'simulated'] },
+      scheduledAt: { $lte: now },
+    }
+  } else if (!dryRun) {
     const allowBulkSend =
       String(process.env.LEAD_FOLLOWUPS_ALLOW_BULK_SEND || '')
         .trim()
@@ -129,8 +175,9 @@ const claimNextFollowUp = async () => {
 
     if (!allowBulkSend) {
       console.warn(
-        '[LeadFollowUp] Envio real bloqueado: defina ' +
-          'LEAD_FOLLOWUPS_ALLOW_BULK_SEND=true para autorizar a fila de produção.',
+        '[LeadFollowUp] Envio real bloqueado. Para um teste isolado, defina ' +
+          'LEAD_FOLLOWUPS_TEST_ID com o ID de um único follow-up; ' +
+          'para autorizar a fila inteira, defina LEAD_FOLLOWUPS_ALLOW_BULK_SEND=true.',
       )
       return null
     }
@@ -146,25 +193,27 @@ const claimNextFollowUp = async () => {
 
   // Não tenta acessar candidate._id quando nenhum registro é encontrado.
   if (!candidate) {
-    if (!isDryRun()) {
-      const testFollowUpId = String(
-        process.env.LEAD_FOLLOWUPS_TEST_ID || '',
-      ).trim()
+    if (!dryRun && testFollowUpId) {
+      const diagnostic = await LeadFollowUp.findById(testFollowUpId)
+        .select('_id status scheduledAt step')
+        .lean()
 
-      if (testFollowUpId) {
-        const diagnostic = await LeadFollowUp.findById(testFollowUpId)
-          .select('_id status scheduledAt step')
-          .lean()
-
-        console.warn('[LeadFollowUp] Diagnóstico do teste individual:', {
-          configuredId: testFollowUpId,
-          recordFound: Boolean(diagnostic),
-          recordStatus: diagnostic?.status ?? null,
-          scheduledAt: diagnostic?.scheduledAt ?? null,
-          step: diagnostic?.step ?? null,
-          currentTime: new Date(),
-        })
-      }
+      console.warn('[LeadFollowUp] Diagnóstico do teste individual:', {
+        configuredId: testFollowUpId,
+        recordFound: Boolean(diagnostic),
+        recordStatus: diagnostic?.status ?? null,
+        scheduledAt: diagnostic?.scheduledAt ?? null,
+        step: diagnostic?.step ?? null,
+        currentTime: now,
+        eligibleStatuses: ['pending', 'simulated'],
+        reason: !diagnostic
+          ? 'Follow-up não encontrado.'
+          : !['pending', 'simulated'].includes(diagnostic.status)
+            ? 'Status não elegível para envio individual.'
+            : diagnostic.scheduledAt > now
+              ? 'Follow-up ainda não chegou ao horário agendado.'
+              : 'Follow-up não está elegível; confira o registro.',
+      })
     }
 
     return null
@@ -172,10 +221,13 @@ const claimNextFollowUp = async () => {
 
   // Reserva condicional para evitar que dois ciclos processem
   // simultaneamente o mesmo follow-up.
+  const eligibleStatuses =
+    !dryRun && testFollowUpId ? ['pending', 'simulated'] : ['pending']
+
   const claimedFollowUp = await LeadFollowUp.findOneAndUpdate(
     {
       _id: candidate._id,
-      status: 'pending',
+      status: { $in: eligibleStatuses },
       scheduledAt: { $lte: now },
     },
     {
@@ -247,10 +299,15 @@ const getLeadAndConversation = async (followUp) => {
   }
 
   if (lead.isDeleted || lead.isTestLead === true) {
-    return { reason: 'Lead excluído ou identificado como teste; envio bloqueado.' }
+    return {
+      reason: 'Lead excluído ou identificado como teste; envio bloqueado.',
+    }
   }
 
-  if (lead.whatsappConsent?.status !== 'granted' || lead.whatsappConsent?.revokedAt) {
+  if (
+    lead.whatsappConsent?.status !== 'granted' ||
+    lead.whatsappConsent?.revokedAt
+  ) {
     return { reason: 'Sem consentimento válido para contato por WhatsApp.' }
   }
 

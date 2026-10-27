@@ -15,6 +15,10 @@ import {
 import { normalizePhone } from '../utils/phone.js'
 import { LEAD_STATUS } from '../constants/leadStatus.js'
 import { LEAD_STAGES } from '../constants/leadStages.js'
+import {
+  getFollowUpSettings,
+  calculateFollowUpSchedule,
+} from './leadFollowUpAutomationConfigService.js'
 
 // ============================================================
 // CONFIGURAÇÕES
@@ -258,6 +262,17 @@ export const scheduleLeadFollowUps = async ({
     }
   }
 
+  const settings = await getFollowUpSettings()
+  if (!settings.enabled) {
+    return {
+      success: false,
+      skipped: true,
+      reason: 'A automação global de follow-ups está pausada.',
+      leadId: String(lead._id),
+      scheduled: 0,
+    }
+  }
+
   const eligibilityReason = validateLeadEligibility(lead)
 
   if (eligibilityReason) {
@@ -320,7 +335,10 @@ export const scheduleLeadFollowUps = async ({
   const templates = await getConfiguredTemplates()
 
   for (const item of FOLLOW_UP_STEPS) {
-    const scheduledAt = new Date(baseDate.getTime() + item.offsetMs)
+    const scheduleItem = settings.schedule.find((entry) => entry.step === item.step)
+    if (!scheduleItem?.enabled) continue
+    const scheduledAt = calculateFollowUpSchedule(baseDate, item.step, settings)
+    if (!scheduledAt) continue
     const selectedTemplate = await selectTemplateVariation(item.step, templates)
 
     if (!selectedTemplate || selectedTemplate.enabled === false) {
@@ -396,9 +414,9 @@ export const scheduleLeadFollowUps = async ({
     integrationId: String(integration._id),
     conversationId: String(conversation._id),
     scheduled,
-    steps: FOLLOW_UP_STEPS.map(({ step, offsetMs }) => ({
+    steps: settings.schedule.filter((item) => item.enabled).map(({ step }) => ({
       step,
-      scheduledAt: new Date(baseDate.getTime() + offsetMs),
+      scheduledAt: calculateFollowUpSchedule(baseDate, step, settings),
     })),
   }
 }

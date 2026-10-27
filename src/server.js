@@ -31,6 +31,7 @@ import chatRoutes from './routes/chatRoutes.js'
 import whatsappRoutes from './routes/whatsappRoutes.js'
 import notificationRoutes from './routes/notificationRoutes.js'
 import leadFollowUpTemplateRoutes from './routes/leadFollowUpTemplateRoutes.js'
+import leadFollowUpAutomationRoutes from './routes/leadFollowUpAutomationRoutes.js'
 import publicProposalRoutes from './routes/publicProposalRoutes.js'
 
 // ============================================
@@ -158,6 +159,7 @@ app.use('/api/commissions', commissonRoutes)
 app.use('/api/orchestrator', orchestratorRoutes)
 app.use('/api/webhooks', webhookRoutes)
 app.use('/api/lead-follow-up-templates', leadFollowUpTemplateRoutes)
+app.use('/api/lead-follow-up-automation', leadFollowUpAutomationRoutes)
 app.use('/api/public-proposals', publicProposalRoutes)
 
 // ============================================

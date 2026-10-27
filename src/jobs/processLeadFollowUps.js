@@ -8,6 +8,10 @@ import { autoDistributeLead } from '../service/leadDistributionService.js'
 
 import { LEAD_STATUS } from '../constants/leadStatus.js'
 import { LEAD_STAGES } from '../constants/leadStages.js'
+import {
+  getFollowUpSettings,
+  isAllowedFollowUpTime,
+} from '../service/leadFollowUpAutomationConfigService.js'
 
 // ============================================================
 // CONFIGURAÇÕES
@@ -21,27 +25,9 @@ const TERMINAL_STATUSES = [LEAD_STATUS.CONVERTED, LEAD_STATUS.LOST]
 
 const TERMINAL_STAGES = [LEAD_STAGES.WON, LEAD_STAGES.LOST]
 
-const FOLLOW_UP_TIMEZONE =
-  process.env.LEAD_FOLLOWUPS_TIMEZONE || 'America/Sao_Paulo'
-const SEND_WINDOW_START_MINUTES = 9 * 60
-const SEND_WINDOW_END_MINUTES = 18 * 60
-
-const isWithinSendWindow = (date = new Date()) => {
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: FOLLOW_UP_TIMEZONE,
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(date)
-
-  const hour = Number(parts.find((part) => part.type === 'hour')?.value)
-  const minute = Number(parts.find((part) => part.type === 'minute')?.value)
-  const minuteOfDay = hour * 60 + minute
-
-  return (
-    minuteOfDay >= SEND_WINDOW_START_MINUTES &&
-    minuteOfDay < SEND_WINDOW_END_MINUTES
-  )
+const isWithinSendWindow = async (date = new Date()) => {
+  const settings = await getFollowUpSettings()
+  return isAllowedFollowUpTime(date, settings)
 }
 
 // Simulação ativada por padrão.
@@ -136,14 +122,22 @@ const failFollowUp = async (followUp, error) => {
 
 const claimNextFollowUp = async () => {
   const now = new Date()
+  const settings = await getFollowUpSettings()
+  const dryRun = isDryRun()
 
-  if (!isWithinSendWindow(now)) {
+  if (!settings.enabled && !dryRun) {
     console.log(
-      `[LeadFollowUp] Fora da janela de envio (09:00–18:00, ${FOLLOW_UP_TIMEZONE}). A fila será mantida para a próxima execução dentro da janela.`,
+      '[LeadFollowUp] Automação global pausada; envios reais bloqueados.',
     )
     return null
   }
-  const dryRun = isDryRun()
+
+  if (!isAllowedFollowUpTime(now, settings)) {
+    console.log(
+      `[LeadFollowUp] Fora da janela permitida (${settings.windowStart}–${settings.windowEnd}, ${settings.timezone}) ou dia não permitido. Fila preservada.`,
+    )
+    return null
+  }
   const testFollowUpId = String(process.env.LEAD_FOLLOWUPS_TEST_ID || '').trim()
 
   let filter = {

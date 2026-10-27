@@ -64,7 +64,7 @@ export const getLeadFollowUpTemplates = async (req, res) => {
       ...fallback,
       ...(savedByStep.get(fallback.step) || {}),
     }))
-    return res.status(200).json({ success: true, templates, updatedAt: config.updatedAt || null })
+    return res.status(200).json({ success: true, templates, settings: normalizeFollowUpSettings(config.settings || DEFAULT_FOLLOW_UP_SETTINGS), updatedAt: config.updatedAt || null })
   } catch (error) {
     console.error('[LeadFollowUpTemplates] Erro ao buscar templates:', error)
     return res.status(500).json({ success: false, message: 'Não foi possível carregar as mensagens.' })
@@ -116,7 +116,7 @@ export const saveLeadFollowUpTemplates = async (req, res) => {
     const config = await LeadFollowUpTemplate.findOneAndUpdate(
       { key: 'default' },
       {
-        $set: { templates: normalized, updatedBy: req.user?._id || req.user?.id || null },
+        $set: { templates: normalized, ...(req.body?.settings ? { settings: normalizeFollowUpSettings(req.body.settings) } : {}), updatedBy: req.user?._id || req.user?.id || null },
         $setOnInsert: { key: 'default' },
       },
       { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true },
@@ -129,6 +129,107 @@ export const saveLeadFollowUpTemplates = async (req, res) => {
     }
     console.error('[LeadFollowUpTemplates] Erro ao salvar templates:', error)
     return res.status(500).json({ success: false, message: 'Não foi possível salvar as mensagens.' })
+  }
+}
+
+// Configuração global de horários e regras. Alterar configurações nunca dispara mensagens.
+export const getLeadFollowUpAutomationSettings = async (req, res) => {
+  try {
+    const config = await getOrCreateConfig()
+    return res.status(200).json({
+      success: true,
+      settings: normalizeFollowUpSettings(config.settings || DEFAULT_FOLLOW_UP_SETTINGS),
+      templates: config.templates || FOLLOW_UP_TEMPLATE_DEFAULTS,
+      updatedAt: config.updatedAt || null,
+    })
+  } catch (error) {
+    console.error('[LeadFollowUpAutomation] Erro ao carregar configuração:', error)
+    return res.status(500).json({ success: false, message: 'Não foi possível carregar a configuração.' })
+  }
+}
+
+export const saveLeadFollowUpAutomationSettings = async (req, res) => {
+  try {
+    const settings = normalizeFollowUpSettings(req.body?.settings || {})
+    const incomingTemplates = req.body?.templates
+    let normalizedTemplates
+    if (Array.isArray(incomingTemplates)) {
+      if (incomingTemplates.length !== VALID_STEPS.length) {
+        return res.status(400).json({ success: false, message: 'Envie os seis modelos de mensagem.' })
+      }
+      const byStep = new Map(incomingTemplates.map((item) => [item?.step, item]))
+      normalizedTemplates = FOLLOW_UP_TEMPLATE_DEFAULTS.map((fallback) => {
+        const item = byStep.get(fallback.step)
+        if (!item || typeof item.message !== 'string' || !item.message.trim() || item.message.length > 2000) {
+          throw new Error(`A mensagem ${fallback.step} é obrigatória e deve ter até 2.000 caracteres.`)
+        }
+        return {
+          step: fallback.step,
+          label: fallback.label,
+          enabled: item.enabled !== false,
+          message: item.message.trim(),
+          variations: Array.isArray(item.variations) ? item.variations.map((v) => ({
+            ...(v._id ? { _id: v._id } : {}),
+            message: String(v.message || '').trim(),
+            enabled: v.enabled !== false,
+          })).filter((v) => v.message && v.message.length <= 2000) : [],
+        }
+      })
+    }
+    const update = { settings, updatedBy: req.user?._id || req.user?.id || null }
+    if (normalizedTemplates) update.templates = normalizedTemplates
+    const config = await LeadFollowUpTemplate.findOneAndUpdate(
+      { key: 'default' },
+      { $set: update, $setOnInsert: { key: 'default' } },
+      { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true },
+    )
+    return res.status(200).json({
+      success: true,
+      message: 'Configuração salva. Nenhuma mensagem foi enviada.',
+      settings: normalizeFollowUpSettings(config.settings || {}),
+      templates: config.templates,
+      updatedAt: config.updatedAt,
+    })
+  } catch (error) {
+    return res.status(400).json({ success: false, message: error.message || 'Configuração inválida.' })
+  }
+}
+
+// Teste individual estritamente simulado: valida o lead e renderiza a mensagem,
+// sem criar follow-ups, sem mudar estados e sem chamar o gateway WhatsApp.
+export const testLeadFollowUpAutomation = async (req, res) => {
+  try {
+    const { leadId, step = 'D0' } = req.body || {}
+    if (!leadId || !VALID_STEPS.includes(step)) {
+      return res.status(400).json({ success: false, message: 'Informe leadId e uma etapa válida.' })
+    }
+    const lead = await Lead.findById(leadId).populate('property', 'name code location').lean()
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead não encontrado.' })
+    const config = await getOrCreateConfig()
+    const settings = normalizeFollowUpSettings(config.settings || {})
+    const template = (config.templates || FOLLOW_UP_TEMPLATE_DEFAULTS).find((item) => item.step === step)
+    const checks = {
+      consentGranted: lead.whatsappConsent?.status === 'granted' && !lead.whatsappConsent?.revokedAt,
+      notDeleted: lead.isDeleted !== true,
+      notTestLead: lead.isTestLead !== true,
+      notTerminal: !['converted', 'lost'].includes(lead.status) && !['won', 'lost'].includes(lead.stage),
+      stepEnabled: Boolean(settings.schedule.find((item) => item.step === step)?.enabled && template?.enabled !== false),
+    }
+    return res.status(200).json({
+      success: true,
+      dryRun: true,
+      sent: false,
+      lead: { id: String(lead._id), name: lead.name || '' },
+      step,
+      eligible: Object.values(checks).every(Boolean),
+      checks,
+      message: renderFollowUpTemplate(template?.message || '', lead),
+      settingsEnabled: settings.enabled,
+      notice: 'Simulação somente de prévia. Nenhuma mensagem foi enviada e nenhum registro foi criado.',
+    })
+  } catch (error) {
+    console.error('[LeadFollowUpAutomation] Erro no teste simulado:', error)
+    return res.status(500).json({ success: false, message: 'Não foi possível simular o follow-up.' })
   }
 }
 

@@ -5,6 +5,9 @@ import {
   getLeadFollowUpTemplateUsage,
   saveLeadFollowUpTemplates,
   applyTemplatesToPendingFollowUps,
+  getLeadFollowUpAutomationSettings,
+  saveLeadFollowUpAutomationSettings,
+  testLeadFollowUpAutomation,
 } from '../controllers/leadFollowUpTemplateController.js'
 
 const router = express.Router()
@@ -13,6 +16,9 @@ const router = express.Router()
 router.use(protect, admin)
 router.get('/', getLeadFollowUpTemplates)
 router.get('/usage', getLeadFollowUpTemplateUsage)
+router.get('/automation', getLeadFollowUpAutomationSettings)
+router.put('/automation', saveLeadFollowUpAutomationSettings)
+router.post('/automation/test', testLeadFollowUpAutomation)
 router.put('/', saveLeadFollowUpTemplates)
 router.post('/apply-pending', applyTemplatesToPendingFollowUps)
 

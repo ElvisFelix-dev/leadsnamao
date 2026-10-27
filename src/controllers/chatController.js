@@ -427,6 +427,12 @@ export const sendMessage = asyncHandler(async (req, res) => {
 
   if (io) {
     try {
+      console.log('🧪 [CHAT] Instância Socket.IO do controller:', {
+        pid: process.pid,
+        hostname: process.env.HOSTNAME || 'unknown',
+        connectedClients: io.engine?.clientsCount ?? 'unknown',
+        conversationRoom: String(conversationId),
+      })
       const roomSockets = await io.in(String(conversationId)).fetchSockets()
 
       console.log('🧪 [CHAT] Sockets na sala antes da emissão:', {

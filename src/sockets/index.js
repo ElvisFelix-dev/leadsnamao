@@ -72,50 +72,13 @@ export function setupSocketIO(httpServer) {
     })
 
     // =======================================================
-    // CRM NODUS — ENTRADA NA SALA DO USUÁRIO
+    // SALAS DO CHAT INTERNO
     // =======================================================
-
-    socket.on('join_conversations', () => {
-      const userId = socket.handshake.auth?.userId
-
-      if (!userId) {
-        console.warn(
-          `⚠️ Socket ${socket.id} solicitou join_conversations sem userId.`,
-        )
-        return
-      }
-
-      const userRoom = `user_${String(userId)}`
-
-      socket.join(userRoom)
-
-      console.log(
-        `👤 Socket ${socket.id} entrou na sala do usuário: ${userRoom}`,
-      )
-    })
-
-    // =======================================================
-    // CRM NODUS — ENTRADA NA SALA DA CONVERSA
-    // =======================================================
-
-    socket.on('join_conversation', (conversationId) => {
-      const id =
-        typeof conversationId === 'string'
-          ? conversationId
-          : conversationId?._id || conversationId?.conversationId
-
-      if (!id || typeof id !== 'string') {
-        console.warn(
-          '⚠️ join_conversation recebeu um ID inválido:',
-          conversationId,
-        )
-        return
-      }
-
-      socket.join(id)
-
-      console.log(`💬 Socket ${socket.id} entrou na sala da conversa: ${id}`)
-    })
+    // A entrada nas salas user_{userId} e {conversationId} é gerenciada
+    // exclusivamente por ../sockets/chatSocket.js, que valida o usuário
+    // no banco e verifica sua autorização antes de permitir o acesso.
+    // Não registrar join_conversations ou join_conversation aqui:
+    // handlers duplicados poderiam permitir acesso sem validação.
 
     // =======================================================
     // COMPATIBILIDADE COM O EVENTO ANTIGO DO ADMIN

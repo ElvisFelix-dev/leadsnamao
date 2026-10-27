@@ -5,6 +5,10 @@ import {
   FOLLOW_UP_TEMPLATE_DEFAULTS,
   renderFollowUpTemplate,
 } from '../service/leadFollowUpTemplateService.js'
+import {
+  DEFAULT_FOLLOW_UP_SETTINGS,
+  normalizeFollowUpSettings,
+} from '../service/leadFollowUpAutomationConfigService.js'
 
 const VALID_STEPS = FOLLOW_UP_TEMPLATE_DEFAULTS.map(({ step }) => step)
 

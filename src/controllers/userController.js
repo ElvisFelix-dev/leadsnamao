@@ -477,32 +477,75 @@ export const adminUpdateUser = asyncHandler(async (req, res) => {
     throw new Error('Usuário não encontrado')
   }
 
-  // Campos permitidos para admin atualizar
+  // Campos que o administrador pode editar na tela BrokerEdit.
+  // A lista explícita evita alterações acidentais em campos internos.
   const allowedFields = [
     'name',
     'email',
     'phone',
-    'creci',
-    'position',
-    'company',
-    'isActive',
-    'role',
-    'bio',
     'avatar',
     'coverImage',
+    'bio',
+    'website',
+    'position',
+    'company',
+    'creci',
+    'creciActive',
+    'experienceYears',
+    'signature',
     'specialties',
     'regions',
-    'experienceYears',
+    'highlights',
+    'availability',
+    'workingHours',
+    'address',
+    'socials',
+    'settings',
     'commissionPercentage',
     'capturerCommissionPercentage',
+    'isActive',
+    'role',
     'brokerSettings',
-    'settings',
   ]
 
+  const nestedFields = new Set([
+    'workingHours',
+    'address',
+    'socials',
+    'settings',
+    'brokerSettings',
+  ])
+
   allowedFields.forEach((field) => {
-    if (updateData[field] !== undefined) {
-      user[field] = updateData[field]
+    if (updateData[field] === undefined) return
+
+    if (
+      nestedFields.has(field) &&
+      updateData[field] &&
+      typeof updateData[field] === 'object' &&
+      !Array.isArray(updateData[field])
+    ) {
+      // Atualiza apenas as propriedades recebidas e preserva as demais.
+      Object.entries(updateData[field]).forEach(([key, value]) => {
+        if (
+          field === 'brokerSettings' &&
+          key === 'workHours' &&
+          value &&
+          typeof value === 'object' &&
+          !Array.isArray(value)
+        ) {
+          Object.entries(value).forEach(([hourKey, hourValue]) => {
+            user.set(`brokerSettings.workHours.${hourKey}`, hourValue)
+          })
+          return
+        }
+
+        user.set(`${field}.${key}`, value)
+      })
+      return
     }
+
+    user.set(field, updateData[field])
   })
 
   // Atualizar senha se fornecida e tiver pelo menos 6 caracteres

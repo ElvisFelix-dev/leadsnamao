@@ -66,27 +66,12 @@ export const saveLeadFollowUpAutomation = async (req, res) => {
         time: step.time,
       })),
     })
-    const byStep = new Map(incoming.steps.map((x) => [x.step, x]))
-    const templates = FOLLOW_UP_TEMPLATE_DEFAULTS.map((fallback) => {
-      const item = byStep.get(fallback.step)
-      if (!item || typeof item.message !== 'string' || !item.message.trim() || item.message.length > 2000) {
-        throw new Error(`A mensagem ${fallback.step} é obrigatória e deve ter até 2.000 caracteres.`)
-      }
-      return {
-        step: fallback.step,
-        label: fallback.label,
-        enabled: item.enabled !== false,
-        message: item.message.trim(),
-        variations: Array.isArray(item.variations) ? item.variations.map((v) => ({
-          ...(v._id ? { _id: v._id } : {}),
-          message: String(v.message || '').trim(),
-          enabled: v.enabled !== false,
-        })).filter((v) => v.message && v.message.length <= 2000) : [],
-      }
-    })
+    // Esta rota salva exclusivamente as regras da automação. Os modelos e
+    // suas variações são responsabilidade de /api/lead-follow-up-templates.
+    // Não gravar templates aqui evita sobrescrever variações em edições paralelas.
     const doc = await LeadFollowUpTemplate.findOneAndUpdate(
       { key: 'default' },
-      { $set: { settings, templates, updatedBy: req.user?._id || req.user?.id || null }, $setOnInsert: { key: 'default' } },
+      { $set: { settings, updatedBy: req.user?._id || req.user?.id || null }, $setOnInsert: { key: 'default', templates: FOLLOW_UP_TEMPLATE_DEFAULTS } },
       { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true },
     )
     // Recalcula somente follow-ups ainda pendentes. Registros enviados,
@@ -116,7 +101,8 @@ export const saveLeadFollowUpAutomation = async (req, res) => {
       if (!lead) continue
       const baseDate = lead.followUpAutomation?.startedAt ? new Date(lead.followUpAutomation.startedAt) : new Date()
       const scheduledAt = calculateFollowUpSchedule(baseDate, followUp.step, settings)
-      const template = templates.find((item) => item.step === followUp.step)
+      const persistedTemplates = doc.templates?.length ? doc.templates : FOLLOW_UP_TEMPLATE_DEFAULTS
+      const template = persistedTemplates.find((item) => item.step === followUp.step)
       if (!scheduledAt || !template || template.enabled === false) continue
       const result = await LeadFollowUp.updateOne(
         { _id: followUp._id, status: 'pending' },

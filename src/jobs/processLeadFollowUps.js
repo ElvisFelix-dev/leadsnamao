@@ -125,7 +125,43 @@ const claimNextFollowUp = async () => {
   const settings = await getFollowUpSettings()
   const dryRun = isDryRun()
 
-  if (!settings.enabled && !dryRun) {
+  const testFollowUpId = String(process.env.LEAD_FOLLOWUPS_TEST_ID || '').trim()
+  const allowSingleTestSend =
+    String(process.env.LEAD_FOLLOWUPS_ALLOW_SINGLE_TEST_SEND || '')
+      .trim()
+      .toLowerCase() === 'true'
+  const allowBulkSend =
+    String(process.env.LEAD_FOLLOWUPS_ALLOW_BULK_SEND || '')
+      .trim()
+      .toLowerCase() === 'true'
+
+  // Fail closed: o envio individual exige uma autorização explícita E o ID
+  // exato do registro. O modo de teste nunca libera a fila inteira.
+  if (!dryRun && testFollowUpId && !allowSingleTestSend) {
+    console.warn(
+      '[LeadFollowUp] Teste real individual bloqueado: configure ' +
+        'LEAD_FOLLOWUPS_ALLOW_SINGLE_TEST_SEND=true junto com ' +
+        'LEAD_FOLLOWUPS_TEST_ID. Nenhum envio foi feito.',
+    )
+    return null
+  }
+
+  if (!dryRun && !testFollowUpId && !allowBulkSend) {
+    console.warn(
+      '[LeadFollowUp] Envio real bloqueado: configure o ID de um único follow-up ' +
+        'e LEAD_FOLLOWUPS_ALLOW_SINGLE_TEST_SEND=true para teste isolado. ' +
+        'Envio em lote permanece bloqueado.',
+    )
+    return null
+  }
+
+  // A autorização de teste individual pode operar com a automação global
+  // pausada, pois o filtro abaixo continua restrito ao único _id configurado.
+  if (
+    !settings.enabled &&
+    !dryRun &&
+    !(testFollowUpId && allowSingleTestSend)
+  ) {
     console.log(
       '[LeadFollowUp] Automação global pausada; envios reais bloqueados.',
     )
@@ -138,8 +174,6 @@ const claimNextFollowUp = async () => {
     )
     return null
   }
-  const testFollowUpId = String(process.env.LEAD_FOLLOWUPS_TEST_ID || '').trim()
-
   let filter = {
     status: 'pending',
     scheduledAt: { $lte: now },
@@ -161,20 +195,10 @@ const claimNextFollowUp = async () => {
       status: { $in: ['pending', 'simulated'] },
       scheduledAt: { $lte: now },
     }
-  } else if (!dryRun) {
-    const allowBulkSend =
-      String(process.env.LEAD_FOLLOWUPS_ALLOW_BULK_SEND || '')
-        .trim()
-        .toLowerCase() === 'true'
-
-    if (!allowBulkSend) {
-      console.warn(
-        '[LeadFollowUp] Envio real bloqueado. Para um teste isolado, defina ' +
-          'LEAD_FOLLOWUPS_TEST_ID com o ID de um único follow-up; ' +
-          'para autorizar a fila inteira, defina LEAD_FOLLOWUPS_ALLOW_BULK_SEND=true.',
-      )
-      return null
-    }
+  } else if (!dryRun && !allowBulkSend) {
+    // Fail closed: sem ID individual, só se processa a fila se a autorização
+    // de lote tiver sido habilitada explicitamente.
+    return null
   }
 
   const candidate = await LeadFollowUp.findOne(filter)

@@ -411,6 +411,39 @@ export const sendMessage = asyncHandler(async (req, res) => {
     isAdmin: isAdminUser(req.user),
   })
 
+  // Diagnóstico temporário: confirma a persistência e os sockets destinatários.
+  const io = getSocket()
+
+  console.log('🧪 [CHAT] Mensagem interna persistida:', {
+    conversationId: String(conversationId),
+    messageId: String(message?._id),
+    senderId: String(senderId),
+    channel: conversation.channel,
+    participants: (conversation.participants || []).map((participant) =>
+      String(participant?._id || participant),
+    ),
+    socketAvailable: Boolean(io),
+  })
+
+  if (io) {
+    try {
+      const roomSockets = await io.in(String(conversationId)).fetchSockets()
+
+      console.log('🧪 [CHAT] Sockets na sala antes da emissão:', {
+        conversationId: String(conversationId),
+        count: roomSockets.length,
+        sockets: roomSockets.map((socket) => ({
+          socketId: socket.id,
+          userId: String(
+            socket.data?.userId || socket.handshake?.auth?.userId || '',
+          ),
+        })),
+      })
+    } catch (error) {
+      console.error('❌ [CHAT] Falha ao inspecionar sala:', error.message)
+    }
+  }
+
   // Mensagem em tempo real para os sockets na sala da conversa.
   emitToConversation(conversationId, 'new_message', {
     conversationId,
@@ -423,9 +456,17 @@ export const sendMessage = asyncHandler(async (req, res) => {
       : String(participant),
   )
 
-  // Notificação individual para os outros participantes.
+  // Diagnóstico e notificação individual para os outros participantes.
   for (const participantId of participantIds) {
     if (participantId === senderId) continue
+
+    console.log('🧪 [CHAT] Emitindo notificação individual:', {
+      recipientId: participantId,
+      room: `user_${participantId}`,
+      event: 'new_message_notification',
+      conversationId: String(conversationId),
+      messageId: String(message?._id),
+    })
 
     emitToInternalUser(participantId, 'new_message_notification', {
       conversationId,
